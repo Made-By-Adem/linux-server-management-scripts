@@ -1,0 +1,41 @@
+{
+  "name": "server-management-scripts",
+  "version": "2.0.0",
+  "description": "Professional bash scripts for Ubuntu/Debian server management, automation, and Docker container maintenance. Includes server baseline setup and Docker container update automation.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"No tests configured\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MadeByAdem/linux-server-management-scripts.git"
+  },
+  "keywords": [
+    "server",
+    "ubuntu",
+    "debian",
+    "security",
+    "hardening",
+    "automation",
+    "docker",
+    "docker-compose",
+    "container-updates",
+    "devops",
+    "infrastructure",
+    "setup",
+    "maintenance",
+    "bash",
+    "scripts",
+    "server-management",
+    "system-administration",
+    "fail2ban",
+    "firewall",
+    "ssh"
+  ],
+  "author": "MadeByAdem",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/MadeByAdem/linux-server-management-scripts/issues"
+  },
+  "homepage": "https://github.com/MadeByAdem/linux-server-management-scripts#readme"
+}

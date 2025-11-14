@@ -1,0 +1,36 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# Temporary files
+*.tmp
+.tmp/
+
+# Environment files (if needed in future)
+.env
+.env.local
+
+# Node modules (if package.json is used for tools)
+node_modules/
+
+# Test files and output
+test/
+tests/
+*.test
+
+.claude
