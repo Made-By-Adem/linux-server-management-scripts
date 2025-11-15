@@ -23,18 +23,38 @@ MODE=""  # Will be set to: fresh-install, interactive, or dry-run
 DRY_RUN=false
 
 # Get the actual user (the one who ran sudo)
-ACTUAL_USER="${SUDO_USER:-$USER}"
+ACTUAL_USER="${SUDO_USER:-${USER:-$(whoami)}}"
 
-# Get the user's home directory using getent (more reliable than eval)
+# Get the user's home directory
+# Try multiple methods for compatibility across Ubuntu, Debian, and Raspberry Pi
 if [ -n "$ACTUAL_USER" ] && [ "$ACTUAL_USER" != "root" ]; then
-    USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
+    # Method 1: Try getent if available (most reliable on modern systems)
+    if command -v getent &>/dev/null; then
+        USER_HOME=$(getent passwd "$ACTUAL_USER" 2>/dev/null | cut -d: -f6)
+    fi
+
+    # Method 2: Fallback to /etc/passwd if getent not available or failed
+    if [ -z "${USER_HOME:-}" ] || [ "$USER_HOME" = "/" ]; then
+        USER_HOME=$(grep "^$ACTUAL_USER:" /etc/passwd 2>/dev/null | cut -d: -f6)
+    fi
+
+    # Method 3: Final fallback using tilde expansion
+    if [ -z "${USER_HOME:-}" ] || [ "$USER_HOME" = "/" ]; then
+        USER_HOME=$(eval echo ~"$ACTUAL_USER")
+    fi
 else
     USER_HOME=$(eval echo ~"$ACTUAL_USER")
 fi
 
-# Fallback if getent fails
-if [ -z "$USER_HOME" ] || [ "$USER_HOME" = "/" ]; then
+# Verify we got a valid home directory
+if [ -z "${USER_HOME:-}" ] || [ "$USER_HOME" = "/" ]; then
     USER_HOME=$(eval echo ~"$ACTUAL_USER")
+fi
+
+# Get server IP address (needed for multiple sections below)
+SERVER_IP=$(ip -4 addr show scope global | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)
+if [ -z "$SERVER_IP" ]; then
+    SERVER_IP="<server-ip>"
 fi
 
 # State tracking file for resume capability (will be created after sudo check)
@@ -252,7 +272,6 @@ ask_component_install() {
     local description="$3"
     local implications="$4"
     local default="${5:-y}"  # Default to 'y' if not specified
-    local timeout="${6:-60}"  # Default 60s timeout
 
     # In dry-run mode, just log and return yes
     if [ "$DRY_RUN" = true ]; then
@@ -302,9 +321,9 @@ ask_component_install() {
         echo ""
     fi
 
-    # Ask user
+    # Ask user (no timeout - wait for user input)
     local answer
-    read -t "$timeout" -p "Proceed with this component? (Y/n, default: $default, timeout ${timeout}s): " answer || answer="$default"
+    read -p "Proceed with this component? (Y/n, default: $default): " answer
     answer=${answer:-$default}
 
     if [[ $answer =~ ^[Yy]$ ]] || [[ -z "$answer" ]]; then
@@ -543,7 +562,8 @@ if [ -f "$STATE_FILE" ]; then
     echo "  2. Start fresh (delete state and restart)"
     echo "  3. Exit"
     echo ""
-    read -t 30 -p "Choose option [1/2/3] (default: 1 after 30s): " resume_choice || resume_choice="1"
+    read -p "Choose option [1/2/3] (default: 1): " resume_choice
+    resume_choice=${resume_choice:-1}
 
     case "$resume_choice" in
         2)
@@ -586,8 +606,7 @@ if ask_component_install \
 • Changing timezone affects log timestamps and scheduled tasks
 • NTP synchronization keeps server time accurate
 • Recommended for consistency across services" \
-    "y" \
-    "60"; then
+    "y"; then
 
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would set timezone to Europe/Amsterdam"
@@ -619,11 +638,21 @@ else
 • May require kernel update and reboot
 • On production: Consider scheduling during maintenance window
 • Recommended: Run updates to patch security vulnerabilities" \
-        "y" \
-        "60"; then
+        "y"; then
 
         if [ "$DRY_RUN" = true ]; then
             log_dry_run "Would run: apt-get update"
+            log_dry_run "Checking for upgradeable packages (based on current cache)..."
+            log_dry_run "Note: Package list may be stale if apt-get update hasn't been run recently"
+            upgradable=$(apt list --upgradable 2>/dev/null | grep -v "Listing" | wc -l || echo "0")
+            if [ "$upgradable" -gt 0 ]; then
+                log_dry_run "Found $upgradable packages to upgrade:"
+                apt list --upgradable 2>/dev/null | grep -v "Listing" | while read line; do
+                    log_dry_run "  - $line"
+                done || true
+            else
+                log_dry_run "No packages need upgrading (based on current cache)"
+            fi
             log_dry_run "Would run: apt-get upgrade -y"
             log_dry_run "Would run: apt-get autoremove -y"
         else
@@ -644,94 +673,322 @@ fi
 # INSTALL ESSENTIAL PACKAGES
 ###############################################################################
 
-log_info "Installing essential packages..."
-DEBIAN_FRONTEND=noninteractive sudo apt-get install -y \
-    curl \
-    wget \
-    net-tools \
-    ufw \
-    unattended-upgrades \
-    ca-certificates \
-    gnupg \
-    lsb-release \
-    software-properties-common \
-    rsyslog \
-    git \
-    htop \
-    iotop \
-    nethogs \
-    fail2ban \
-    || handle_error "Failed to install essential packages"
+if ask_component_install \
+    "ESSENTIAL PACKAGES INSTALLATION" \
+    "essential-packages" \
+    "Install essential system packages required for server management and security." \
+    "Available packages:
+• curl, wget - Download tools
+• net-tools - Network utilities
+• ufw - Firewall management
+• unattended-upgrades - Automatic security updates
+• ca-certificates, gnupg - Security certificates
+• lsb-release, software-properties-common - Repository management
+• rsyslog - System logging
+• git - Version control
+• htop, iotop, nethogs - System monitoring tools
+• fail2ban - Intrusion prevention
 
-log_info "Essential packages installed successfully"
+Note: You will be able to select individual packages in the next step" \
+    "y"; then
+
+    # Define package groups with descriptions
+    declare -A ESSENTIAL_PACKAGES=(
+        ["curl"]="Download tool (curl)"
+        ["wget"]="Download tool (wget)"
+        ["net-tools"]="Network utilities (ifconfig, netstat, etc.)"
+        ["ufw"]="Firewall management"
+        ["unattended-upgrades"]="Automatic security updates"
+        ["ca-certificates"]="Security certificates"
+        ["gnupg"]="GPG encryption tool"
+        ["lsb-release"]="Linux Standard Base version reporting"
+        ["software-properties-common"]="Repository management"
+        ["rsyslog"]="System logging"
+        ["git"]="Version control system"
+        ["htop"]="Interactive process viewer"
+        ["iotop"]="I/O monitoring tool"
+        ["nethogs"]="Network bandwidth monitor per process"
+        ["fail2ban"]="Intrusion prevention system"
+    )
+
+    # Collect selected packages
+    SELECTED_PACKAGES=()
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would ask for individual package selection"
+        log_dry_run "Available packages: ${!ESSENTIAL_PACKAGES[@]}"
+        # In dry-run, assume all packages selected for summary
+        for pkg in "${!ESSENTIAL_PACKAGES[@]}"; do
+            SELECTED_PACKAGES+=("$pkg")
+        done
+    else
+        # In fresh-install mode, auto-select all packages
+        if [ "$MODE" = "fresh-install" ]; then
+            log_info "Fresh-install mode: Auto-selecting all essential packages"
+            for pkg in "${!ESSENTIAL_PACKAGES[@]}"; do
+                SELECTED_PACKAGES+=("$pkg")
+            done
+        else
+            # Interactive mode: ask for each package
+            echo ""
+            echo "=========================================================================="
+            echo "SELECT INDIVIDUAL PACKAGES"
+            echo "=========================================================================="
+            echo ""
+            echo "You can now select which packages to install."
+            echo "Press Enter to accept the default (Y = install, n = skip)"
+            echo ""
+
+            for pkg in curl wget net-tools ufw unattended-upgrades ca-certificates gnupg lsb-release software-properties-common rsyslog git htop iotop nethogs fail2ban; do
+                desc="${ESSENTIAL_PACKAGES[$pkg]}"
+
+                # Check if package is already installed
+                if dpkg -l | grep -q "^ii  $pkg "; then
+                    echo -e "${GREEN}✓${NC} $pkg - Already installed"
+                    SELECTED_PACKAGES+=("$pkg")
+                else
+                    read -p "Install $desc? (Y/n): " install_pkg
+                    install_pkg=${install_pkg:-y}
+
+                    if [[ $install_pkg =~ ^[Yy]$ ]] || [[ -z "$install_pkg" ]]; then
+                        SELECTED_PACKAGES+=("$pkg")
+                        echo -e "  ${CYAN}→${NC} Will install: $pkg"
+                    else
+                        echo -e "  ${YELLOW}→${NC} Skipped: $pkg"
+                    fi
+                fi
+            done
+        fi
+    fi
+
+    # Install selected packages
+    if [ ${#SELECTED_PACKAGES[@]} -gt 0 ]; then
+        if [ "$DRY_RUN" = true ]; then
+            log_dry_run "Would install ${#SELECTED_PACKAGES[@]} packages:"
+            for pkg in "${SELECTED_PACKAGES[@]}"; do
+                log_dry_run "  - $pkg"
+            done
+        else
+            echo ""
+            log_info "Installing ${#SELECTED_PACKAGES[@]} selected packages..."
+
+            # Install packages one by one to handle failures gracefully
+            FAILED_PACKAGES=()
+            for pkg in "${SELECTED_PACKAGES[@]}"; do
+                if dpkg -l | grep -q "^ii  $pkg "; then
+                    log_info "$pkg already installed, skipping"
+                else
+                    echo -n "Installing $pkg... "
+                    if DEBIAN_FRONTEND=noninteractive sudo apt-get install -y "$pkg" >/dev/null 2>&1; then
+                        echo -e "${GREEN}✓${NC}"
+                    else
+                        echo -e "${RED}✗${NC}"
+                        FAILED_PACKAGES+=("$pkg")
+                    fi
+                fi
+            done
+
+            # Report results
+            if [ ${#FAILED_PACKAGES[@]} -eq 0 ]; then
+                log_info "All selected packages installed successfully"
+            else
+                log_warning "Failed to install ${#FAILED_PACKAGES[@]} packages: ${FAILED_PACKAGES[*]}"
+                log_warning "You can try installing them manually later"
+            fi
+        fi
+    else
+        log_warning "No packages selected for installation"
+    fi
+else
+    log_info "Essential packages installation skipped"
+fi
 
 ###############################################################################
 # INSTALL SECURITY PACKAGE MANAGEMENT TOOLS
 ###############################################################################
 
-log_info "Installing advanced security package management tools..."
+if ask_component_install \
+    "SECURITY PACKAGE MANAGEMENT TOOLS" \
+    "security-pkg-tools" \
+    "Install advanced security package management tools for enhanced package awareness." \
+    "Available tools:
+• apt-listchanges - Shows important changes in packages before upgrade
+• debsums - Verifies installed package file integrity
+• apt-show-versions - Shows available package versions and updates
+• needrestart - Detects which services need restart after updates
 
-# Ask user if they want to install security package tools
-echo ""
-echo "=========================================================================="
-echo "SECURITY PACKAGE MANAGEMENT TOOLS"
-echo "=========================================================================="
-echo ""
-echo "These tools enhance package security and awareness:"
-echo ""
-echo "  • apt-listchanges  - Shows important changes in packages before upgrade"
-echo "  • debsums          - Verifies installed package file integrity"
-echo "  • apt-show-versions - Shows available package versions and updates"
-echo "  • needrestart      - Detects which services need restart after updates"
-echo ""
-echo "Benefits:"
-echo "  - Review security changes before applying updates"
-echo "  - Detect modified or corrupted system files"
-echo "  - Better package version management"
-echo "  - Know when to restart services after security updates"
-echo ""
-echo "Note: apt-listbugs (Debian-only) is not available on Ubuntu"
-echo ""
-read -t 60 -p "Install security package management tools? (Y/n, default: Y, timeout 60s): " install_sec_pkg_tools || install_sec_pkg_tools="y"
-install_sec_pkg_tools=${install_sec_pkg_tools:-y}
+Benefits:
+• Review security changes before applying updates
+• Detect modified or corrupted system files
+• Better package version management
+• Know when to restart services after security updates
 
-if [[ $install_sec_pkg_tools =~ ^[Yy]$ ]] || [[ -z "$install_sec_pkg_tools" ]]; then
-    DEBIAN_FRONTEND=noninteractive sudo apt-get install -y \
-        apt-listchanges \
-        debsums \
-        apt-show-versions \
-        needrestart \
-        || log_warning "Failed to install some security package tools"
+Note: You will be able to select individual tools in the next step
+Note: apt-listbugs (Debian-only) is not available on Ubuntu" \
+    "y"; then
 
-    log_info "Security package management tools installed successfully"
-    log_info "These tools will now run automatically during package operations"
+    # Define security tools with descriptions
+    declare -A SECURITY_TOOLS=(
+        ["apt-listchanges"]="Shows package changes before upgrade"
+        ["debsums"]="Verifies package file integrity"
+        ["apt-show-versions"]="Shows available package versions"
+        ["needrestart"]="Detects services needing restart after updates"
+    )
+
+    # Collect selected tools
+    SELECTED_SECURITY_TOOLS=()
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would ask for individual security tool selection"
+        log_dry_run "Available tools: ${!SECURITY_TOOLS[@]}"
+        # In dry-run, assume all tools selected for summary
+        for tool in "${!SECURITY_TOOLS[@]}"; do
+            SELECTED_SECURITY_TOOLS+=("$tool")
+        done
+    else
+        # In fresh-install mode, auto-select all tools
+        if [ "$MODE" = "fresh-install" ]; then
+            log_info "Fresh-install mode: Auto-selecting all security tools"
+            for tool in "${!SECURITY_TOOLS[@]}"; do
+                SELECTED_SECURITY_TOOLS+=("$tool")
+            done
+        else
+            # Interactive mode: ask for each tool
+            echo ""
+            echo "=========================================================================="
+            echo "SELECT SECURITY TOOLS"
+            echo "=========================================================================="
+            echo ""
+            echo "Select which security package management tools to install."
+            echo "Press Enter to accept the default (Y = install, n = skip)"
+            echo ""
+
+            for tool in apt-listchanges debsums apt-show-versions needrestart; do
+                desc="${SECURITY_TOOLS[$tool]}"
+
+                # Check if tool is already installed
+                if dpkg -l | grep -q "^ii  $tool "; then
+                    echo -e "${GREEN}✓${NC} $tool - Already installed"
+                    SELECTED_SECURITY_TOOLS+=("$tool")
+                else
+                    read -p "Install $desc? (Y/n): " install_tool
+                    install_tool=${install_tool:-y}
+
+                    if [[ $install_tool =~ ^[Yy]$ ]] || [[ -z "$install_tool" ]]; then
+                        SELECTED_SECURITY_TOOLS+=("$tool")
+                        echo -e "  ${CYAN}→${NC} Will install: $tool"
+                    else
+                        echo -e "  ${YELLOW}→${NC} Skipped: $tool"
+                    fi
+                fi
+            done
+        fi
+    fi
+
+    # Install selected tools
+    if [ ${#SELECTED_SECURITY_TOOLS[@]} -gt 0 ]; then
+        if [ "$DRY_RUN" = true ]; then
+            log_dry_run "Would install ${#SELECTED_SECURITY_TOOLS[@]} security tools:"
+            for tool in "${SELECTED_SECURITY_TOOLS[@]}"; do
+                log_dry_run "  - $tool"
+            done
+        else
+            echo ""
+            log_info "Installing ${#SELECTED_SECURITY_TOOLS[@]} selected security tools..."
+
+            # Install tools one by one to handle failures gracefully
+            FAILED_TOOLS=()
+            for tool in "${SELECTED_SECURITY_TOOLS[@]}"; do
+                if dpkg -l | grep -q "^ii  $tool "; then
+                    log_info "$tool already installed, skipping"
+                else
+                    echo -n "Installing $tool... "
+                    if DEBIAN_FRONTEND=noninteractive sudo apt-get install -y "$tool" >/dev/null 2>&1; then
+                        echo -e "${GREEN}✓${NC}"
+                    else
+                        echo -e "${RED}✗${NC}"
+                        FAILED_TOOLS+=("$tool")
+                    fi
+                fi
+            done
+
+            # Report results
+            if [ ${#FAILED_TOOLS[@]} -eq 0 ]; then
+                log_info "All selected security tools installed successfully"
+                log_info "These tools will now run automatically during package operations"
+            else
+                log_warning "Failed to install ${#FAILED_TOOLS[@]} tools: ${FAILED_TOOLS[*]}"
+                log_warning "You can try installing them manually later"
+            fi
+        fi
+    else
+        log_warning "No security tools selected for installation"
+    fi
 else
     log_info "Security package management tools installation skipped"
-    log_info "You can install them later with: sudo apt-get install apt-listchanges debsums apt-show-versions needrestart"
 fi
 
 ###############################################################################
 # PYTHON INSTALLATION
 ###############################################################################
 
-log_info "Installing Python with pip and venv..."
-DEBIAN_FRONTEND=noninteractive sudo apt-get install -y python3 python3-pip python3-venv || handle_error "Failed to install Python"
-log_info "Python $(python3 --version) installed successfully"
+if ask_component_install \
+    "PYTHON INSTALLATION" \
+    "python" \
+    "Install Python 3 with pip package manager and virtual environment support." \
+    "Packages:
+• python3 - Python programming language
+• python3-pip - Package installer for Python
+• python3-venv - Virtual environment support
+
+Useful for running Python applications and scripts" \
+    "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would install: python3, python3-pip, python3-venv"
+    else
+        log_info "Installing Python with pip and venv..."
+        DEBIAN_FRONTEND=noninteractive sudo apt-get install -y python3 python3-pip python3-venv || handle_error "Failed to install Python"
+        log_info "Python $(python3 --version) installed successfully"
+    fi
+else
+    log_info "Python installation skipped"
+fi
 
 ###############################################################################
 # NODE.JS INSTALLATION
 ###############################################################################
 
-log_info "Installing Node.js LTS..."
-# Try to download and execute NodeSource setup script with retry
-if ! retry_command "curl -fsSL https://deb.nodesource.com/setup_lts.x -o /tmp/nodesource_setup.sh"; then
-    log_warning "Failed to download NodeSource setup script after multiple attempts"
-    handle_error "NodeSource repository setup failed. Please check https://github.com/nodesource/distributions for manual installation instructions"
+if ask_component_install \
+    "NODE.JS INSTALLATION" \
+    "nodejs" \
+    "Install Node.js LTS (Long Term Support) version with npm package manager." \
+    "Useful for:
+• Running JavaScript applications
+• Modern web development
+• Package management with npm
+
+Note: Installs from NodeSource repository for latest LTS version" \
+    "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would install Node.js LTS from NodeSource repository"
+        log_dry_run "Would install npm package manager"
+    else
+        log_info "Installing Node.js LTS..."
+        # Try to download and execute NodeSource setup script with retry
+        if ! retry_command "curl -fsSL https://deb.nodesource.com/setup_lts.x -o /tmp/nodesource_setup.sh"; then
+            log_warning "Failed to download NodeSource setup script after multiple attempts"
+            handle_error "NodeSource repository setup failed. Please check https://github.com/nodesource/distributions for manual installation instructions"
+        fi
+        sudo -E bash /tmp/nodesource_setup.sh || handle_error "Failed to execute NodeSource setup script"
+        rm -f /tmp/nodesource_setup.sh
+        DEBIAN_FRONTEND=noninteractive sudo apt-get install -y nodejs || handle_error "Failed to install Node.js"
+        log_info "Node.js $(node --version) and npm $(npm --version) installed successfully"
+    fi
+else
+    log_info "Node.js installation skipped"
 fi
-sudo -E bash /tmp/nodesource_setup.sh || handle_error "Failed to execute NodeSource setup script"
-rm -f /tmp/nodesource_setup.sh
-DEBIAN_FRONTEND=noninteractive sudo apt-get install -y nodejs || handle_error "Failed to install Node.js"
-log_info "Node.js $(node --version) and npm $(npm --version) installed successfully"
 
 ###############################################################################
 # DOCKER INSTALLATION
@@ -779,8 +1036,7 @@ else
         "docker" \
         "$DOCKER_DESC" \
         "$DOCKER_IMPLICATIONS" \
-        "y" \
-        "90"; then
+        "y"; then
 
         # Extra confirmation if containers are running
         if [[ "$DOCKER_RUNNING_STATUS" =~ ^running:([0-9]+)$ ]] && [ "$DRY_RUN" = false ]; then
@@ -794,7 +1050,7 @@ else
             echo -e "${RED}This will STOP and REMOVE all containers, causing DATA LOSS!${NC}"
             echo ""
             echo "Type 'YES' to continue, or anything else to skip:"
-            read -t 30 -p "> " final_confirm || final_confirm="no"
+            read -p "> " final_confirm
 
             if [ "$final_confirm" != "YES" ]; then
                 log_warning "Docker reinstallation cancelled - containers are safe"
@@ -918,12 +1174,35 @@ fi
 # LOGGING CONFIGURATION
 ###############################################################################
 
-log_info "Configuring system logging..."
-sudo systemctl enable rsyslog || handle_error "Failed to enable rsyslog"
-sudo systemctl restart rsyslog || handle_error "Failed to restart rsyslog"
+if ask_component_install \
+    "SYSTEM LOGGING CONFIGURATION" \
+    "logging" \
+    "Configure rsyslog and logrotate for system and application logging." \
+    "Configuration:
+• Enable and configure rsyslog for system logging
+• Setup logrotate for application logs in /var/log/app/
+• Daily rotation with 14-day retention
+• Compress old logs to save disk space
 
-# Configure logrotate for application logs
-cat <<EOF | sudo tee /etc/logrotate.d/app-logs
+Benefits:
+• Centralized logging for troubleshooting
+• Automatic log rotation prevents disk space issues
+• Structured log management" \
+    "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would enable and restart rsyslog"
+        log_dry_run "Would configure logrotate for application logs:"
+        log_dry_run "  - Daily rotation, 14-day retention"
+        log_dry_run "  - Compression enabled"
+        log_dry_run "  - Target: /var/log/app/*.log"
+    else
+        log_info "Configuring system logging..."
+        sudo systemctl enable rsyslog || handle_error "Failed to enable rsyslog"
+        sudo systemctl restart rsyslog || handle_error "Failed to restart rsyslog"
+
+        # Configure logrotate for application logs
+        cat <<EOF | sudo tee /etc/logrotate.d/app-logs
 /var/log/app/*.log {
     daily
     missingok
@@ -936,123 +1215,266 @@ cat <<EOF | sudo tee /etc/logrotate.d/app-logs
 }
 EOF
 
-log_info "Logging configured successfully"
+        log_info "Logging configured successfully"
+    fi
+else
+    log_info "System logging configuration skipped"
+fi
 
 ###############################################################################
 # JOURNALD CONFIGURATION
 ###############################################################################
 
-log_info "Configuring journald log rotation..."
+if ask_component_install \
+    "JOURNALD LOG ROTATION" \
+    "journald" \
+    "Configure systemd-journald for persistent logging with size limits and rotation." \
+    "Configuration:
+• Persistent storage for system logs
+• Max usage: 500MB, keep 100MB free
+• Max file size: 100MB
+• Retention: 30 days
+• Compression enabled
+• Forward to syslog enabled
 
-# Backup original journald.conf
-sudo cp /etc/systemd/journald.conf /etc/systemd/journald.conf.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
+Benefits:
+• Prevents logs from consuming all disk space
+• Automatic rotation and cleanup
+• Persistent logs survive reboots
+• Integration with syslog" \
+    "y"; then
 
-# Configure systemd-journald for persistent logging and rotation (idempotent)
-# Using sed to modify existing settings without overwriting the entire file
-sudo sed -i 's/^#\?Storage=.*/Storage=persistent/' /etc/systemd/journald.conf
-sudo sed -i 's/^#\?Compress=.*/Compress=yes/' /etc/systemd/journald.conf
-sudo sed -i 's/^#\?SystemMaxUse=.*/SystemMaxUse=500M/' /etc/systemd/journald.conf
-sudo sed -i 's/^#\?SystemKeepFree=.*/SystemKeepFree=100M/' /etc/systemd/journald.conf
-sudo sed -i 's/^#\?SystemMaxFileSize=.*/SystemMaxFileSize=100M/' /etc/systemd/journald.conf
-sudo sed -i 's/^#\?MaxRetentionSec=.*/MaxRetentionSec=30day/' /etc/systemd/journald.conf
-sudo sed -i 's/^#\?ForwardToSyslog=.*/ForwardToSyslog=yes/' /etc/systemd/journald.conf
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would backup /etc/systemd/journald.conf"
+        log_dry_run "Would configure journald with:"
+        log_dry_run "  - Storage=persistent, Compress=yes"
+        log_dry_run "  - SystemMaxUse=500M, SystemKeepFree=100M"
+        log_dry_run "  - SystemMaxFileSize=100M"
+        log_dry_run "  - MaxRetentionSec=30day"
+        log_dry_run "  - ForwardToSyslog=yes"
+        log_dry_run "Would restart systemd-journald"
+    else
+        log_info "Configuring journald log rotation..."
 
-# Add settings if they don't exist at all (in case sed didn't find commented versions)
-grep -q "^Storage=" /etc/systemd/journald.conf || echo "Storage=persistent" | sudo tee -a /etc/systemd/journald.conf >/dev/null
-grep -q "^Compress=" /etc/systemd/journald.conf || echo "Compress=yes" | sudo tee -a /etc/systemd/journald.conf >/dev/null
-grep -q "^SystemMaxUse=" /etc/systemd/journald.conf || echo "SystemMaxUse=500M" | sudo tee -a /etc/systemd/journald.conf >/dev/null
-grep -q "^SystemKeepFree=" /etc/systemd/journald.conf || echo "SystemKeepFree=100M" | sudo tee -a /etc/systemd/journald.conf >/dev/null
-grep -q "^SystemMaxFileSize=" /etc/systemd/journald.conf || echo "SystemMaxFileSize=100M" | sudo tee -a /etc/systemd/journald.conf >/dev/null
-grep -q "^MaxRetentionSec=" /etc/systemd/journald.conf || echo "MaxRetentionSec=30day" | sudo tee -a /etc/systemd/journald.conf >/dev/null
-grep -q "^ForwardToSyslog=" /etc/systemd/journald.conf || echo "ForwardToSyslog=yes" | sudo tee -a /etc/systemd/journald.conf >/dev/null
+        # Backup original journald.conf
+        sudo cp /etc/systemd/journald.conf /etc/systemd/journald.conf.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
 
-sudo systemctl restart systemd-journald || log_warning "Failed to restart journald"
+        # Configure systemd-journald for persistent logging and rotation (idempotent)
+        # Using sed to modify existing settings without overwriting the entire file
+        sudo sed -i 's/^#\?Storage=.*/Storage=persistent/' /etc/systemd/journald.conf
+        sudo sed -i 's/^#\?Compress=.*/Compress=yes/' /etc/systemd/journald.conf
+        sudo sed -i 's/^#\?SystemMaxUse=.*/SystemMaxUse=500M/' /etc/systemd/journald.conf
+        sudo sed -i 's/^#\?SystemKeepFree=.*/SystemKeepFree=100M/' /etc/systemd/journald.conf
+        sudo sed -i 's/^#\?SystemMaxFileSize=.*/SystemMaxFileSize=100M/' /etc/systemd/journald.conf
+        sudo sed -i 's/^#\?MaxRetentionSec=.*/MaxRetentionSec=30day/' /etc/systemd/journald.conf
+        sudo sed -i 's/^#\?ForwardToSyslog=.*/ForwardToSyslog=yes/' /etc/systemd/journald.conf
 
-log_info "Journald configured: 500MB max usage, 30-day retention"
+        # Add settings if they don't exist at all (in case sed didn't find commented versions)
+        grep -q "^Storage=" /etc/systemd/journald.conf || echo "Storage=persistent" | sudo tee -a /etc/systemd/journald.conf >/dev/null
+        grep -q "^Compress=" /etc/systemd/journald.conf || echo "Compress=yes" | sudo tee -a /etc/systemd/journald.conf >/dev/null
+        grep -q "^SystemMaxUse=" /etc/systemd/journald.conf || echo "SystemMaxUse=500M" | sudo tee -a /etc/systemd/journald.conf >/dev/null
+        grep -q "^SystemKeepFree=" /etc/systemd/journald.conf || echo "SystemKeepFree=100M" | sudo tee -a /etc/systemd/journald.conf >/dev/null
+        grep -q "^SystemMaxFileSize=" /etc/systemd/journald.conf || echo "SystemMaxFileSize=100M" | sudo tee -a /etc/systemd/journald.conf >/dev/null
+        grep -q "^MaxRetentionSec=" /etc/systemd/journald.conf || echo "MaxRetentionSec=30day" | sudo tee -a /etc/systemd/journald.conf >/dev/null
+        grep -q "^ForwardToSyslog=" /etc/systemd/journald.conf || echo "ForwardToSyslog=yes" | sudo tee -a /etc/systemd/journald.conf >/dev/null
+
+        sudo systemctl restart systemd-journald || log_warning "Failed to restart journald"
+
+        log_info "Journald configured: 500MB max usage, 30-day retention"
+    fi
+else
+    log_info "Journald configuration skipped"
+fi
 
 ###############################################################################
 # AUTOMATIC UPDATES
 ###############################################################################
 
-log_info "Configuring automatic security updates..."
+if ask_component_install \
+    "AUTOMATIC SECURITY UPDATES" \
+    "auto-updates" \
+    "Enable automatic installation of security updates using unattended-upgrades." \
+    "Configuration:
+• ONLY security patches will be auto-installed
+• Regular updates require manual approval
+• Daily package list updates
+• Auto-clean old packages weekly
 
-# Ensure ONLY security updates are enabled (keep -updates commented out)
-# The default 50unattended-upgrades has security enabled and updates commented
-# We explicitly comment out -updates to ensure only security patches are installed
-sudo sed -i 's/^\s*"\${distro_id}:\${distro_codename}-updates";/\/\/        "\${distro_id}:\${distro_codename}-updates";/' \
-    /etc/apt/apt.conf.d/50unattended-upgrades 2>/dev/null || true
+Benefits:
+• Critical security patches applied automatically
+• Reduces exposure to known vulnerabilities
+• No manual intervention needed for security fixes
+• Regular updates still require review" \
+    "y"; then
 
-# Verify that security updates are uncommented (should be by default, but let's be sure)
-sudo sed -i 's/\/\/\s*"\${distro_id}:\${distro_codename}-security";/        "\${distro_id}:\${distro_codename}-security";/' \
-    /etc/apt/apt.conf.d/50unattended-upgrades 2>/dev/null || true
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would configure unattended-upgrades for security-only updates"
+        log_dry_run "Would modify /etc/apt/apt.conf.d/50unattended-upgrades"
+        log_dry_run "Would create /etc/apt/apt.conf.d/20auto-upgrades with:"
+        log_dry_run "  - Daily package list updates"
+        log_dry_run "  - Daily security patch downloads"
+        log_dry_run "  - Weekly auto-clean"
+        log_dry_run "  - Daily unattended upgrade execution"
+    else
+        log_info "Configuring automatic security updates..."
 
-# Configure unattended upgrades schedule
-cat <<EOF | sudo tee /etc/apt/apt.conf.d/20auto-upgrades
+        # Ensure ONLY security updates are enabled (keep -updates commented out)
+        # The default 50unattended-upgrades has security enabled and updates commented
+        # We explicitly comment out -updates to ensure only security patches are installed
+        sudo sed -i 's/^\s*"\${distro_id}:\${distro_codename}-updates";/\/\/        "\${distro_id}:\${distro_codename}-updates";/' \
+            /etc/apt/apt.conf.d/50unattended-upgrades 2>/dev/null || true
+
+        # Verify that security updates are uncommented (should be by default, but let's be sure)
+        sudo sed -i 's/\/\/\s*"\${distro_id}:\${distro_codename}-security";/        "\${distro_id}:\${distro_codename}-security";/' \
+            /etc/apt/apt.conf.d/50unattended-upgrades 2>/dev/null || true
+
+        # Configure unattended upgrades schedule
+        cat <<EOF | sudo tee /etc/apt/apt.conf.d/20auto-upgrades
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Download-Upgradeable-Packages "1";
 APT::Periodic::AutocleanInterval "7";
 APT::Periodic::Unattended-Upgrade "1";
 EOF
 
-log_info "Automatic security updates enabled (security patches only, not regular updates)"
+        log_info "Automatic security updates enabled (security patches only, not regular updates)"
+    fi
+else
+    log_info "Automatic security updates configuration skipped"
+fi
 
 ###############################################################################
 # SWAP CONFIGURATION (SMART CALCULATION)
 ###############################################################################
 
-log_info "Configuring swap space..."
+if ask_component_install \
+    "SWAP SPACE CONFIGURATION" \
+    "swap" \
+    "Configure swap space with intelligent sizing based on available RAM." \
+    "Smart swap sizing:
+• ≤2GB RAM: 2x RAM size
+• 2-8GB RAM: 4GB swap
+• >8GB RAM: 8GB swap
+• Swappiness set to 10 (server optimized)
 
-# Get RAM in MB and GB (using awk to avoid rounding issues)
-RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
-RAM_GB=$(awk "BEGIN {printf \"%.0f\", $RAM_MB/1024}")
+Current RAM: $(free -h | awk '/^Mem:/{print $2}')
 
-# Smart swap calculation
-if [ "$RAM_GB" -le 2 ]; then
-    # Small servers: 2x RAM
-    SWAP_SIZE=$((RAM_MB * 2))
-    log_info "RAM: ${RAM_MB}MB - Using 2x RAM for swap"
-elif [ "$RAM_GB" -le 8 ]; then
-    # Medium servers: 4GB
-    SWAP_SIZE=4096
-    log_info "RAM: ${RAM_GB}GB - Using 4GB swap"
-else
-    # Large servers: 8GB
-    SWAP_SIZE=8192
-    log_info "RAM: ${RAM_GB}GB - Using 8GB swap"
-fi
+Benefits:
+• Prevents out-of-memory crashes
+• Enables hibernation support
+• Better memory management
+• Optimized for server workloads" \
+    "y"; then
 
-# Check if swap already exists
-if [ -f /swapfile ]; then
-    log_warning "Swap file already exists, skipping creation"
-else
-    sudo fallocate -l "${SWAP_SIZE}M" /swapfile || handle_error "Failed to create swap file"
-    sudo chmod 600 /swapfile || handle_error "Failed to set swap file permissions"
-    sudo mkswap /swapfile || handle_error "Failed to format swap file"
-    sudo swapon /swapfile || handle_error "Failed to enable swap"
+    if [ "$DRY_RUN" = true ]; then
+        # Get RAM for dry-run calculation
+        RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
+        RAM_GB=$(awk "BEGIN {printf \"%.0f\", $RAM_MB/1024}")
 
-    # Add to fstab if not already present
-    if ! grep -q "/swapfile" /etc/fstab; then
-        echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab
-    fi
+        if [ "$RAM_GB" -le 2 ]; then
+            SWAP_SIZE=$((RAM_MB * 2))
+        elif [ "$RAM_GB" -le 8 ]; then
+            SWAP_SIZE=4096
+        else
+            SWAP_SIZE=8192
+        fi
 
-    log_info "Swap space created: ${SWAP_SIZE}MB"
-fi
+        log_dry_run "Detected RAM: ${RAM_GB}GB (${RAM_MB}MB)"
+        log_dry_run "Would create swap file: /swapfile (${SWAP_SIZE}MB)"
+        log_dry_run "Would set permissions: 600"
+        log_dry_run "Would format and enable swap"
+        log_dry_run "Would add to /etc/fstab if not present"
+        log_dry_run "Would configure vm.swappiness=10 in /etc/sysctl.d/99-swappiness.conf"
+    else
+        log_info "Configuring swap space..."
 
-# Set swappiness to 10 (server optimized) using drop-in file
-cat <<EOF | sudo tee /etc/sysctl.d/99-swappiness.conf
+        # Get RAM in MB and GB (using awk to avoid rounding issues)
+        RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
+        RAM_GB=$(awk "BEGIN {printf \"%.0f\", $RAM_MB/1024}")
+
+        # Smart swap calculation
+        if [ "$RAM_GB" -le 2 ]; then
+            # Small servers: 2x RAM
+            SWAP_SIZE=$((RAM_MB * 2))
+            log_info "RAM: ${RAM_MB}MB - Using 2x RAM for swap"
+        elif [ "$RAM_GB" -le 8 ]; then
+            # Medium servers: 4GB
+            SWAP_SIZE=4096
+            log_info "RAM: ${RAM_GB}GB - Using 4GB swap"
+        else
+            # Large servers: 8GB
+            SWAP_SIZE=8192
+            log_info "RAM: ${RAM_GB}GB - Using 8GB swap"
+        fi
+
+        # Check if swap already exists
+        if [ -f /swapfile ]; then
+            log_warning "Swap file already exists, skipping creation"
+        else
+            sudo fallocate -l "${SWAP_SIZE}M" /swapfile || handle_error "Failed to create swap file"
+            sudo chmod 600 /swapfile || handle_error "Failed to set swap file permissions"
+            sudo mkswap /swapfile || handle_error "Failed to format swap file"
+            sudo swapon /swapfile || handle_error "Failed to enable swap"
+
+            # Add to fstab if not already present
+            if ! grep -q "/swapfile" /etc/fstab; then
+                echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab
+            fi
+
+            log_info "Swap space created: ${SWAP_SIZE}MB"
+        fi
+
+        # Set swappiness to 10 (server optimized) using drop-in file
+        cat <<EOF | sudo tee /etc/sysctl.d/99-swappiness.conf
 vm.swappiness=10
 EOF
-sudo sysctl -p /etc/sysctl.d/99-swappiness.conf >/dev/null 2>&1 || true
+        sudo sysctl -p /etc/sysctl.d/99-swappiness.conf >/dev/null 2>&1 || true
 
-log_info "Swap configured with swappiness=10"
+        log_info "Swap configured with swappiness=10"
+    fi
+else
+    log_info "Swap configuration skipped"
+    SWAP_SIZE="N/A"  # Set to N/A if swap is skipped
+fi
 
 ###############################################################################
 # KERNEL HARDENING
 ###############################################################################
 
-log_info "Applying kernel hardening parameters..."
+if ask_component_install \
+    "KERNEL SECURITY HARDENING" \
+    "kernel-hardening" \
+    "Apply kernel-level security hardening parameters via sysctl." \
+    "Security features:
+• IP spoofing protection
+• ICMP redirect protection
+• Source packet routing disabled
+• SYN flood protection
+• TCP hardening
+• Core dump restrictions
+• Kernel debugging keys disabled
+• Log suspicious packets (Martians)
 
-cat <<EOF | sudo tee /etc/sysctl.d/99-server-hardening.conf
+Benefits:
+• Protection against network-based attacks
+• Reduced attack surface
+• Better resilience against DDoS
+• Enhanced system security posture" \
+    "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would create /etc/sysctl.d/99-server-hardening.conf with:"
+        log_dry_run "  - IP spoofing protection (rp_filter)"
+        log_dry_run "  - ICMP redirect protection"
+        log_dry_run "  - Source routing disabled"
+        log_dry_run "  - SYN flood protection (tcp_syncookies)"
+        log_dry_run "  - TCP hardening (timestamps disabled)"
+        log_dry_run "  - Core dumps disabled for setuid programs"
+        log_dry_run "  - Kernel sysrq disabled"
+        log_dry_run "Would apply settings with sysctl -p"
+    else
+        log_info "Applying kernel hardening parameters..."
+
+        cat <<EOF | sudo tee /etc/sysctl.d/99-server-hardening.conf
 # Server hardening parameters
 # IP Spoofing protection
 net.ipv4.conf.all.rp_filter = 1
@@ -1103,17 +1525,40 @@ kernel.dmesg_restrict = 1
 kernel.sysrq = 0
 EOF
 
-sudo sysctl -p /etc/sysctl.d/99-server-hardening.conf >/dev/null 2>&1 || log_warning "Some sysctl parameters may not be available on this kernel"
+        sudo sysctl -p /etc/sysctl.d/99-server-hardening.conf >/dev/null 2>&1 || log_warning "Some sysctl parameters may not be available on this kernel"
 
-log_info "Kernel hardening applied"
+        log_info "Kernel hardening applied"
+    fi
+else
+    log_info "Kernel hardening skipped"
+fi
 
 ###############################################################################
 # DISABLE UNCOMMON NETWORK PROTOCOLS
 ###############################################################################
 
-log_info "Disabling uncommon network protocols (dccp, sctp, rds, tipc)..."
+if ask_component_install \
+    "DISABLE UNCOMMON NETWORK PROTOCOLS" \
+    "disable-protocols" \
+    "Disable rarely-used network protocols that can present security risks." \
+    "Protocols to disable:
+• DCCP - Datagram Congestion Control Protocol
+• SCTP - Stream Control Transmission Protocol
+• RDS - Reliable Datagram Sockets
+• TIPC - Transparent Inter-Process Communication
 
-cat <<EOF | sudo tee /etc/modprobe.d/disable-protocols.conf
+Note: These protocols are rarely used in typical server environments
+⚠️  Changes require reboot to take effect" \
+    "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would create /etc/modprobe.d/disable-protocols.conf"
+        log_dry_run "Would blacklist protocols: dccp, sctp, rds, tipc"
+        log_dry_run "Note: Changes would require reboot to take effect"
+    else
+        log_info "Disabling uncommon network protocols (dccp, sctp, rds, tipc)..."
+
+        cat <<EOF | sudo tee /etc/modprobe.d/disable-protocols.conf
 # Disable uncommon network protocols for security
 # These protocols are rarely used and can present security risks
 
@@ -1134,15 +1579,44 @@ install tipc /bin/true
 blacklist tipc
 EOF
 
-log_info "Uncommon protocols disabled (changes take effect after reboot)"
+        log_info "Uncommon protocols disabled (changes take effect after reboot)"
+    fi
+else
+    log_info "Disabling uncommon protocols skipped"
+fi
 
 ###############################################################################
 # SYSTEM LIMITS
 ###############################################################################
 
-log_info "Increasing system limits for production..."
+if ask_component_install \
+    "INCREASE SYSTEM LIMITS" \
+    "system-limits" \
+    "Increase system limits for file descriptors and processes for production workloads." \
+    "Limits to increase:
+• File descriptors (nofile): 65535
+• Process count (nproc): 65535
+• Applied to all users including root
 
-cat <<EOF | sudo tee /etc/security/limits.d/99-production.conf
+Current limits: $(ulimit -n) file descriptors, $(ulimit -u) processes
+
+Benefits:
+• Support for high-concurrency applications
+• Better performance for web servers
+• Accommodate Docker containers and services
+• Prevent \"too many open files\" errors" \
+    "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would create /etc/security/limits.d/99-production.conf"
+        log_dry_run "Would set limits:"
+        log_dry_run "  - nofile (file descriptors): 65535"
+        log_dry_run "  - nproc (processes): 65535"
+        log_dry_run "  - Applied to all users and root"
+    else
+        log_info "Increasing system limits for production..."
+
+        cat <<EOF | sudo tee /etc/security/limits.d/99-production.conf
 # Production system limits
 * soft nofile 65535
 * hard nofile 65535
@@ -1154,7 +1628,11 @@ root soft nproc 65535
 root hard nproc 65535
 EOF
 
-log_info "System limits increased"
+        log_info "System limits increased"
+    fi
+else
+    log_info "System limits configuration skipped"
+fi
 
 ###############################################################################
 # FIREWALL CONFIGURATION (UFW)
@@ -1190,8 +1668,7 @@ Options for proceeding:
         "ufw" \
         "$UFW_DESC" \
         "$UFW_IMPLICATIONS" \
-        "y" \
-        "90"; then
+        "y"; then
 
         echo ""
         echo "Choose UFW configuration mode:"
@@ -1199,14 +1676,14 @@ Options for proceeding:
         echo "  2. RESET - Delete all rules and start fresh"
         echo "  3. SKIP - Leave unchanged"
         echo ""
-        read -t 60 -p "Enter choice [1/2/3] (default: 1): " ufw_choice || ufw_choice="1"
+        read -p "Enter choice [1/2/3] (default: 1): " ufw_choice
         ufw_choice=${ufw_choice:-1}
 
         case "$ufw_choice" in
             2)
                 echo ""
                 echo -e "${RED}⚠️  You chose RESET - this will delete all $RULE_COUNT existing rules!${NC}"
-                read -t 30 -p "Type 'YES' to confirm deletion of all rules: " confirm_reset || confirm_reset="no"
+                read -p "Type 'YES' to confirm deletion of all rules: " confirm_reset
 
                 if [ "$confirm_reset" = "YES" ]; then
                     UFW_MODE="reset"
@@ -1242,8 +1719,7 @@ else
         "ufw" \
         "$UFW_DESC" \
         "$UFW_IMPLICATIONS" \
-        "y" \
-        "60"; then
+        "y"; then
         UFW_MODE="reset"
     else
         UFW_MODE="skip"
@@ -1294,15 +1770,15 @@ if ! is_completed "UFW_CUSTOM_PORTS"; then
     echo ""
     log_info "Additional port configuration:"
     while true; do
-        read -t 600 -p "Do you want to add another port? (enter port number or 'n' to skip, timeout 10 minutes): " port || port="n"
+        read -p "Do you want to add another port? (enter port number or 'n' to skip): " port
 
         if [[ $port == "n" ]] || [[ $port == "N" ]]; then
             break
         elif [[ $port =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
-            read -t 30 -p "Protocol (tcp/udp) [tcp]: " protocol || protocol="tcp"
+            read -p "Protocol (tcp/udp) [tcp]: " protocol
             protocol=${protocol:-tcp}
 
-            read -t 30 -p "Description for this port: " description || description="Custom port"
+            read -p "Description for this port: " description
             description=${description:-"Custom port"}
 
             sudo ufw allow "$port/$protocol" comment "$description" || log_warning "Failed to add port $port"
@@ -1351,7 +1827,8 @@ else
     echo "     sudo sed -i '/^Port 22$/d' /etc/ssh/sshd_config"
     echo "     sudo systemctl restart ssh"
     echo ""
-    read -t 60 -p "Do you want to proceed with SSH hardening? (y/n, timeout 60s): " ssh_harden || ssh_harden="y"
+    read -p "Do you want to proceed with SSH hardening? (y/n): " ssh_harden
+    ssh_harden=${ssh_harden:-y}
 
     if [[ $ssh_harden == "y" ]] || [[ $ssh_harden == "Y" ]]; then
     log_info "Hardening SSH configuration..."
@@ -1373,7 +1850,8 @@ else
         echo ""
         echo "Recommended: Cancel now (Ctrl+C) and run: ssh-copy-id $USER@$(hostname -I | awk '{print $1}')"
         echo "═══════════════════════════════════════════════════════════"
-        read -t 30 -p "Continue anyway? (y/N, timeout 30s): " continue_without_keys || continue_without_keys="n"
+        read -p "Continue anyway? (y/N): " continue_without_keys
+        continue_without_keys=${continue_without_keys:-n}
         if [[ ! $continue_without_keys =~ ^[Yy]$ ]]; then
             handle_error "SSH hardening cancelled - please configure SSH keys first"
         fi
@@ -1393,7 +1871,7 @@ else
     echo "  - Disable (recommended): IPv6 will be disabled for SSH and firewall"
     echo "  - Enable: Keep IPv6 support (required for some environments)"
     echo ""
-    read -t 30 -p "Disable IPv6? (Y/n, default: Y, timeout 30s): " disable_ipv6 || disable_ipv6="y"
+    read -p "Disable IPv6? (Y/n, default: Y): " disable_ipv6
     disable_ipv6=${disable_ipv6:-y}  # Default to yes if empty
 
     if [[ $disable_ipv6 =~ ^[Yy]$ ]] || [[ -z "$disable_ipv6" ]]; then
@@ -1418,7 +1896,7 @@ else
     echo "Note: Disabling increases security but limits flexibility."
     echo "      Enable if you use SSH tunneling or need to forward ports."
     echo ""
-    read -t 30 -p "Enable SSH forwarding? (Y/n, default: Y, timeout 30s): " enable_ssh_forwarding || enable_ssh_forwarding="y"
+    read -p "Enable SSH forwarding? (Y/n, default: Y): " enable_ssh_forwarding
     enable_ssh_forwarding=${enable_ssh_forwarding:-y}  # Default to yes if empty
 
     if [[ $enable_ssh_forwarding =~ ^[Nn]$ ]]; then
@@ -1508,7 +1986,7 @@ else
     echo ""
     echo "Note: You can find your public IP at: https://icanhazip.com"
     echo ""
-    read -t 600 -p "Enter your trusted IP address (or press Enter to skip, timeout 10 minutes): " TRUSTED_IP || TRUSTED_IP=""
+    read -p "Enter your trusted IP address (or press Enter to skip): " TRUSTED_IP
 
     # Layer 1: Whitelist trusted home IP if provided (no rate limiting)
     if [[ ! -z "$TRUSTED_IP" ]]; then
@@ -1600,19 +2078,46 @@ fi
 # FAIL2BAN CONFIGURATION
 ###############################################################################
 
-log_info "Configuring Fail2ban..."
+if ask_component_install \
+    "FAIL2BAN INTRUSION PREVENTION" \
+    "fail2ban" \
+    "Configure Fail2ban to protect against brute-force attacks on SSH." \
+    "Configuration:
+• SSH protection on ports 22 and 888
+• Max 3 failed attempts allowed
+• Ban time: 2 hours (7200s)
+• Detection window: 10 minutes (600s)
+• Monitors /var/log/auth.log
 
-# Backup original jail.local if it exists
-if [ -f /etc/fail2ban/jail.local ]; then
-    sudo cp /etc/fail2ban/jail.local /etc/fail2ban/jail.local.backup.$(date +%Y%m%d_%H%M%S)
-    log_info "Backed up existing jail.local"
-fi
+Benefits:
+• Automatic blocking of brute-force attacks
+• Protection against SSH password guessing
+• Reduces server load from attack attempts
+• Configurable and extensible" \
+    "y"; then
 
-# Create jail.d directory if it doesn't exist
-sudo mkdir -p /etc/fail2ban/jail.d
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would backup existing /etc/fail2ban/jail.local if present"
+        log_dry_run "Would create /etc/fail2ban/jail.d/server-baseline.conf with:"
+        log_dry_run "  - SSH jail enabled on ports 22,888"
+        log_dry_run "  - Max retries: 3"
+        log_dry_run "  - Ban time: 7200s (2 hours)"
+        log_dry_run "  - Find time: 600s (10 minutes)"
+        log_dry_run "Would enable and restart fail2ban service"
+    else
+        log_info "Configuring Fail2ban..."
 
-# Configure Fail2ban for SSH in jail.d (doesn't overwrite existing custom jails)
-cat <<EOF | sudo tee /etc/fail2ban/jail.d/server-baseline.conf
+        # Backup original jail.local if it exists
+        if [ -f /etc/fail2ban/jail.local ]; then
+            sudo cp /etc/fail2ban/jail.local /etc/fail2ban/jail.local.backup.$(date +%Y%m%d_%H%M%S)
+            log_info "Backed up existing jail.local"
+        fi
+
+        # Create jail.d directory if it doesn't exist
+        sudo mkdir -p /etc/fail2ban/jail.d
+
+        # Configure Fail2ban for SSH in jail.d (doesn't overwrite existing custom jails)
+        cat <<EOF | sudo tee /etc/fail2ban/jail.d/server-baseline.conf
 # Server Baseline Fail2ban Configuration
 # Created by server_baseline installation script
 
@@ -1633,26 +2138,64 @@ bantime = 7200
 findtime = 600
 EOF
 
-log_info "Fail2ban configuration created in /etc/fail2ban/jail.d/server-baseline.conf"
-log_info "Existing custom jails in jail.local are preserved"
+        log_info "Fail2ban configuration created in /etc/fail2ban/jail.d/server-baseline.conf"
+        log_info "Existing custom jails in jail.local are preserved"
 
-sudo systemctl enable fail2ban || handle_error "Failed to enable Fail2ban"
-sudo systemctl restart fail2ban || handle_error "Failed to restart Fail2ban"
+        sudo systemctl enable fail2ban || handle_error "Failed to enable Fail2ban"
+        sudo systemctl restart fail2ban || handle_error "Failed to restart Fail2ban"
 
-log_info "Fail2ban configured for SSH protection"
+        log_info "Fail2ban configured for SSH protection"
+    fi
+else
+    log_info "Fail2ban configuration skipped"
+fi
 
 ###############################################################################
 # AUDIT LOGGING CONFIGURATION
 ###############################################################################
 
-log_info "Configuring audit logging (auditd + acct)..."
+if ask_component_install \
+    "AUDIT LOGGING (auditd + acct)" \
+    "audit-logging" \
+    "Configure system audit logging to track security-relevant events and changes." \
+    "Tools to install and configure:
+• auditd - Linux audit daemon
+• acct - Process accounting
+• audispd-plugins - Audit dispatcher plugins
 
-# Install auditd and acct for system auditing
-DEBIAN_FRONTEND=noninteractive sudo apt-get install -y auditd acct audispd-plugins || \
-    log_warning "Failed to install audit tools"
+Audit rules to monitor:
+• SSH configuration changes (/etc/ssh/sshd_config)
+• User home directory modifications
+• Privileged commands (run by root)
+• Authentication events (/var/log/auth.log)
 
-# Configure auditd rules for SSH and security monitoring
-cat <<EOF | sudo tee /etc/audit/rules.d/ssh-security.rules
+Benefits:
+• Track unauthorized changes
+• Forensic investigation capability
+• Compliance (PCI-DSS, HIPAA, etc.)
+• Security incident detection
+
+View logs: sudo ausearch -k sshd_config_changes" \
+    "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would install: auditd, acct, audispd-plugins"
+        log_dry_run "Would create /etc/audit/rules.d/ssh-security.rules with:"
+        log_dry_run "  - Monitor /etc/ssh/sshd_config changes"
+        log_dry_run "  - Monitor /home/ directory changes"
+        log_dry_run "  - Monitor privileged commands (root execve)"
+        log_dry_run "  - Monitor /var/log/auth.log changes"
+        log_dry_run "Would enable and start auditd service"
+        log_dry_run "Would enable and start acct service"
+    else
+        log_info "Configuring audit logging (auditd + acct)..."
+
+        # Install auditd and acct for system auditing
+        DEBIAN_FRONTEND=noninteractive sudo apt-get install -y auditd acct audispd-plugins || \
+            log_warning "Failed to install audit tools"
+
+        # Configure auditd rules for SSH and security monitoring
+        cat <<EOF | sudo tee /etc/audit/rules.d/ssh-security.rules
 # Monitor SSH configuration changes
 -w /etc/ssh/sshd_config -p wa -k sshd_config_changes
 
@@ -1666,16 +2209,20 @@ cat <<EOF | sudo tee /etc/audit/rules.d/ssh-security.rules
 -w /var/log/auth.log -p wa -k auth_log_changes
 EOF
 
-# Enable and start auditd
-sudo systemctl enable auditd || log_warning "Failed to enable auditd"
-sudo systemctl restart auditd || log_warning "Failed to restart auditd"
+        # Enable and start auditd
+        sudo systemctl enable auditd || log_warning "Failed to enable auditd"
+        sudo systemctl restart auditd || log_warning "Failed to restart auditd"
 
-# Enable process accounting with acct
-sudo systemctl enable acct || log_warning "Failed to enable acct"
-sudo systemctl restart acct || log_warning "Failed to restart acct"
+        # Enable process accounting with acct
+        sudo systemctl enable acct || log_warning "Failed to enable acct"
+        sudo systemctl restart acct || log_warning "Failed to restart acct"
 
-log_info "Audit logging configured successfully"
-log_info "View audit logs: sudo ausearch -k sshd_config_changes"
+        log_info "Audit logging configured successfully"
+        log_info "View audit logs: sudo ausearch -k sshd_config_changes"
+    fi
+else
+    log_info "Audit logging configuration skipped"
+fi
 
 ###############################################################################
 # SECURITY SCANNING TOOLS WITH TELEGRAM INTEGRATION
@@ -1692,11 +2239,12 @@ echo ""
 # Ask about Rkhunter
 echo "1. RKHUNTER (Rootkit Hunter)"
 echo "   - Scans for rootkits, backdoors, and local exploits"
-echo "   - Can run daily at 03:00 with Telegram alerts on warnings"
+echo "   - Can run daily at 03:00 with Telegram status updates"
 echo "   - Lightweight, no performance impact"
 echo "   - Recommended for: Production servers"
 echo ""
-read -t 60 -p "Do you want to install Rkhunter? (y/n, timeout 60s): " install_rkhunter || install_rkhunter="n"
+read -p "Do you want to install Rkhunter? (y/n): " install_rkhunter
+install_rkhunter=${install_rkhunter:-n}
 
 # Ask about Lynis
 echo ""
@@ -1706,7 +2254,8 @@ echo "   - Provides hardening score and improvement suggestions"
 echo "   - Can run monthly on 1st at 04:00 with Telegram reports"
 echo "   - Recommended for: All servers"
 echo ""
-read -t 60 -p "Do you want to install Lynis? (y/n, timeout 60s): " install_lynis || install_lynis="n"
+read -p "Do you want to install Lynis? (y/n): " install_lynis
+install_lynis=${install_lynis:-n}
 
 # Install selected tools
 RKHUNTER_INSTALLED=false
@@ -1722,15 +2271,31 @@ if [[ $install_rkhunter == "y" ]] || [[ $install_rkhunter == "Y" ]]; then
     sudo sed -i 's/^#\?ALLOW_SSH_ROOT_USER=.*/ALLOW_SSH_ROOT_USER=prohibit-password/' /etc/rkhunter.conf
     sudo sed -i 's/^#\?PORT_NUMBER=.*/PORT_NUMBER=888/' /etc/rkhunter.conf
 
+    # Fix WEB_CMD to use absolute path (fixes "Invalid WEB_CMD" error)
+    sudo sed -i 's|^WEB_CMD=.*|WEB_CMD=/bin/false|' /etc/rkhunter.conf
+
     # Add settings if they don't exist
     grep -q "^ALLOW_SSH_ROOT_USER=" /etc/rkhunter.conf || echo "ALLOW_SSH_ROOT_USER=prohibit-password" | sudo tee -a /etc/rkhunter.conf >/dev/null
     grep -q "^PORT_NUMBER=" /etc/rkhunter.conf || echo "PORT_NUMBER=888" | sudo tee -a /etc/rkhunter.conf >/dev/null
+    grep -q "^WEB_CMD=" /etc/rkhunter.conf || echo "WEB_CMD=/bin/false" | sudo tee -a /etc/rkhunter.conf >/dev/null
 
     # Update rkhunter database
-    sudo rkhunter --update --skip-keypress 2>/dev/null || log_warning "Failed to update rkhunter database"
-    sudo rkhunter --propupd --skip-keypress 2>/dev/null || log_warning "Failed to update rkhunter properties"
+    log_info "Updating rkhunter file properties database..."
+
+    # Note: We intentionally disable internet updates (WEB_CMD=/bin/false)
+    # Ubuntu's rkhunter package is kept up-to-date via apt, which is more secure
+    # The --update command will show "Update failed" warnings - this is expected and safe
+
+    # Update file properties (hashes) - this is what we actually need
+    if sudo rkhunter --propupd --skip-keypress 2>/dev/null; then
+        log_info "Rkhunter file properties updated successfully"
+    else
+        log_warning "Failed to update rkhunter properties - you may need to run: sudo rkhunter --propupd"
+    fi
 
     log_info "Rkhunter installed and configured successfully"
+    log_info "Note: Rkhunter uses local database (updated via apt-get upgrade)"
+    log_info "Note: Internet updates are disabled for security (WEB_CMD=/bin/false)"
     RKHUNTER_INSTALLED=true
 else
     log_warning "Rkhunter installation skipped"
@@ -1773,10 +2338,11 @@ else
     echo "=========================================================================="
     echo ""
     echo "Security scans can send alerts to Telegram:"
-    echo "  - Rkhunter: Daily scan at 03:00 (only on warnings)"
+    echo "  - Rkhunter: Daily scan at 03:00 (sends status update every day)"
     echo "  - Lynis: Monthly audit on 1st of month at 04:00"
     echo ""
-    read -t 60 -p "Do you want to configure Telegram alerts for security scans? (y/n, timeout 60s): " setup_sec_telegram || setup_sec_telegram="n"
+    read -p "Do you want to configure Telegram alerts for security scans? (y/n): " setup_sec_telegram
+    setup_sec_telegram=${setup_sec_telegram:-n}
 
     if [[ $setup_sec_telegram == "y" ]] || [[ $setup_sec_telegram == "Y" ]]; then
         echo ""
@@ -1787,8 +2353,8 @@ else
         echo "  4. Start chat with your bot (send /start)"
         echo "  5. Get your chat ID from @userinfobot"
         echo ""
-        read -t 600 -p "Enter Telegram Bot Token (timeout 10 minutes): " SECURITY_TELEGRAM_BOT_TOKEN || SECURITY_TELEGRAM_BOT_TOKEN=""
-        read -t 600 -p "Enter Telegram Chat ID (timeout 10 minutes): " SECURITY_TELEGRAM_CHAT_ID || SECURITY_TELEGRAM_CHAT_ID=""
+        read -p "Enter Telegram Bot Token: " SECURITY_TELEGRAM_BOT_TOKEN
+        read -p "Enter Telegram Chat ID: " SECURITY_TELEGRAM_CHAT_ID
     fi
 fi
 
@@ -1800,7 +2366,7 @@ if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT
     if [ "$RKHUNTER_INSTALLED" = true ]; then
     cat <<'RKHUNTER_SCRIPT' | sudo tee /usr/local/bin/rkhunter-telegram.sh
 #!/bin/bash
-# Rkhunter scan with Telegram notifications
+# Rkhunter scan with Telegram notifications - ALWAYS send status
 
 TELEGRAM_BOT_TOKEN="REPLACE_BOT_TOKEN"
 TELEGRAM_CHAT_ID="REPLACE_CHAT_ID"
@@ -1815,10 +2381,23 @@ if grep -q "Warning" "$SCAN_LOG"; then
     WARNINGS=$(grep "Warning" "$SCAN_LOG" | head -10)
     WARNING_COUNT=$(grep -c "Warning" "$SCAN_LOG")
 
-    # Send Telegram message
-    MESSAGE="🔍 *Rkhunter Alert*%0A%0A"
+    # Send Telegram message with warnings
+    MESSAGE="🔍 *Rkhunter Daily Scan*%0A%0A"
     MESSAGE+="⚠️ Found $WARNING_COUNT warning(s) on $(hostname)%0A%0A"
     MESSAGE+="*Top warnings:*%0A\`\`\`%0A${WARNINGS}%0A\`\`\`%0A%0A"
+    MESSAGE+="Full log: $SCAN_LOG"
+
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHAT_ID}" \
+        -d text="${MESSAGE}" \
+        -d parse_mode="Markdown" >/dev/null 2>&1
+else
+    # No warnings - send success message
+    MESSAGE="✅ *Rkhunter Daily Scan*%0A%0A"
+    MESSAGE+="Server: $(hostname)%0A"
+    MESSAGE+="Status: *All Clear*%0A"
+    MESSAGE+="Date: $(date '+%Y-%m-%d %H:%M')%0A%0A"
+    MESSAGE+="No security warnings detected.%0A"
     MESSAGE+="Full log: $SCAN_LOG"
 
     curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
@@ -1882,7 +2461,7 @@ LYNIS_SCRIPT
     CRON_CONTENT=""
 
     if [ "$RKHUNTER_INSTALLED" = true ]; then
-        CRON_CONTENT+="# Rkhunter daily scan at 03:00 (only alerts on warnings)"$'\n'
+        CRON_CONTENT+="# Rkhunter daily scan at 03:00 (sends status update every day)"$'\n'
         CRON_CONTENT+="0 3 * * * root /usr/local/bin/rkhunter-telegram.sh"$'\n'
     fi
 
@@ -1901,7 +2480,7 @@ LYNIS_SCRIPT
 
     log_info "Telegram integration configured successfully"
     if [ "$RKHUNTER_INSTALLED" = true ]; then
-        log_info "Rkhunter: Daily scans at 03:00 (alerts on warnings only)"
+        log_info "Rkhunter: Daily scans at 03:00 (sends status update every day)"
     fi
     if [ "$LYNIS_INSTALLED" = true ]; then
         log_info "Lynis: Monthly audits on 1st of month at 04:00"
@@ -1923,91 +2502,170 @@ fi  # End of at least one tool installed check
 # SHELL IMPROVEMENTS
 ###############################################################################
 
-log_info "Adding shell improvements..."
+if ask_component_install \
+    "SHELL IMPROVEMENTS (Bash Aliases)" \
+    "shell-improvements" \
+    "Add useful bash aliases to .bashrc for improved productivity." \
+    "Aliases to add:
+• ll - List files in detailed format (ls -lah)
+• update - Quick system update command
+• dps - Docker ps with better formatting
 
-# Add useful aliases to .bashrc for actual user
-if [ -f "$USER_HOME/.bashrc" ]; then
-    # Add aliases if not already present
-    grep -q "alias ll=" "$USER_HOME/.bashrc" || echo "alias ll='ls -lah'" >> "$USER_HOME/.bashrc"
-    grep -q "alias update=" "$USER_HOME/.bashrc" || echo "alias update='sudo apt-get update && sudo apt-get upgrade -y'" >> "$USER_HOME/.bashrc"
-    grep -q "alias dps=" "$USER_HOME/.bashrc" || echo "alias dps='docker ps --format \"table {{.Names}}\t{{.Status}}\t{{.Ports}}\"'" >> "$USER_HOME/.bashrc"
+Target: $USER_HOME/.bashrc" \
+    "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would add bash aliases to $USER_HOME/.bashrc:"
+        log_dry_run "  - alias ll='ls -lah'"
+        log_dry_run "  - alias update='sudo apt-get update && sudo apt-get upgrade -y'"
+        log_dry_run "  - alias dps='docker ps --format \"table {{.Names}}\t{{.Status}}\t{{.Ports}}\"'"
+    else
+        log_info "Adding shell improvements..."
+
+        # Add useful aliases to .bashrc for actual user
+        if [ -f "$USER_HOME/.bashrc" ]; then
+            # Add aliases if not already present
+            grep -q "alias ll=" "$USER_HOME/.bashrc" || echo "alias ll='ls -lah'" >> "$USER_HOME/.bashrc"
+            grep -q "alias update=" "$USER_HOME/.bashrc" || echo "alias update='sudo apt-get update && sudo apt-get upgrade -y'" >> "$USER_HOME/.bashrc"
+            grep -q "alias dps=" "$USER_HOME/.bashrc" || echo "alias dps='docker ps --format \"table {{.Names}}\t{{.Status}}\t{{.Ports}}\"'" >> "$USER_HOME/.bashrc"
+        fi
+
+        log_info "Shell improvements added"
+    fi
+else
+    log_info "Shell improvements skipped"
 fi
-
-log_info "Shell improvements added"
 
 ###############################################################################
 # DIRECTORY STRUCTURE
 ###############################################################################
 
-log_info "Creating project directory structure..."
+if ask_component_install \
+    "PROJECT DIRECTORY STRUCTURE" \
+    "directories" \
+    "Create standard directory structure in user home directory for organizing projects." \
+    "Directories to create in $USER_HOME:
+• docker/ - Docker compose files and configs
+• scripts/ - Shell scripts and automation
+• projects/ - Development projects
 
-# Verify we're creating directories in the correct user's home
-if [ "$USER_HOME" = "/root" ] && [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
-    log_warning "Detected USER_HOME points to /root but script was run with sudo by $SUDO_USER"
-    log_warning "Correcting to use actual user's home directory..."
-    # Use getent to get the correct home directory
-    CORRECTED_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-    if [ -n "$CORRECTED_HOME" ] && [ "$CORRECTED_HOME" != "/" ]; then
-        USER_HOME="$CORRECTED_HOME"
-        log_info "Using corrected home directory: $USER_HOME"
+Owner: $ACTUAL_USER" \
+    "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would verify and correct USER_HOME if needed"
+        log_dry_run "Would create directories in $USER_HOME:"
+        log_dry_run "  - docker/"
+        log_dry_run "  - scripts/"
+        log_dry_run "  - projects/"
+        log_dry_run "Would set ownership to $ACTUAL_USER:$ACTUAL_USER"
     else
-        log_warning "Could not determine correct home directory, using /home/$SUDO_USER"
-        USER_HOME="/home/$SUDO_USER"
+        log_info "Creating project directory structure..."
+
+        # Verify we're creating directories in the correct user's home
+        if [ "$USER_HOME" = "/root" ] && [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+            log_warning "Detected USER_HOME points to /root but script was run with sudo by $SUDO_USER"
+            log_warning "Correcting to use actual user's home directory..."
+            # Use getent to get the correct home directory
+            CORRECTED_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+            if [ -n "$CORRECTED_HOME" ] && [ "$CORRECTED_HOME" != "/" ]; then
+                USER_HOME="$CORRECTED_HOME"
+                log_info "Using corrected home directory: $USER_HOME"
+            else
+                log_warning "Could not determine correct home directory, using /home/$SUDO_USER"
+                USER_HOME="/home/$SUDO_USER"
+            fi
+        fi
+
+        # Final verification
+        log_info "Using home directory: $USER_HOME for user: $ACTUAL_USER"
+
+        # Create main directories only if they don't exist (using sudo -u to run as the actual user)
+        if [ ! -d "$USER_HOME/docker" ]; then
+            sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/docker" || handle_error "Failed to create docker directory"
+        fi
+        if [ ! -d "$USER_HOME/scripts" ]; then
+            sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/scripts" || handle_error "Failed to create scripts directory"
+        fi
+        if [ ! -d "$USER_HOME/projects" ]; then
+            sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/projects" || handle_error "Failed to create projects directory"
+        fi
+
+        # Ensure ownership is correct (in case directories already existed)
+        sudo chown -R "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker" "$USER_HOME/scripts" "$USER_HOME/projects" 2>/dev/null || true
+
+        log_info "Created directories: docker, scripts, projects in $USER_HOME"
     fi
+else
+    log_info "Directory structure creation skipped"
 fi
-
-# Final verification
-log_info "Using home directory: $USER_HOME for user: $ACTUAL_USER"
-
-# Create main directories only if they don't exist (using sudo -u to run as the actual user)
-if [ ! -d "$USER_HOME/docker" ]; then
-    sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/docker" || handle_error "Failed to create docker directory"
-fi
-if [ ! -d "$USER_HOME/scripts" ]; then
-    sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/scripts" || handle_error "Failed to create scripts directory"
-fi
-if [ ! -d "$USER_HOME/projects" ]; then
-    sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/projects" || handle_error "Failed to create projects directory"
-fi
-
-# Ensure ownership is correct (in case directories already existed)
-sudo chown -R "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker" "$USER_HOME/scripts" "$USER_HOME/projects" 2>/dev/null || true
-
-log_info "Created directories: docker, scripts, projects in $USER_HOME"
 
 ###############################################################################
 # CLOUDFLARE TUNNEL SETUP
 ###############################################################################
 
-log_info "Setting up Cloudflare Tunnel..."
+if ask_component_install \
+    "CLOUDFLARE TUNNEL" \
+    "cloudflare-tunnel" \
+    "Set up Cloudflare Tunnel (cloudflared) for secure remote access without opening ports." \
+    "What is Cloudflare Tunnel:
+• Secure tunnel to your server without port forwarding
+• No need to expose SSH/HTTP ports publicly
+• Free Cloudflare Zero Trust protection
+• Access via custom domain
 
-# Create cloudflare directory (using sudo -u to ensure correct ownership)
-if [ ! -d "$USER_HOME/docker/cloudflare" ]; then
-    sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/docker/cloudflare" || handle_error "Failed to create cloudflare directory"
-fi
+Setup requires:
+• Cloudflare account (free)
+• Tunnel token from https://one.dash.cloudflare.com/
+• Navigate to: Networks > Tunnels > Create/Select Tunnel
 
-# Ask for Cloudflare tunnel token
-echo ""
-echo "=========================================================================="
-echo "CLOUDFLARE TUNNEL CONFIGURATION"
-echo "=========================================================================="
-echo ""
-echo "To get your Cloudflare Tunnel token:"
-echo "  1. Go to https://one.dash.cloudflare.com/"
-echo "  2. Navigate to Networks > Tunnels"
-echo "  3. Create a new tunnel or select existing one"
-echo "  4. Copy the tunnel token"
-echo ""
-read -t 600 -s -p "Enter your Cloudflare Tunnel token (or press 'n' to skip, timeout 10 minutes): " cf_token || cf_token="n"
-echo ""
+Directory: $USER_HOME/docker/cloudflare/" \
+    "n"; then
 
-if [[ $cf_token != "n" ]] && [[ $cf_token != "N" ]] && [[ ! -z "$cf_token" ]]; then
-    # Create .env file with token (as the actual user)
-    sudo -u "$ACTUAL_USER" bash -c "echo 'CF_TOKEN=$cf_token' > '$USER_HOME/docker/cloudflare/.env'"
-    sudo -u "$ACTUAL_USER" chmod 600 "$USER_HOME/docker/cloudflare/.env"
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would create $USER_HOME/docker/cloudflare/"
+        log_dry_run "Would prompt for Cloudflare Tunnel token"
+        log_dry_run "Would create .env file with CF_TOKEN"
+        log_dry_run "Would create docker-compose.yaml for cloudflared"
+        log_dry_run "Would set ownership to $ACTUAL_USER"
+        CF_CONFIGURED=true  # Assume configured for dry-run summary
+    else
+        log_info "Setting up Cloudflare Tunnel..."
 
-    # Create docker-compose.yaml for Cloudflare (as the actual user)
-    sudo -u "$ACTUAL_USER" cat <<'EOF' > "$USER_HOME/docker/cloudflare/docker-compose.yaml"
+        # Ensure parent docker directory exists with correct ownership
+        if [ ! -d "$USER_HOME/docker" ]; then
+            sudo mkdir -p "$USER_HOME/docker" || handle_error "Failed to create docker directory"
+        fi
+        # Always ensure correct ownership, even if directory existed
+        sudo chown "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker" || handle_error "Failed to set ownership on docker directory"
+
+        # Create cloudflare directory (now parent exists with correct ownership)
+        if [ ! -d "$USER_HOME/docker/cloudflare" ]; then
+            sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/docker/cloudflare" || handle_error "Failed to create cloudflare directory"
+        fi
+
+        # Ask for Cloudflare tunnel token
+        echo ""
+        echo "=========================================================================="
+        echo "CLOUDFLARE TUNNEL CONFIGURATION"
+        echo "=========================================================================="
+        echo ""
+        echo "To get your Cloudflare Tunnel token:"
+        echo "  1. Go to https://one.dash.cloudflare.com/"
+        echo "  2. Navigate to Networks > Tunnels"
+        echo "  3. Create a new tunnel or select existing one"
+        echo "  4. Copy the tunnel token"
+        echo ""
+        read -s -p "Enter your Cloudflare Tunnel token (or press 'n' to skip): " cf_token
+        echo ""
+
+        if [[ $cf_token != "n" ]] && [[ $cf_token != "N" ]] && [[ ! -z "$cf_token" ]]; then
+            # Create .env file with token (as the actual user)
+            sudo -u "$ACTUAL_USER" bash -c "echo 'CF_TOKEN=$cf_token' > '$USER_HOME/docker/cloudflare/.env'"
+            sudo -u "$ACTUAL_USER" chmod 600 "$USER_HOME/docker/cloudflare/.env"
+
+            # Create docker-compose.yaml for Cloudflare (as the actual user)
+            sudo -u "$ACTUAL_USER" cat <<'EOF' > "$USER_HOME/docker/cloudflare/docker-compose.yaml"
 services:
   cloudflared:
     # NOTE: Using :latest tag. For production, consider pinning to a specific version (e.g., cloudflare/cloudflared:2024.1.5)
@@ -2018,12 +2676,17 @@ services:
     restart: unless-stopped
 EOF
 
-    # Ensure ownership is correct
-    sudo chown -R "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker/cloudflare"
-    log_info "Cloudflare Tunnel configuration created (token stored securely in .env)"
-    CF_CONFIGURED=true
+            # Ensure ownership is correct
+            sudo chown -R "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker/cloudflare"
+            log_info "Cloudflare Tunnel configuration created (token stored securely in .env)"
+            CF_CONFIGURED=true
+        else
+            log_warning "Cloudflare Tunnel setup skipped"
+            CF_CONFIGURED=false
+        fi
+    fi
 else
-    log_warning "Cloudflare Tunnel setup skipped"
+    log_info "Cloudflare Tunnel setup skipped"
     CF_CONFIGURED=false
 fi
 
@@ -2031,15 +2694,46 @@ fi
 # PORTAINER SETUP
 ###############################################################################
 
-log_info "Setting up Portainer..."
+if ask_component_install \
+    "PORTAINER (Docker Management UI)" \
+    "portainer" \
+    "Set up Portainer for Docker container management through a web interface." \
+    "What is Portainer:
+• Web-based Docker management interface
+• Manage containers, images, volumes, networks
+• Access via HTTPS on port 9443
+• Optional Agent port 8000 for remote management
 
-# Create portainer directory (using sudo -u to ensure correct ownership)
-if [ ! -d "$USER_HOME/docker/portainer" ]; then
-    sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/docker/portainer" || handle_error "Failed to create portainer directory"
-fi
+Directory: $USER_HOME/docker/portainer/
+Access: https://$SERVER_IP:9443 (after deployment)" \
+    "y"; then
 
-# Create docker-compose.yaml for Portainer (as the actual user)
-sudo -u "$ACTUAL_USER" cat <<'EOF' > "$USER_HOME/docker/portainer/docker-compose.yaml"
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would create $USER_HOME/docker/portainer/"
+        log_dry_run "Would create docker-compose.yaml for Portainer CE"
+        log_dry_run "Would expose ports 8000 and 9443"
+        log_dry_run "Would mount Docker socket"
+        log_dry_run "Would set ownership to $ACTUAL_USER"
+        log_dry_run "Would ask about Portainer Agent port (8000)"
+        log_dry_run "Would add UFW rules for Portainer (9443)"
+        PORTAINER_AGENT_ENABLED=false  # Set for dry-run
+    else
+        log_info "Setting up Portainer..."
+
+        # Ensure parent docker directory exists with correct ownership
+        if [ ! -d "$USER_HOME/docker" ]; then
+            sudo mkdir -p "$USER_HOME/docker" || handle_error "Failed to create docker directory"
+        fi
+        # Always ensure correct ownership, even if directory existed
+        sudo chown "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker" || handle_error "Failed to set ownership on docker directory"
+
+        # Create portainer directory (now parent exists with correct ownership)
+        if [ ! -d "$USER_HOME/docker/portainer" ]; then
+            sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/docker/portainer" || handle_error "Failed to create portainer directory"
+        fi
+
+        # Create docker-compose.yaml for Portainer (as the actual user)
+        sudo -u "$ACTUAL_USER" cat <<'EOF' > "$USER_HOME/docker/portainer/docker-compose.yaml"
 services:
   portainer:
     # NOTE: Using :lts tag. For production, consider pinning to a specific version (e.g., portainer/portainer-ce:2.19.4)
@@ -2058,51 +2752,80 @@ volumes:
     driver: local
 EOF
 
-# Ensure ownership is correct
-sudo chown -R "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker/portainer"
-log_info "Portainer configuration created"
+        # Ensure ownership is correct
+        sudo chown -R "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker/portainer"
+        log_info "Portainer configuration created"
 
-###############################################################################
-# PORTAINER FIREWALL RULES
-###############################################################################
+        ###############################################################################
+        # PORTAINER FIREWALL RULES
+        ###############################################################################
 
-log_info "Adding Portainer ports to firewall..."
+        log_info "Adding Portainer ports to firewall..."
 
-# Ask about Portainer Agent port (optional)
-echo ""
-read -t 30 -p "Do you want to enable Portainer Agent port 8000? (only needed for remote management) (y/n, timeout 30s): " enable_agent || enable_agent="n"
-PORTAINER_AGENT_ENABLED=false
+        # Ask about Portainer Agent port (optional)
+        echo ""
+        read -p "Do you want to enable Portainer Agent port 8000? (only needed for remote management) (y/n): " enable_agent
+        PORTAINER_AGENT_ENABLED=false
 
-if [[ $enable_agent == "y" ]] || [[ $enable_agent == "Y" ]]; then
-    sudo ufw allow 8000/tcp comment 'Portainer Agent' || log_warning "Failed to add Portainer port 8000"
-    PORTAINER_AGENT_ENABLED=true
-    log_info "Portainer Agent port 8000 enabled"
-fi
+        if [[ $enable_agent == "y" ]] || [[ $enable_agent == "Y" ]]; then
+            sudo ufw allow 8000/tcp comment 'Portainer Agent' || log_warning "Failed to add Portainer port 8000"
+            PORTAINER_AGENT_ENABLED=true
+            log_info "Portainer Agent port 8000 enabled"
+        fi
 
-# Always add Portainer HTTPS port
-sudo ufw allow 9443/tcp comment 'Portainer HTTPS' || log_warning "Failed to add Portainer port 9443"
-sudo ufw reload || handle_error "Failed to reload UFW"
+        # Always add Portainer HTTPS port
+        sudo ufw allow 9443/tcp comment 'Portainer HTTPS' || log_warning "Failed to add Portainer port 9443"
+        sudo ufw reload || handle_error "Failed to reload UFW"
 
-log_info "Portainer HTTPS port 9443 added to firewall"
-
-# Get server IP address (needed for multiple sections below)
-SERVER_IP=$(ip -4 addr show scope global | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)
-if [ -z "$SERVER_IP" ]; then
-    SERVER_IP="<server-ip>"
-    log_warning "Could not detect server IP address automatically"
+        log_info "Portainer HTTPS port 9443 added to firewall"
+    fi
+else
+    log_info "Portainer setup skipped"
+    PORTAINER_AGENT_ENABLED=false
 fi
 
 ###############################################################################
 # NETDATA MONITORING SETUP
 ###############################################################################
 
-echo ""
-read -t 30 -p "Do you want to install Netdata for real-time monitoring? (y/n, timeout 30s): " install_netdata || install_netdata="n"
+if ask_component_install \
+    "NETDATA REAL-TIME MONITORING" \
+    "netdata" \
+    "Set up Netdata for real-time server monitoring with optional Telegram alerts." \
+    "What is Netdata:
+• Real-time performance monitoring dashboard
+• CPU, RAM, Disk, Network metrics
+• Docker container monitoring
+• Systemd journal log monitoring
+• Optional Telegram alerts for critical issues
+• Access via web dashboard on port 19999
 
-if [[ $install_netdata == "y" ]] || [[ $install_netdata == "Y" ]]; then
+Directory: $USER_HOME/docker/netdata/
+Access: http://$SERVER_IP:19999 (after deployment)" \
+    "n"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would create $USER_HOME/docker/netdata/"
+        log_dry_run "Would ask for Netdata hostname (default: $(hostname))"
+        log_dry_run "Would ask about Telegram alerts configuration"
+        log_dry_run "Would create .env file with NETDATA_HOSTNAME"
+        log_dry_run "Would create docker-compose.yaml for Netdata"
+        log_dry_run "Would configure systemd-journal plugin"
+        log_dry_run "Would add UFW rule for port 19999"
+        log_dry_run "Would set ownership to $ACTUAL_USER"
+        NETDATA_CONFIGURED=true  # Set for dry-run
+        TELEGRAM_CONFIGURED=false  # Set for dry-run
+    else
     log_info "Setting up Netdata as Docker container..."
 
-    # Create netdata directory (using sudo -u to ensure correct ownership)
+    # Ensure parent docker directory exists with correct ownership
+    if [ ! -d "$USER_HOME/docker" ]; then
+        sudo mkdir -p "$USER_HOME/docker" || handle_error "Failed to create docker directory"
+    fi
+    # Always ensure correct ownership, even if directory existed
+    sudo chown "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker" || handle_error "Failed to set ownership on docker directory"
+
+    # Create netdata directory (now parent exists with correct ownership)
     if [ ! -d "$USER_HOME/docker/netdata" ]; then
         sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/docker/netdata" || handle_error "Failed to create netdata directory"
     fi
@@ -2111,6 +2834,22 @@ if [[ $install_netdata == "y" ]] || [[ $install_netdata == "Y" ]]; then
     if [ ! -d "$USER_HOME/docker/netdata/config" ]; then
         sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/docker/netdata/config" || handle_error "Failed to create netdata config directory"
     fi
+
+    # Ask for Netdata hostname
+    echo ""
+    echo "=========================================================================="
+    echo "NETDATA HOSTNAME CONFIGURATION"
+    echo "=========================================================================="
+    echo ""
+    CURRENT_HOSTNAME=$(hostname)
+    echo "Current server hostname: $CURRENT_HOSTNAME"
+    echo ""
+    echo "Enter a hostname for Netdata (will appear in dashboard and alerts)"
+    echo "Examples: production-web, vps-01, ${CURRENT_HOSTNAME}-monitor"
+    echo ""
+    read -p "Netdata hostname (default: $CURRENT_HOSTNAME): " NETDATA_HOSTNAME
+    NETDATA_HOSTNAME=${NETDATA_HOSTNAME:-$CURRENT_HOSTNAME}
+    log_info "Netdata hostname will be set to: $NETDATA_HOSTNAME"
 
     # Configure Telegram alerts (optional)
     echo ""
@@ -2129,14 +2868,14 @@ if [[ $install_netdata == "y" ]] || [[ $install_netdata == "Y" ]]; then
     echo "  4. Start a chat with your new bot (send /start)"
     echo "  5. Get your chat ID from @userinfobot"
     echo ""
-    read -t 30 -p "Do you want to configure Telegram alerts now? (y/n, timeout 30s): " setup_telegram || setup_telegram="n"
+    read -p "Do you want to configure Telegram alerts now? (y/n): " setup_telegram
 
     TELEGRAM_BOT_TOKEN=""
     TELEGRAM_CHAT_ID=""
 
     if [[ $setup_telegram == "y" ]] || [[ $setup_telegram == "Y" ]]; then
-        read -t 600 -p "Enter your Telegram Bot Token (timeout 10 minutes): " TELEGRAM_BOT_TOKEN || TELEGRAM_BOT_TOKEN=""
-        read -t 600 -p "Enter your Telegram Chat ID (timeout 10 minutes): " TELEGRAM_CHAT_ID || TELEGRAM_CHAT_ID=""
+        read -p "Enter your Telegram Bot Token: " TELEGRAM_BOT_TOKEN
+        read -p "Enter your Telegram Chat ID: " TELEGRAM_CHAT_ID
 
         if [[ ! -z "$TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$TELEGRAM_CHAT_ID" ]]; then
             log_info "Telegram alerts will be configured"
@@ -2189,6 +2928,11 @@ EOF
         log_info "Netdata health alert configuration created at ~/docker/netdata/config/health_alarm_notify.conf"
     fi
 
+    # Create .env file with hostname
+    sudo -u "$ACTUAL_USER" cat <<EOF > "$USER_HOME/docker/netdata/.env"
+NETDATA_HOSTNAME=$NETDATA_HOSTNAME
+EOF
+
     # Create docker-compose.yaml for Netdata
     if [ "$TELEGRAM_CONFIGURED" = true ]; then
         # With Telegram configuration (as the actual user)
@@ -2198,7 +2942,7 @@ services:
     # NOTE: Using :latest tag. For production, consider pinning to a specific version (e.g., netdata/netdata:v1.44.1)
     image: netdata/netdata:latest
     container_name: netdata
-    hostname: \${HOSTNAME:-netdata}
+    hostname: \${NETDATA_HOSTNAME:-netdata}
     ports:
       - "19999:19999"
     restart: always
@@ -2238,13 +2982,13 @@ EOF
         sudo -u "$ACTUAL_USER" touch "$USER_HOME/docker/netdata/config/.gitkeep"
 
         # Without Telegram (as the actual user)
-        sudo -u "$ACTUAL_USER" cat <<'EOF' > "$USER_HOME/docker/netdata/docker-compose.yaml"
+        sudo -u "$ACTUAL_USER" cat <<EOF > "$USER_HOME/docker/netdata/docker-compose.yaml"
 services:
   netdata:
     # NOTE: Using :latest tag. For production, consider pinning to a specific version (e.g., netdata/netdata:v1.44.1)
     image: netdata/netdata:latest
     container_name: netdata
-    hostname: ${HOSTNAME:-netdata}
+    hostname: \${NETDATA_HOSTNAME:-netdata}
     ports:
       - "19999:19999"
     restart: always
@@ -2326,6 +3070,7 @@ EOF
     echo ""
     echo "=========================================================================="
     echo ""
+    fi
 else
     log_info "Netdata setup skipped"
     NETDATA_CONFIGURED=false
@@ -2336,15 +3081,22 @@ fi
 # START DOCKER CONTAINERS
 ###############################################################################
 
-echo ""
-echo "=========================================================================="
-echo "DOCKER CONTAINERS STARTUP"
-echo "=========================================================================="
-echo ""
+# Skip container startup in dry-run mode
+if [ "$DRY_RUN" = true ]; then
+    log_dry_run "Skipping Docker container startup (dry-run mode)"
+    PORTAINER_STARTED=false
+    NETDATA_STARTED=false
+else
+    echo ""
+    echo "=========================================================================="
+    echo "DOCKER CONTAINERS STARTUP"
+    echo "=========================================================================="
+    echo ""
 
-# Ask to start Cloudflare Tunnel
-if [ "$CF_CONFIGURED" = true ]; then
-    read -t 30 -p "Do you want to start Cloudflare Tunnel now? (y/n, timeout 30s): " start_cf || start_cf="y"
+    # Ask to start Cloudflare Tunnel
+    if [ "$CF_CONFIGURED" = true ]; then
+    read -p "Do you want to start Cloudflare Tunnel now? (y/n): " start_cf
+    start_cf=${start_cf:-y}
 
     if [[ $start_cf == "y" ]] || [[ $start_cf == "Y" ]]; then
         if docker compose -f "$USER_HOME/docker/cloudflare/docker-compose.yaml" up -d; then
@@ -2361,7 +3113,8 @@ fi
 echo ""
 
 # Ask to start Portainer
-read -t 30 -p "Do you want to start Portainer now? (y/n, timeout 30s): " start_portainer || start_portainer="y"
+read -p "Do you want to start Portainer now? (y/n): " start_portainer
+start_portainer=${start_portainer:-y}
 
 if [[ $start_portainer == "y" ]] || [[ $start_portainer == "Y" ]]; then
     if docker compose -f "$USER_HOME/docker/portainer/docker-compose.yaml" up -d; then
@@ -2381,7 +3134,8 @@ echo ""
 
 # Ask to start Netdata
 if [ "$NETDATA_CONFIGURED" = true ]; then
-    read -t 30 -p "Do you want to start Netdata now? (y/n, timeout 30s): " start_netdata || start_netdata="y"
+    read -p "Do you want to start Netdata now? (y/n): " start_netdata
+    start_netdata=${start_netdata:-y}
 
     if [[ $start_netdata == "y" ]] || [[ $start_netdata == "Y" ]]; then
         if docker compose -f "$USER_HOME/docker/netdata/docker-compose.yaml" up -d; then
@@ -2399,6 +3153,7 @@ if [ "$NETDATA_CONFIGURED" = true ]; then
 else
     NETDATA_STARTED=false
 fi
+fi  # End of dry-run check for Docker container startup
 
 ###############################################################################
 # PORTAINER ACCESS INFORMATION
@@ -2586,7 +3341,8 @@ echo "==========================================================================
 
 # Ask for reboot
 echo ""
-read -t 30 -p "System setup complete. Reboot now? (y/n, timeout 30s): " reboot_choice || reboot_choice="n"
+read -p "System setup complete. Reboot now? (y/n): " reboot_choice
+reboot_choice=${reboot_choice:-n}
 
 if [[ $reboot_choice == "y" ]] || [[ $reboot_choice == "Y" ]]; then
     log_info "Rebooting system in 5 seconds... (Ctrl+C to cancel)"

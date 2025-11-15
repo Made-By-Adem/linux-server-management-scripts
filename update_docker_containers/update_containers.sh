@@ -218,9 +218,22 @@ setup_logging() {
 perform_system_update() {
     print_header "System Package Update"
 
-    # DRY-RUN MODE: Just show what would be done
+    # DRY-RUN MODE: Show what would be done and which packages would be upgraded
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would update package lists: apt-get update"
+        log_dry_run "Checking for upgradeable packages (based on current cache)..."
+        log_dry_run "Note: Package list may be stale if apt-get update hasn't been run recently"
+
+        local upgradable=$(apt list --upgradable 2>/dev/null | grep -v "Listing" | wc -l)
+        if [ "$upgradable" -gt 0 ]; then
+            log_dry_run "Found $upgradable packages that would be upgraded:"
+            apt list --upgradable 2>/dev/null | grep -v "Listing" | while read line; do
+                log_dry_run "  - $line"
+            done
+        else
+            log_dry_run "No packages need upgrading (based on current cache)"
+        fi
+
         log_dry_run "Would upgrade packages: apt-get upgrade -y"
         log_dry_run "Would clean up: apt-get autoremove -y"
         SYSTEM_UPDATED=true
