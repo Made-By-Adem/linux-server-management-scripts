@@ -687,6 +687,7 @@ if ask_component_install \
 • rsyslog - System logging
 • git - Version control
 • htop, iotop, nethogs - System monitoring tools
+• lm-sensors - Hardware monitoring (temperature, voltage, fans)
 • fail2ban - Intrusion prevention
 
 Note: You will be able to select individual packages in the next step" \
@@ -708,6 +709,7 @@ Note: You will be able to select individual packages in the next step" \
         ["htop"]="Interactive process viewer"
         ["iotop"]="I/O monitoring tool"
         ["nethogs"]="Network bandwidth monitor per process"
+        ["lm-sensors"]="Hardware monitoring (temperature, voltage, fans)"
         ["fail2ban"]="Intrusion prevention system"
     )
 
@@ -739,7 +741,7 @@ Note: You will be able to select individual packages in the next step" \
             echo "Press Enter to accept the default (Y = install, n = skip)"
             echo ""
 
-            for pkg in curl wget net-tools ufw unattended-upgrades ca-certificates gnupg lsb-release software-properties-common rsyslog git htop iotop nethogs fail2ban; do
+            for pkg in curl wget net-tools ufw unattended-upgrades ca-certificates gnupg lsb-release software-properties-common rsyslog git htop iotop nethogs lm-sensors fail2ban; do
                 desc="${ESSENTIAL_PACKAGES[$pkg]}"
 
                 # Check if package is already installed
