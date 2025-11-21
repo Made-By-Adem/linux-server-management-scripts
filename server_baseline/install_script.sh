@@ -16,6 +16,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m' # No Color
 
 # Script modes
@@ -988,6 +990,7 @@ Note: You will be able to select individual packages in the next step" \
     "y"; then
 
     # Define package groups with descriptions
+    # Package descriptions (short name for prompt)
     declare -A ESSENTIAL_PACKAGES=(
         ["curl"]="Download tool (curl)"
         ["wget"]="Download tool (wget)"
@@ -1006,6 +1009,27 @@ Note: You will be able to select individual packages in the next step" \
         ["lm-sensors"]="Hardware monitoring (temperature, voltage, fans)"
         ["fail2ban"]="Intrusion prevention system"
         ["libpam-tmpdir"]="Per-user temporary directories (Lynis security recommendation)"
+    )
+
+    # Detailed package descriptions (shown after selection)
+    declare -A PACKAGE_DETAILS=(
+        ["curl"]="Command-line tool for transferring data with URLs. Essential for downloading files, testing APIs, and scripting web requests."
+        ["wget"]="Non-interactive network downloader. Supports recursive downloads, resuming interrupted transfers, and mirroring websites."
+        ["net-tools"]="Classic network utilities including ifconfig (network interfaces), netstat (connections), route (routing table), and arp (ARP cache)."
+        ["ufw"]="Uncomplicated Firewall - easy-to-use frontend for iptables. Allows simple rules like 'ufw allow ssh' to manage network access."
+        ["unattended-upgrades"]="Automatically installs security updates in the background. Keeps your server protected without manual intervention."
+        ["ca-certificates"]="Root certificates for SSL/TLS verification. Required for secure HTTPS connections to websites and package repositories."
+        ["gnupg"]="GNU Privacy Guard - encrypts files and emails, verifies package signatures. Essential for secure package management."
+        ["lsb-release"]="Reports Linux distribution info (e.g., 'lsb_release -a'). Used by scripts to detect OS version and compatibility."
+        ["software-properties-common"]="Tools to manage APT repositories. Enables 'add-apt-repository' command for adding PPAs and third-party repos."
+        ["rsyslog"]="System logging daemon. Collects and stores logs from system services. Essential for troubleshooting and security auditing."
+        ["git"]="Distributed version control system. Track code changes, collaborate with others, and deploy from repositories."
+        ["htop"]="Interactive process viewer with CPU/memory graphs, process tree, and easy process management (kill, renice, etc.)."
+        ["iotop"]="Shows disk I/O usage per process. Helps identify which processes are causing disk bottlenecks or high I/O wait."
+        ["nethogs"]="Groups network bandwidth by process (unlike iftop which shows per-connection). Find which program is using your bandwidth."
+        ["lm-sensors"]="Monitors hardware sensors: CPU temperature, fan speeds, voltages. Use 'sensors' command to check system health."
+        ["fail2ban"]="Scans log files for malicious patterns (e.g., failed SSH logins) and temporarily bans offending IPs via firewall rules."
+        ["libpam-tmpdir"]="Creates per-user private /tmp directories. Prevents users from accessing each other's temp files (security hardening)."
     )
 
     # Collect selected packages
@@ -1033,18 +1057,24 @@ Note: You will be able to select individual packages in the next step" \
             echo "=========================================================================="
             echo ""
             echo "You can now select which packages to install."
+            echo "Each package includes a description of what it does and why it's useful."
             echo "Press Enter to accept the default (Y = install, n = skip)"
             echo ""
 
             for pkg in curl wget net-tools ufw unattended-upgrades ca-certificates gnupg lsb-release software-properties-common rsyslog git htop iotop nethogs lm-sensors fail2ban libpam-tmpdir; do
                 desc="${ESSENTIAL_PACKAGES[$pkg]}"
+                details="${PACKAGE_DETAILS[$pkg]}"
 
                 # Check if package is already installed
                 if dpkg -l | grep -q "^ii  $pkg "; then
-                    echo -e "${GREEN}✓${NC} $pkg - Already installed"
+                    echo -e "${GREEN}✓${NC} ${BOLD}$pkg${NC} - Already installed"
+                    echo -e "  ${DIM}$details${NC}"
                     SELECTED_PACKAGES+=("$pkg")
                 else
-                    read -p "Install $desc? (Y/n): " install_pkg
+                    echo ""
+                    echo -e "${BOLD}$desc${NC} (package: $pkg)"
+                    echo -e "  ${DIM}$details${NC}"
+                    read -p "  Install $pkg? (Y/n): " install_pkg
                     install_pkg=${install_pkg:-y}
 
                     if [[ $install_pkg =~ ^[Yy]$ ]] || [[ -z "$install_pkg" ]]; then
@@ -1134,17 +1164,26 @@ Lynis recommendation: DEB-0810 (Debian systems only)" \
         OS_ID="unknown"
     fi
 
-    # Define security tools with descriptions
+    # Define security tools with short descriptions
     declare -A SECURITY_TOOLS=(
-        ["apt-listchanges"]="Shows package changes before upgrade"
-        ["debsums"]="Verifies package file integrity"
-        ["apt-show-versions"]="Shows available package versions"
-        ["needrestart"]="Detects services needing restart after updates"
+        ["apt-listchanges"]="Package changelog viewer"
+        ["debsums"]="Package integrity checker"
+        ["apt-show-versions"]="Package version reporter"
+        ["needrestart"]="Service restart detector"
+    )
+
+    # Detailed descriptions for security tools
+    declare -A SECURITY_TOOL_DETAILS=(
+        ["apt-listchanges"]="Displays important changes (changelogs, NEWS) in packages before upgrading. Helps you understand what's changing before applying updates."
+        ["debsums"]="Verifies MD5 checksums of installed package files against the package database. Detects modified or corrupted system files."
+        ["apt-show-versions"]="Lists installed packages with their versions and shows which ones have updates available. Useful for version management."
+        ["needrestart"]="Checks which system services need to be restarted after package updates. Ensures security patches are actually applied."
+        ["apt-listbugs"]="Shows critical bugs filed against packages before installation. Prevents installing packages with known serious issues (Debian only)."
     )
 
     # Add apt-listbugs only on Debian systems
     if [ "$OS_ID" = "debian" ]; then
-        SECURITY_TOOLS["apt-listbugs"]="Display critical bugs before package installation (Debian only)"
+        SECURITY_TOOLS["apt-listbugs"]="Critical bug checker (Debian only)"
     fi
 
     # Collect selected tools
@@ -1172,19 +1211,25 @@ Lynis recommendation: DEB-0810 (Debian systems only)" \
             echo "=========================================================================="
             echo ""
             echo "Select which security package management tools to install."
+            echo "Each tool includes a description of what it does and why it's useful."
             echo "Press Enter to accept the default (Y = install, n = skip)"
             echo ""
 
             # Iterate over all tools in SECURITY_TOOLS array
             for tool in "${!SECURITY_TOOLS[@]}"; do
                 desc="${SECURITY_TOOLS[$tool]}"
+                details="${SECURITY_TOOL_DETAILS[$tool]}"
 
                 # Check if tool is already installed
                 if dpkg -l | grep -q "^ii  $tool "; then
-                    echo -e "${GREEN}✓${NC} $tool - Already installed"
+                    echo -e "${GREEN}✓${NC} ${BOLD}$tool${NC} - Already installed"
+                    echo -e "  ${DIM}$details${NC}"
                     SELECTED_SECURITY_TOOLS+=("$tool")
                 else
-                    read -p "Install $desc? (Y/n): " install_tool
+                    echo ""
+                    echo -e "${BOLD}$desc${NC} (package: $tool)"
+                    echo -e "  ${DIM}$details${NC}"
+                    read -p "  Install $tool? (Y/n): " install_tool
                     install_tool=${install_tool:-y}
 
                     if [[ $install_tool =~ ^[Yy]$ ]] || [[ -z "$install_tool" ]]; then
@@ -3186,7 +3231,6 @@ else
         "Apply systemd security hardening to system services for improved security." \
         "Available services for hardening:
 • SSH: ProtectSystem=off (VSCode/Docker compatible)
-• Docker: Basic hardening
 • Fail2ban: Full isolation
 • Cron: Filesystem protection
 • Postfix: Strict isolation + capability restrictions
@@ -3241,29 +3285,6 @@ EOF
             log_info "✓ SSH service hardened"
         else
             log_info "⊘ SSH hardening skipped"
-        fi
-
-        # Docker service hardening (if installed)
-        if systemctl list-unit-files | grep -q "docker.service"; then
-            read -p "Harden Docker service? (Y/n): " harden_docker
-            harden_docker=${harden_docker:-y}
-            if [[ $harden_docker =~ ^[Yy]$ ]]; then
-                log_info "Hardening Docker service..."
-                sudo mkdir -p /etc/systemd/system/docker.service.d
-
-                cat <<'EOF' | sudo tee /etc/systemd/system/docker.service.d/hardening.conf >/dev/null
-[Service]
-# Systemd hardening for Docker
-ProtectSystem=strict
-ReadWritePaths=/var/lib/docker /run/docker /var/log
-ProtectKernelTunables=yes
-ProtectKernelLogs=yes
-EOF
-
-                log_info "✓ Docker service hardened"
-            else
-                log_info "⊘ Docker hardening skipped"
-            fi
         fi
 
         # Fail2ban service hardening (if installed)
@@ -3543,10 +3564,6 @@ EOF
 
             if [ -f /etc/systemd/system/ssh.service.d/hardening.conf ]; then
                 sudo systemctl restart ssh && log_info "✓ SSH restarted" || log_warning "✗ SSH restart failed"
-            fi
-
-            if [ -f /etc/systemd/system/docker.service.d/hardening.conf ]; then
-                sudo systemctl restart docker && log_info "✓ Docker restarted" || log_warning "✗ Docker restart failed"
             fi
 
             if [ -f /etc/systemd/system/fail2ban.service.d/hardening.conf ]; then
@@ -5479,58 +5496,114 @@ echo ""
 if command -v lynis >/dev/null 2>&1; then
     echo ""
     echo "=========================================================================="
-    echo "LYNIS SECURITY AUDIT"
+    echo "LYNIS SECURITY AUDIT (Optional)"
     echo "=========================================================================="
     echo ""
-    echo "Running Lynis security scan to verify hardening improvements..."
+    echo "Lynis can run a security scan to verify hardening improvements."
+    echo -e "${YELLOW}Note: This scan can take 5-15 minutes on limited CPU systems.${NC}"
     echo ""
+    read -p "Run Lynis security audit now? (y/N): " run_lynis
+    run_lynis=${run_lynis:-n}
 
-    # Run quick Lynis audit
-    sudo lynis audit system --quick --no-colors 2>/dev/null | tail -50 || true
+    if [[ $run_lynis =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "Running Lynis security scan (this may take a while)..."
+        echo ""
 
-    echo ""
+        # Run quick Lynis audit
+        sudo lynis audit system --quick --no-colors 2>/dev/null | tail -50 || true
 
-    # Extract and display hardening index if available
-    if [ -f /var/log/lynis-report.dat ]; then
-        HARDENING_INDEX=$(grep "hardening_index=" /var/log/lynis-report.dat 2>/dev/null | cut -d'=' -f2)
-        SUGGESTION_COUNT=$(grep -c "suggestion\[\]=" /var/log/lynis-report.dat 2>/dev/null || echo "0")
-        WARNING_COUNT=$(grep -c "warning\[\]=" /var/log/lynis-report.dat 2>/dev/null || echo "0")
+        echo ""
 
-        if [ ! -z "$HARDENING_INDEX" ]; then
-            echo "══════════════════════════════════════════════════════════"
-            echo "Lynis Security Hardening Results:"
-            echo "══════════════════════════════════════════════════════════"
-            echo "  Hardening Index: $HARDENING_INDEX/100"
-            echo "  Warnings: $WARNING_COUNT"
-            echo "  Suggestions: $SUGGESTION_COUNT"
-            echo ""
+        # Extract and display hardening index if available
+        if [ -f /var/log/lynis-report.dat ]; then
+            HARDENING_INDEX=$(grep "hardening_index=" /var/log/lynis-report.dat 2>/dev/null | cut -d'=' -f2)
+            SUGGESTION_COUNT=$(grep -c "suggestion\[\]=" /var/log/lynis-report.dat 2>/dev/null || echo "0")
+            WARNING_COUNT=$(grep -c "warning\[\]=" /var/log/lynis-report.dat 2>/dev/null || echo "0")
 
-            # Display top 10 suggestions if any exist
-            if [ "$SUGGESTION_COUNT" -gt 0 ]; then
-                echo "Top 10 Hardening Suggestions:"
-                echo "──────────────────────────────────────────────────────────"
-                grep "suggestion\[\]=" /var/log/lynis-report.dat 2>/dev/null | \
-                    cut -d'=' -f2- | \
-                    head -10 | \
-                    nl -w2 -s'. ' || echo "  (No suggestions available)"
+            if [ ! -z "$HARDENING_INDEX" ]; then
+                echo "══════════════════════════════════════════════════════════"
+                echo "Lynis Security Hardening Results:"
+                echo "══════════════════════════════════════════════════════════"
+                echo "  Hardening Index: $HARDENING_INDEX/100"
+                echo "  Warnings: $WARNING_COUNT"
+                echo "  Suggestions: $SUGGESTION_COUNT"
                 echo ""
 
-                if [ "$SUGGESTION_COUNT" -gt 10 ]; then
-                    echo "  ... and $((SUGGESTION_COUNT - 10)) more suggestions"
+                # Display top 10 suggestions if any exist
+                if [ "$SUGGESTION_COUNT" -gt 0 ]; then
+                    echo "Top 10 Hardening Suggestions:"
+                    echo "──────────────────────────────────────────────────────────"
+                    grep "suggestion\[\]=" /var/log/lynis-report.dat 2>/dev/null | \
+                        cut -d'=' -f2- | \
+                        head -10 | \
+                        nl -w2 -s'. ' || echo "  (No suggestions available)"
                     echo ""
+
+                    if [ "$SUGGESTION_COUNT" -gt 10 ]; then
+                        echo "  ... and $((SUGGESTION_COUNT - 10)) more suggestions"
+                        echo ""
+                    fi
                 fi
+
+                echo "Full report: /var/log/lynis-report.dat"
+                echo "View all suggestions:"
+                echo "  grep 'suggestion\\[\\]=' /var/log/lynis-report.dat | cut -d'=' -f2-"
+                echo ""
+                echo "View report: sudo lynis show details <TEST-ID>"
+                echo "══════════════════════════════════════════════════════════"
             fi
-
-            echo "Full report: /var/log/lynis-report.dat"
-            echo "View all suggestions:"
-            echo "  grep 'suggestion\\[\\]=' /var/log/lynis-report.dat | cut -d'=' -f2-"
-            echo ""
-            echo "View report: sudo lynis show details <TEST-ID>"
-            echo "══════════════════════════════════════════════════════════"
         fi
-    fi
 
+        echo ""
+    else
+        echo ""
+        echo "Lynis audit skipped. You can run it manually later with:"
+        echo "  sudo lynis audit system --quick"
+        echo ""
+    fi
+fi
+
+# Run Rkhunter rootkit scan if installed (optional)
+if command -v rkhunter >/dev/null 2>&1; then
     echo ""
+    echo "=========================================================================="
+    echo "RKHUNTER ROOTKIT SCAN (Optional)"
+    echo "=========================================================================="
+    echo ""
+    echo "Rkhunter can scan for rootkits, backdoors, and local exploits."
+    echo -e "${YELLOW}Note: This scan can take 5-10 minutes on limited CPU systems.${NC}"
+    echo ""
+    read -p "Run Rkhunter rootkit scan now? (y/N): " run_rkhunter
+    run_rkhunter=${run_rkhunter:-n}
+
+    if [[ $run_rkhunter =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "Running Rkhunter scan (this may take a while)..."
+        echo ""
+
+        # Update rkhunter database first
+        sudo rkhunter --update --nocolors 2>/dev/null || true
+
+        # Run rkhunter scan
+        sudo rkhunter --check --skip-keypress --nocolors 2>/dev/null || true
+
+        echo ""
+        echo "══════════════════════════════════════════════════════════"
+        echo "Rkhunter Scan Complete"
+        echo "══════════════════════════════════════════════════════════"
+        echo "Full log: /var/log/rkhunter.log"
+        echo ""
+        echo "View warnings only:"
+        echo "  sudo grep -i warning /var/log/rkhunter.log"
+        echo "══════════════════════════════════════════════════════════"
+        echo ""
+    else
+        echo ""
+        echo "Rkhunter scan skipped. You can run it manually later with:"
+        echo "  sudo rkhunter --check --skip-keypress"
+        echo ""
+    fi
 fi
 
 echo "=========================================================================="
