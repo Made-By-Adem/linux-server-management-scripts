@@ -1,0 +1,10 @@
+{
+  "log-driver": "{{DOCKER_LOG_DRIVER}}",
+  "log-opts": {
+    "max-size": "{{DOCKER_LOG_MAX_SIZE}}",
+    "max-file": "{{DOCKER_LOG_MAX_FILES}}"
+  },
+  "live-restore": true,
+  "userland-proxy": false,
+  "no-new-privileges": false
+}

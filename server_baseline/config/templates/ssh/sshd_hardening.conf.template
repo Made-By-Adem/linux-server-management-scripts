@@ -1,0 +1,204 @@
+# =============================================================================
+# SSH Hardening Configuration Patches
+# =============================================================================
+# This file contains SSH hardening settings to be applied to sshd_config
+# Generated on: {{GENERATION_DATE}}
+# Configuration profile: {{CONFIG_PROFILE_NAME}}
+#
+# IMPORTANT: These are patches to apply, not a complete sshd_config file
+# The installer will safely merge these with existing configuration
+#
+# Location: Will be merged into /etc/ssh/sshd_config
+# Test config: sudo sshd -t
+# Reload: sudo systemctl reload ssh
+# =============================================================================
+
+# Port Configuration
+# Both old and new ports are kept active during migration grace period
+Port {{SSH_OLD_PORT}}
+Port {{SSH_NEW_PORT}}
+
+# SSH Protocol Version (only version 2 is secure)
+Protocol 2
+
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+
+# Root Login Restrictions
+# prohibit-password = key-based only, no = completely disabled
+PermitRootLogin prohibit-password
+
+# Disable password authentication (SSH keys only)
+PasswordAuthentication no
+
+# Enable public key authentication
+PubkeyAuthentication yes
+
+# Disable challenge-response authentication
+ChallengeResponseAuthentication no
+
+# Disable keyboard-interactive authentication
+KbdInteractiveAuthentication no
+
+# =============================================================================
+# NETWORK & PROTOCOL
+# =============================================================================
+
+# Address Family (inet = IPv4 only, inet6 = IPv6 only, any = both)
+# Configured based on SSH_DISABLE_IPV6 setting
+AddressFamily inet
+
+# Disable X11 forwarding (security risk)
+X11Forwarding no
+
+# =============================================================================
+# SECURITY LIMITS
+# =============================================================================
+
+# Maximum authentication attempts before disconnection
+MaxAuthTries {{SSH_MAX_AUTH_TRIES}}
+
+# Client keepalive settings (prevents hanging sessions)
+ClientAliveInterval {{SSH_CLIENT_ALIVE_INTERVAL}}
+ClientAliveCountMax {{SSH_CLIENT_ALIVE_COUNT_MAX}}
+
+# Maximum concurrent sessions per connection
+MaxSessions {{SSH_MAX_SESSIONS_DEFAULT}}
+
+# =============================================================================
+# FORWARDING & TUNNELING
+# =============================================================================
+
+# TCP forwarding (port forwarding)
+# Configured based on SSH_ALLOW_TCP_FORWARDING setting
+AllowTcpForwarding yes
+
+# SSH agent forwarding
+# Configured based on SSH_ALLOW_AGENT_FORWARDING setting
+AllowAgentForwarding yes
+
+# Stream local forwarding
+AllowStreamLocalForwarding no
+
+# Gateway ports
+GatewayPorts no
+
+# Permit tunneling
+PermitTunnel no
+
+# =============================================================================
+# PERFORMANCE & RELIABILITY
+# =============================================================================
+
+# TCP Keep Alive (disabled - use ClientAlive instead)
+TCPKeepAlive no
+
+# Use DNS for reverse lookup (can slow down connections)
+UseDNS no
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+# Logging level (QUIET, FATAL, ERROR, INFO, VERBOSE, DEBUG)
+LogLevel {{SSH_LOG_LEVEL}}
+
+# Log sftp file operations
+Subsystem sftp /usr/lib/openssh/sftp-server -f AUTHPRIV -l INFO
+
+# =============================================================================
+# BANNER (if legal banners enabled)
+# =============================================================================
+
+# Display banner before authentication
+# Uncomment if LEGAL_BANNERS_ENABLED=true
+# Banner /etc/issue.net
+
+# =============================================================================
+# ADDITIONAL SECURITY
+# =============================================================================
+
+# Disable empty passwords
+PermitEmptyPasswords no
+
+# Disable host-based authentication
+HostbasedAuthentication no
+
+# Ignore rhosts files
+IgnoreRhosts yes
+
+# Disable user environment processing
+PermitUserEnvironment no
+
+# Use privilege separation
+UsePrivilegeSeparation sandbox
+
+# Compression (delayed until after authentication)
+Compression delayed
+
+# Maximum startups (prevent DoS)
+MaxStartups 10:30:60
+
+# Login grace time (time to complete authentication)
+LoginGraceTime 60
+
+# =============================================================================
+# CRYPTOGRAPHY
+# =============================================================================
+
+# Key Exchange Algorithms (modern, secure algorithms only)
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256
+
+# Ciphers (AES-GCM preferred, then AES-CTR)
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+
+# MACs (Message Authentication Codes)
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256
+
+# Host Key Algorithms
+HostKeyAlgorithms ssh-ed25519,ssh-ed25519-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,sk-ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512,rsa-sha2-256
+
+# =============================================================================
+# NOTES FOR DIFFERENT PROFILES
+# =============================================================================
+#
+# Default Profile:
+#   - MaxAuthTries: 3
+#   - MaxSessions: 2
+#   - ClientAliveInterval: 300 (5 minutes)
+#   - Forwarding: Enabled (both TCP and Agent)
+#
+# Production Profile:
+#   - MaxAuthTries: 2 (stricter)
+#   - MaxSessions: 1 (single session)
+#   - ClientAliveInterval: 180 (3 minutes)
+#   - Forwarding: Disabled (more secure)
+#
+# Development Profile:
+#   - MaxAuthTries: 6 (lenient)
+#   - MaxSessions: 10 (multiple sessions)
+#   - ClientAliveInterval: 600 (10 minutes)
+#   - Forwarding: Enabled (development needs)
+#
+# Raspberry Pi Profile:
+#   - MaxAuthTries: 3 (default)
+#   - MaxSessions: 3 (a few sessions)
+#   - ClientAliveInterval: 300 (default)
+#   - Forwarding: Enabled (default)
+#
+# =============================================================================
+# PORT MIGRATION SAFETY
+# =============================================================================
+#
+# The installer keeps BOTH ports active during migration:
+# 1. Port {{SSH_OLD_PORT}} (standard SSH) - kept for {{SSH_PORT_MIGRATION_GRACE_HOURS}} hours
+# 2. Port {{SSH_NEW_PORT}} (new custom port) - immediately active
+#
+# After the grace period, port {{SSH_OLD_PORT}} is automatically removed via cron job
+# This prevents lockout during port migration
+#
+# Manual removal: Edit /etc/ssh/sshd_config and remove "Port {{SSH_OLD_PORT}}"
+# Then: sudo systemctl reload ssh
+#
+# =============================================================================

@@ -1,0 +1,40 @@
+# =============================================================================
+# Journald Configuration
+# =============================================================================
+# Generated on: {{GENERATION_DATE}}
+# Configuration profile: {{CONFIG_PROFILE_NAME}}
+#
+# Location: /etc/systemd/journald.conf
+#
+# Apply: sudo systemctl restart systemd-journald
+# View logs: journalctl -xe
+# =============================================================================
+
+[Journal]
+# Storage mode (persistent = saved to disk, volatile = RAM only, auto = automatic)
+Storage={{JOURNAL_STORAGE}}
+
+# Compress logs to save space
+Compress={{JOURNAL_COMPRESS}}
+
+# Maximum disk space for all journal files
+SystemMaxUse={{JOURNAL_MAX_USE}}
+
+# Minimum disk space to keep free
+SystemKeepFree={{JOURNAL_KEEP_FREE}}
+
+# Maximum size for individual journal files
+SystemMaxFileSize={{JOURNAL_MAX_FILE_SIZE}}
+
+# Maximum retention time (format: 1day, 1week, 1month, etc.)
+MaxRetentionSec={{JOURNAL_RETENTION_DAYS}}day
+
+# Forward to syslog
+ForwardToSyslog={{JOURNAL_FORWARD_SYSLOG}}
+
+# Forward to console (disabled for servers)
+ForwardToConsole=no
+
+# Rate limiting (prevent log flooding)
+RateLimitIntervalSec=30s
+RateLimitBurst=10000

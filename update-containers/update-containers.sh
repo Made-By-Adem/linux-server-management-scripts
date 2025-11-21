@@ -4,6 +4,8 @@
 # Docker Container Update Script
 # Version: 2.0
 # Purpose: Safely update Docker containers with user-friendly interface
+#
+# Made By Adem
 ###############################################################################
 
 set -e  # Exit on error

@@ -1,0 +1,22 @@
+# =============================================================================
+# Docker Service Hardening - Systemd Drop-in Configuration
+# =============================================================================
+# Generated on: {{GENERATION_DATE}}
+# Configuration profile: {{CONFIG_PROFILE_NAME}}
+#
+# Location: /etc/systemd/system/docker.service.d/hardening.conf
+#
+# Apply: sudo systemctl daemon-reload && sudo systemctl restart docker
+# =============================================================================
+
+[Service]
+# Note: Docker requires many privileges, so hardening is limited
+
+# Private /tmp
+PrivateTmp=yes
+
+# Restrict address families
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+# No new privileges (disabled for Docker compatibility)
+NoNewPrivileges=false

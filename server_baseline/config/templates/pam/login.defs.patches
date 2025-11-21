@@ -1,0 +1,32 @@
+# =============================================================================
+# Login.defs Password Aging Patches
+# =============================================================================
+# This file contains sed commands to safely patch /etc/login.defs
+# Generated for profile: {{CONFIG_PROFILE_NAME}}
+#
+# These are NOT direct values but sed commands to apply
+# Use: Apply these with backup and validation
+# =============================================================================
+
+# Encryption method
+ENCRYPT_METHOD={{PASSWORD_HASH_ALGORITHM}}
+
+# SHA rounds for password hashing
+SHA_CRYPT_MIN_ROUNDS={{PASSWORD_HASH_ROUNDS}}
+SHA_CRYPT_MAX_ROUNDS={{PASSWORD_HASH_ROUNDS}}
+
+# Password aging controls
+PASS_MAX_DAYS={{PASSWORD_MAX_DAYS}}
+PASS_MIN_DAYS={{PASSWORD_MIN_DAYS}}
+PASS_WARN_AGE={{PASSWORD_WARN_DAYS}}
+
+# =============================================================================
+# How to apply (from install script):
+# =============================================================================
+# 1. Backup /etc/login.defs
+# 2. Use sed to replace or add these values
+# 3. For existing values: sed -i 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS\t{{PASSWORD_MAX_DAYS}}/' /etc/login.defs
+# 4. For new values: echo "PASS_MAX_DAYS\t{{PASSWORD_MAX_DAYS}}" >> /etc/login.defs
+# 5. Validate the file syntax
+# 6. Apply to existing users with chage command
+# =============================================================================

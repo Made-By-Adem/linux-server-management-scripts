@@ -2,6 +2,8 @@
 
 A user-friendly bash script for safely updating Docker containers with visual feedback and comprehensive logging.
 
+> Made By Adem
+
 ## 🚀 Quickstart
 
 ```bash

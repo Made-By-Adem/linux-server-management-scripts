@@ -1,0 +1,41 @@
+# =============================================================================
+# SSH Service Hardening - Systemd Drop-in Configuration
+# =============================================================================
+# Generated on: {{GENERATION_DATE}}
+# Configuration profile: {{CONFIG_PROFILE_NAME}}
+#
+# Location: /etc/systemd/system/ssh.service.d/hardening.conf
+#
+# This file provides additional systemd-level hardening for the SSH service
+# Note: Minimal hardening to maintain compatibility with tools like VSCode Remote
+#
+# Apply: sudo systemctl daemon-reload && sudo systemctl restart ssh
+# =============================================================================
+
+[Service]
+# Basic hardening (compatible with SSH management tools)
+
+# Protect system directories (read-only)
+ProtectSystem=strict
+
+# Protect home directories (read-only except for SSH's own directories)
+ProtectHome=read-only
+
+# Private /tmp (isolated temporary directory for SSH)
+PrivateTmp=yes
+
+# Read-write paths (SSH needs to write here)
+ReadWritePaths=/var/run/sshd
+
+# Restrict address families to IPv4 and IPv6
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# No new privileges for child processes
+NoNewPrivileges=false
+
+# Note: We keep hardening minimal for SSH to ensure compatibility with:
+# - VSCode Remote SSH
+# - SSH tunneling
+# - Port forwarding
+# - Agent forwarding
+# - SFTP file transfers
