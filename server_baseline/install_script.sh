@@ -2268,6 +2268,14 @@ if [[ $install_rkhunter == "y" ]] || [[ $install_rkhunter == "Y" ]]; then
     DEBIAN_FRONTEND=noninteractive sudo apt-get install -y rkhunter || \
         log_warning "Failed to install Rkhunter"
 
+    # Ensure rkhunter does not warn about SSH Protocol 1 (disabled)
+    log_info "Configuring rkhunter SSH protocol settings..."
+    sudo sed -i 's/^#\?ALLOW_SSH_PROT_V1=.*/ALLOW_SSH_PROT_V1=0/' /etc/rkhunter.conf
+
+    # If the setting does not exist, append it
+    grep -q "^ALLOW_SSH_PROT_V1=" /etc/rkhunter.conf || \
+        echo "ALLOW_SSH_PROT_V1=0" | sudo tee -a /etc/rkhunter.conf >/dev/null
+
     # Configure rkhunter for this server's SSH setup
     log_info "Configuring rkhunter for custom SSH port..."
     sudo sed -i 's/^#\?ALLOW_SSH_ROOT_USER=.*/ALLOW_SSH_ROOT_USER=prohibit-password/' /etc/rkhunter.conf
