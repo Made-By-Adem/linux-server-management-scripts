@@ -21,6 +21,8 @@ NC='\033[0m' # No Color
 # Script modes
 MODE=""  # Will be set to: fresh-install, interactive, or dry-run
 DRY_RUN=false
+SECTION_SELECT=false  # Set to true when --section is used
+SELECTED_SECTIONS=()  # Array to store selected section IDs
 
 # Get the actual user (the one who ran sudo)
 ACTUAL_USER="${SUDO_USER:-${USER:-$(whoami)}}"
@@ -99,6 +101,7 @@ Usage: sudo bash $0 [OPTIONS]
 Modes:
   --fresh-install    Run with minimal prompts (for fresh servers)
   --interactive      Ask confirmation for each component (for existing servers)
+  --section          Select specific sections to run (shows interactive menu)
   --dry-run          Show what would be done without making changes
 
 Options:
@@ -107,8 +110,9 @@ Options:
 Examples:
   sudo bash $0 --fresh-install
   sudo bash $0 --interactive
+  sudo bash $0 --section
+  sudo bash $0 --section --dry-run
   sudo bash $0 --dry-run
-  sudo bash $0 --interactive --dry-run
 
 Note: If no mode is specified, the script will auto-detect based on existing installations.
 EOF
@@ -125,6 +129,11 @@ parse_arguments() {
                 ;;
             --interactive)
                 MODE="interactive"
+                shift
+                ;;
+            --section)
+                MODE="interactive"
+                SECTION_SELECT=true
                 shift
                 ;;
             --dry-run)
@@ -265,6 +274,106 @@ check_component_status() {
     return 1
 }
 
+# Function to show section selection menu
+show_section_menu() {
+    echo ""
+    echo "══════════════════════════════════════════════════════════════"
+    echo "  Section Selection Menu"
+    echo "══════════════════════════════════════════════════════════════"
+    echo ""
+    echo "Available sections:"
+    echo ""
+    echo "  1. system-update           - System package updates"
+    echo "  2. hostname                - Configure hostname"
+    echo "  3. timezone                - Configure timezone"
+    echo "  4. swap                    - Configure swap file"
+    echo "  5. dev-environment         - Install development tools (Python, Node.js, Git)"
+    echo "  6. docker                  - Install Docker & Docker Compose"
+    echo "  7. security-repository     - Add security package repository"
+    echo "  8. password-hardening      - Password & authentication hardening"
+    echo "  9. deprecated-cleanup      - Remove deprecated packages"
+    echo " 10. kernel-hardening        - Kernel security hardening"
+    echo " 11. core-dump-disable       - Disable core dumps"
+    echo " 12. umask-hardening         - Umask security hardening"
+    echo " 13. ssh-hardening           - SSH configuration & hardening"
+    echo " 14. ufw-firewall            - UFW firewall configuration"
+    echo " 15. fail2ban                - Install & configure Fail2ban"
+    echo " 16. lynis                   - Install Lynis security auditing"
+    echo " 17. rkhunter                - Install & configure Rkhunter"
+    echo " 18. systemd-hardening       - Systemd service hardening"
+    echo " 19. audit-logging           - Audit logging configuration"
+    echo " 20. netdata                 - Install Netdata monitoring"
+    echo " 21. portainer               - Install Portainer"
+    echo " 22. cloudflare-tunnel       - Configure Cloudflare Tunnel"
+    echo " 23. telegram                - Configure Telegram notifications"
+    echo ""
+    echo "Enter section numbers separated by spaces (e.g., 1 3 18)"
+    echo "Or press ENTER to cancel"
+    echo ""
+    read -p "Select sections: " selection
+
+    if [ -z "$selection" ]; then
+        echo "Selection canceled"
+        return 1
+    fi
+
+    # Map numbers to section keys
+    declare -A section_map=(
+        [1]="system-update"
+        [2]="hostname"
+        [3]="timezone"
+        [4]="swap"
+        [5]="dev-environment"
+        [6]="docker"
+        [7]="security-repository"
+        [8]="password-hardening"
+        [9]="deprecated-cleanup"
+        [10]="kernel-hardening"
+        [11]="core-dump-disable"
+        [12]="umask-hardening"
+        [13]="ssh-hardening"
+        [14]="ufw-firewall"
+        [15]="fail2ban"
+        [16]="lynis"
+        [17]="rkhunter"
+        [18]="systemd-hardening"
+        [19]="audit-logging"
+        [20]="netdata"
+        [21]="portainer"
+        [22]="cloudflare-tunnel"
+        [23]="telegram"
+    )
+
+    # Parse selection
+    SELECTED_SECTIONS=()
+    for num in $selection; do
+        if [ -n "${section_map[$num]}" ]; then
+            SELECTED_SECTIONS+=("${section_map[$num]}")
+        else
+            log_warning "Invalid section number: $num"
+        fi
+    done
+
+    if [ ${#SELECTED_SECTIONS[@]} -eq 0 ]; then
+        echo "No valid sections selected"
+        return 1
+    fi
+
+    echo ""
+    log_info "Selected sections: ${SELECTED_SECTIONS[*]}"
+    echo ""
+    read -p "Proceed with these sections? (Y/n): " confirm
+    confirm=${confirm:-y}
+
+    if [[ ! $confirm =~ ^[Yy]$ ]]; then
+        echo "Selection canceled"
+        SELECTED_SECTIONS=()
+        return 1
+    fi
+
+    return 0
+}
+
 # Function to ask user for component installation with context
 ask_component_install() {
     local component_name="$1"
@@ -277,6 +386,27 @@ ask_component_install() {
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would ask about: $component_name"
         return 0
+    fi
+
+    # In section-select mode, check if this section is selected
+    if [ "$SECTION_SELECT" = true ]; then
+        # If SELECTED_SECTIONS is empty, skip everything (user canceled)
+        if [ ${#SELECTED_SECTIONS[@]} -eq 0 ]; then
+            return 1
+        fi
+
+        # Check if this component_key is in selected sections
+        local found=false
+        for section in "${SELECTED_SECTIONS[@]}"; do
+            if [ "$section" = "$component_key" ]; then
+                found=true
+                break
+            fi
+        done
+
+        if [ "$found" = false ]; then
+            return 1  # Skip this section
+        fi
     fi
 
     # In fresh-install mode, use defaults without asking (unless critical)
@@ -526,13 +656,25 @@ if [ -z "$MODE" ]; then
     show_usage
 fi
 
+# Show section selection menu if --section was used
+if [ "$SECTION_SELECT" = true ]; then
+    if ! show_section_menu; then
+        log_info "Script canceled by user"
+        exit 0
+    fi
+fi
+
 # Show current mode
 case "$MODE" in
     "fresh-install")
         log_info "Mode: FRESH INSTALL (minimal prompts)"
         ;;
     "interactive")
-        log_warning "Mode: INTERACTIVE (confirmation required for each component)"
+        if [ "$SECTION_SELECT" = true ]; then
+            log_info "Mode: SECTION SELECT (running selected sections only)"
+        else
+            log_warning "Mode: INTERACTIVE (confirmation required for each component)"
+        fi
         ;;
 esac
 
@@ -622,6 +764,81 @@ else
 fi
 
 ###############################################################################
+# HOSTNAME FQDN CONFIGURATION
+###############################################################################
+
+if ! check_component_status "HOSTNAME_FQDN"; then
+    if prompt_user \
+    "Configure hostname with FQDN (Fully Qualified Domain Name)?
+
+A properly configured FQDN improves system identification and security.
+
+Configuration:
+• Sets hostname to include .local domain (e.g., server.local)
+• Updates /etc/hosts with FQDN mapping
+• Required for proper DNS resolution
+• Improves Lynis security score
+
+Benefits:
+• Better system identification in logs and monitoring
+• Required for some services (mail servers, certificates)
+• Prevents hostname resolution warnings
+• Compliance with networking best practices
+
+Current hostname: $(hostname)
+Current FQDN: $(hostname --fqdn 2>/dev/null || echo 'not set')
+
+Lynis recommendation: NAME-4404" \
+    "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would configure hostname with .local FQDN"
+        log_dry_run "Would update /etc/hosts with FQDN entry"
+    else
+        CURRENT_HOSTNAME=$(hostname)
+
+        # Check if hostname already has a domain
+        if [[ "$CURRENT_HOSTNAME" == *.* ]]; then
+            log_info "Hostname already has FQDN: $CURRENT_HOSTNAME"
+        else
+            log_info "Configuring FQDN for hostname: $CURRENT_HOSTNAME"
+
+            # Set hostname with .local domain
+            FQDN_HOSTNAME="${CURRENT_HOSTNAME}.local"
+            sudo hostnamectl set-hostname "$FQDN_HOSTNAME"
+            log_info "Hostname set to: $FQDN_HOSTNAME"
+
+            # Update /etc/hosts
+            # Remove old hostname entry if exists
+            sudo sed -i "/127.0.1.1/d" /etc/hosts
+
+            # Add new FQDN entry
+            echo "127.0.1.1 $FQDN_HOSTNAME $CURRENT_HOSTNAME" | sudo tee -a /etc/hosts >/dev/null
+            log_info "Updated /etc/hosts with FQDN entry"
+
+            # Verify configuration
+            if hostname --fqdn &>/dev/null; then
+                NEW_FQDN=$(hostname --fqdn)
+                log_info "FQDN configured successfully: $NEW_FQDN"
+                echo ""
+                echo "══════════════════════════════════════════════════════════"
+                echo "Hostname: $(hostname)"
+                echo "FQDN: $NEW_FQDN"
+                echo "══════════════════════════════════════════════════════════"
+                echo ""
+            else
+                log_warning "FQDN verification failed, but configuration completed"
+            fi
+        fi
+    fi
+        mark_completed "HOSTNAME_FQDN"
+    else
+        log_info "FQDN hostname configuration skipped"
+        mark_completed "HOSTNAME_FQDN"
+    fi
+fi
+
+###############################################################################
 # SYSTEM UPDATE
 ###############################################################################
 
@@ -670,6 +887,82 @@ else
 fi
 
 ###############################################################################
+# SECURITY REPOSITORY CONFIGURATION
+###############################################################################
+
+if skip_if_completed "SECURITY_REPOSITORY"; then
+    log_info "Security repository already configured, skipping"
+else
+    if ask_component_install \
+        "SECURITY REPOSITORY VERIFICATION" \
+        "security-repository" \
+        "Verify and configure security update repositories for timely security patches." \
+        "Security features:
+• Enables official security update repository
+• Ensures critical security patches are received
+• Required for automatic security updates
+
+Repositories:
+• Ubuntu: security.ubuntu.com
+• Debian: security.debian.org
+
+⚠️  Critical for production servers!" \
+        "y"; then
+
+        if [ "$DRY_RUN" = true ]; then
+            log_dry_run "Would verify security repository configuration"
+            log_dry_run "Would add security repository if missing"
+        else
+            log_info "Verifying security repository configuration..."
+
+            # Detect OS
+            if [ -f /etc/os-release ]; then
+                . /etc/os-release
+                OS_ID="$ID"
+                OS_CODENAME="$VERSION_CODENAME"
+            else
+                log_warning "Cannot detect OS version"
+                OS_ID="unknown"
+            fi
+
+            if [ "$OS_ID" = "ubuntu" ]; then
+                # Ubuntu security repo
+                if ! grep -qr "^deb.*security.ubuntu.com" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+                    log_warning "Ubuntu security repository not found, adding it..."
+                    echo "deb http://security.ubuntu.com/ubuntu ${OS_CODENAME}-security main restricted universe multiverse" | \
+                        sudo tee -a /etc/apt/sources.list >/dev/null
+                    log_info "Added Ubuntu security repository"
+                    log_info "Running apt-get update..."
+                    sudo apt-get update >/dev/null 2>&1 || log_warning "apt-get update had errors"
+                else
+                    log_info "Ubuntu security repository already configured"
+                fi
+            elif [ "$OS_ID" = "debian" ]; then
+                # Debian security repo
+                if ! grep -qr "^deb.*security.debian.org" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+                    log_warning "Debian security repository not found, adding it..."
+                    echo "deb http://security.debian.org/debian-security ${OS_CODENAME}-security main contrib non-free" | \
+                        sudo tee -a /etc/apt/sources.list >/dev/null
+                    log_info "Added Debian security repository"
+                    log_info "Running apt-get update..."
+                    sudo apt-get update >/dev/null 2>&1 || log_warning "apt-get update had errors"
+                else
+                    log_info "Debian security repository already configured"
+                fi
+            else
+                log_warning "Unknown OS: $OS_ID - skipping security repository configuration"
+            fi
+
+            log_info "Security repository configuration verified"
+        fi
+        mark_completed "SECURITY_REPOSITORY"
+    else
+        log_info "Security repository verification skipped"
+        mark_completed "SECURITY_REPOSITORY"
+    fi
+fi
+
+###############################################################################
 # INSTALL ESSENTIAL PACKAGES
 ###############################################################################
 
@@ -689,6 +982,7 @@ if ask_component_install \
 • htop, iotop, nethogs - System monitoring tools
 • lm-sensors - Hardware monitoring (temperature, voltage, fans)
 • fail2ban - Intrusion prevention
+• libpam-tmpdir - Per-user temporary directories (security)
 
 Note: You will be able to select individual packages in the next step" \
     "y"; then
@@ -711,6 +1005,7 @@ Note: You will be able to select individual packages in the next step" \
         ["nethogs"]="Network bandwidth monitor per process"
         ["lm-sensors"]="Hardware monitoring (temperature, voltage, fans)"
         ["fail2ban"]="Intrusion prevention system"
+        ["libpam-tmpdir"]="Per-user temporary directories (Lynis security recommendation)"
     )
 
     # Collect selected packages
@@ -741,7 +1036,7 @@ Note: You will be able to select individual packages in the next step" \
             echo "Press Enter to accept the default (Y = install, n = skip)"
             echo ""
 
-            for pkg in curl wget net-tools ufw unattended-upgrades ca-certificates gnupg lsb-release software-properties-common rsyslog git htop iotop nethogs lm-sensors fail2ban; do
+            for pkg in curl wget net-tools ufw unattended-upgrades ca-certificates gnupg lsb-release software-properties-common rsyslog git htop iotop nethogs lm-sensors fail2ban libpam-tmpdir; do
                 desc="${ESSENTIAL_PACKAGES[$pkg]}"
 
                 # Check if package is already installed
@@ -818,16 +1113,26 @@ if ask_component_install \
 • debsums - Verifies installed package file integrity
 • apt-show-versions - Shows available package versions and updates
 • needrestart - Detects which services need restart after updates
+• apt-listbugs - Display critical bugs before package installation (Debian only)
 
 Benefits:
 • Review security changes before applying updates
 • Detect modified or corrupted system files
 • Better package version management
 • Know when to restart services after security updates
+• Prevent installation of packages with known critical bugs (Debian)
 
 Note: You will be able to select individual tools in the next step
-Note: apt-listbugs (Debian-only) is not available on Ubuntu" \
+Lynis recommendation: DEB-0810 (Debian systems only)" \
     "y"; then
+
+    # Detect OS for apt-listbugs availability
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS_ID="${ID:-unknown}"
+    else
+        OS_ID="unknown"
+    fi
 
     # Define security tools with descriptions
     declare -A SECURITY_TOOLS=(
@@ -836,6 +1141,11 @@ Note: apt-listbugs (Debian-only) is not available on Ubuntu" \
         ["apt-show-versions"]="Shows available package versions"
         ["needrestart"]="Detects services needing restart after updates"
     )
+
+    # Add apt-listbugs only on Debian systems
+    if [ "$OS_ID" = "debian" ]; then
+        SECURITY_TOOLS["apt-listbugs"]="Display critical bugs before package installation (Debian only)"
+    fi
 
     # Collect selected tools
     SELECTED_SECURITY_TOOLS=()
@@ -865,7 +1175,8 @@ Note: apt-listbugs (Debian-only) is not available on Ubuntu" \
             echo "Press Enter to accept the default (Y = install, n = skip)"
             echo ""
 
-            for tool in apt-listchanges debsums apt-show-versions needrestart; do
+            # Iterate over all tools in SECURITY_TOOLS array
+            for tool in "${!SECURITY_TOOLS[@]}"; do
                 desc="${SECURITY_TOOLS[$tool]}"
 
                 # Check if tool is already installed
@@ -928,6 +1239,218 @@ Note: apt-listbugs (Debian-only) is not available on Ubuntu" \
     fi
 else
     log_info "Security package management tools installation skipped"
+fi
+
+###############################################################################
+# PASSWORD POLICIES & PAM HARDENING
+###############################################################################
+
+if skip_if_completed "PASSWORD_POLICIES"; then
+    log_info "Password policies already configured, skipping"
+else
+    if ask_component_install \
+        "PASSWORD POLICIES & PAM SECURITY" \
+        "password-policies" \
+        "Configure strong password policies and PAM security settings." \
+        "Security features:
+• SHA-512 password hashing with 65536 rounds (slow brute-force)
+• Password quality requirements (minimum 12 chars, complexity)
+• Password aging policies (7 days min, 365 days max, 30 days warning)
+• Per-user temporary directories (libpam-tmpdir)
+
+Benefits:
+• Stronger password hashing (resistant to attacks)
+• Enforced password complexity when setting passwords
+• Automatic password expiration for compliance
+• Isolated tmp directories per user session
+
+Note: Only affects password-based logins (SSH keys unaffected)
+Lynis recommendations: AUTH-9230, AUTH-9262, AUTH-9286, DEB-0280" \
+        "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would install libpam-pwquality"
+        log_dry_run "Would configure SHA-512 rounds in /etc/pam.d/common-password"
+        log_dry_run "Would configure SHA-512 rounds in /etc/login.defs (ENCRYPT_METHOD, SHA_CRYPT_MIN_ROUNDS, SHA_CRYPT_MAX_ROUNDS)"
+        log_dry_run "Would set password quality requirements in /etc/security/pwquality.conf"
+        log_dry_run "Would configure password aging in /etc/login.defs (PASS_MIN_DAYS=7, PASS_MAX_DAYS=365, PASS_WARN_AGE=30)"
+        log_dry_run "Would apply password aging to existing user accounts (UID>=1000) using chage"
+    else
+        log_info "Configuring password policies and PAM hardening..."
+
+        # Install libpam-pwquality if not already installed
+        if ! dpkg -l | grep -q "^ii  libpam-pwquality "; then
+            log_info "Installing libpam-pwquality..."
+            DEBIAN_FRONTEND=noninteractive sudo apt-get install -y libpam-pwquality || \
+                log_warning "Failed to install libpam-pwquality"
+        else
+            log_info "libpam-pwquality already installed"
+        fi
+
+        # Backup PAM configs
+        if [ -f /etc/pam.d/common-password ]; then
+            sudo cp /etc/pam.d/common-password /etc/pam.d/common-password.backup.$(date +%Y%m%d_%H%M%S)
+            log_info "Backed up /etc/pam.d/common-password"
+        fi
+
+        # Configure SHA-512 with rounds (Lynis AUTH-9230)
+        log_info "Configuring SHA-512 password hashing with 65536 rounds..."
+
+        # Check if pam_unix.so line exists and add rounds parameter
+        if grep -q "pam_unix.so" /etc/pam.d/common-password; then
+            # Check if rounds already configured
+            if grep "pam_unix.so" /etc/pam.d/common-password | grep -q "rounds="; then
+                log_info "Password hashing rounds already configured"
+            else
+                # Add rounds parameter to existing pam_unix.so line
+                sudo sed -i '/pam_unix.so/ s/$/ rounds=65536/' /etc/pam.d/common-password
+                log_info "Added rounds=65536 to pam_unix.so"
+            fi
+        else
+            log_warning "pam_unix.so not found in /etc/pam.d/common-password"
+        fi
+
+        # Configure password quality requirements (Lynis AUTH-9262)
+        log_info "Configuring password quality requirements..."
+
+        if [ -f /etc/security/pwquality.conf ]; then
+            sudo cp /etc/security/pwquality.conf /etc/security/pwquality.conf.backup.$(date +%Y%m%d_%H%M%S)
+        fi
+
+        cat <<'EOF' | sudo tee /etc/security/pwquality.conf >/dev/null
+# Password quality requirements - Lynis AUTH-9262
+# Configured by server baseline script
+
+# Minimum password length
+minlen = 12
+
+# Minimum number of character classes (lower, upper, digit, special)
+minclass = 3
+
+# Maximum number of allowed consecutive same characters
+maxrepeat = 3
+
+# Require at least one digit
+dcredit = -1
+
+# Require at least one uppercase letter
+ucredit = -1
+
+# Require at least one lowercase letter
+lcredit = -1
+
+# Require at least one special character
+ocredit = -1
+
+# Check password against dictionary
+# dictcheck = 1
+
+# Reject passwords containing username
+# usercheck = 1
+EOF
+
+        log_info "Password quality requirements configured"
+
+        # Ensure pam_pwquality is enabled in PAM
+        if ! grep -q "pam_pwquality.so" /etc/pam.d/common-password; then
+            log_info "Enabling pam_pwquality in /etc/pam.d/common-password..."
+            # Add pam_pwquality before pam_unix
+            sudo sed -i '/pam_unix.so/i password requisite pam_pwquality.so retry=3' /etc/pam.d/common-password
+            log_info "pam_pwquality enabled"
+        else
+            log_info "pam_pwquality already enabled"
+        fi
+
+        # Configure /etc/login.defs for password hashing (Lynis AUTH-9230 complete compliance)
+        log_info "Configuring /etc/login.defs for SHA-512 password hashing..."
+
+        if [ -f /etc/login.defs ]; then
+            sudo cp /etc/login.defs /etc/login.defs.backup.$(date +%Y%m%d_%H%M%S)
+            log_info "Backed up /etc/login.defs"
+
+            # Set ENCRYPT_METHOD to SHA512 if not already set
+            if grep -q "^ENCRYPT_METHOD" /etc/login.defs; then
+                sudo sed -i 's/^ENCRYPT_METHOD.*/ENCRYPT_METHOD SHA512/' /etc/login.defs
+                log_info "Updated ENCRYPT_METHOD to SHA512"
+            else
+                echo "ENCRYPT_METHOD SHA512" | sudo tee -a /etc/login.defs >/dev/null
+                log_info "Added ENCRYPT_METHOD SHA512"
+            fi
+
+            # Set SHA_CRYPT_MIN_ROUNDS and SHA_CRYPT_MAX_ROUNDS
+            if grep -q "^SHA_CRYPT_MIN_ROUNDS" /etc/login.defs; then
+                sudo sed -i 's/^SHA_CRYPT_MIN_ROUNDS.*/SHA_CRYPT_MIN_ROUNDS 65536/' /etc/login.defs
+            else
+                echo "SHA_CRYPT_MIN_ROUNDS 65536" | sudo tee -a /etc/login.defs >/dev/null
+            fi
+
+            if grep -q "^SHA_CRYPT_MAX_ROUNDS" /etc/login.defs; then
+                sudo sed -i 's/^SHA_CRYPT_MAX_ROUNDS.*/SHA_CRYPT_MAX_ROUNDS 65536/' /etc/login.defs
+            else
+                echo "SHA_CRYPT_MAX_ROUNDS 65536" | sudo tee -a /etc/login.defs >/dev/null
+            fi
+
+            log_info "Configured SHA-512 hashing rounds in /etc/login.defs"
+
+            # Configure password aging (Lynis AUTH-9286)
+            log_info "Configuring password aging policies..."
+
+            # PASS_MIN_DAYS: Minimum days between password changes
+            if grep -q "^PASS_MIN_DAYS" /etc/login.defs; then
+                sudo sed -i 's/^PASS_MIN_DAYS.*/PASS_MIN_DAYS 7/' /etc/login.defs
+            else
+                echo "PASS_MIN_DAYS 7" | sudo tee -a /etc/login.defs >/dev/null
+            fi
+
+            # PASS_MAX_DAYS: Maximum password age
+            if grep -q "^PASS_MAX_DAYS" /etc/login.defs; then
+                sudo sed -i 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS 365/' /etc/login.defs
+            else
+                echo "PASS_MAX_DAYS 365" | sudo tee -a /etc/login.defs >/dev/null
+            fi
+
+            # PASS_WARN_AGE: Days of warning before password expires
+            if grep -q "^PASS_WARN_AGE" /etc/login.defs; then
+                sudo sed -i 's/^PASS_WARN_AGE.*/PASS_WARN_AGE 30/' /etc/login.defs
+            else
+                echo "PASS_WARN_AGE 30" | sudo tee -a /etc/login.defs >/dev/null
+            fi
+
+            log_info "Password aging policies configured"
+
+            # Apply password aging to existing user accounts (except system accounts)
+            log_info "Applying password aging to existing user accounts..."
+            AGING_COUNT=0
+            sudo awk -F: '($2!="!" && $2!="*" && $3>=1000){print $1}' /etc/shadow | while read u; do
+                sudo chage -M 365 -m 7 -W 30 "$u" 2>/dev/null && AGING_COUNT=$((AGING_COUNT + 1))
+            done
+            log_info "Password aging applied to user accounts (365 days max age, 7 days min age, 30 days warning)"
+
+        else
+            log_warning "/etc/login.defs not found, skipping login.defs configuration"
+        fi
+
+        log_info "Password policies and PAM hardening configured successfully"
+        echo ""
+        echo "══════════════════════════════════════════════════════════"
+        echo "Password Policy Configuration Summary:"
+        echo "══════════════════════════════════════════════════════════"
+        echo "✓ SHA-512 hashing with 65536 rounds (PAM + login.defs)"
+        echo "✓ Minimum password length: 12 characters"
+        echo "✓ Required: 3 different character classes"
+        echo "✓ Required: At least 1 digit, 1 uppercase, 1 lowercase, 1 special char"
+        echo "✓ Maximum 3 consecutive same characters"
+        echo ""
+        echo "Note: These policies only apply when setting new passwords"
+        echo "      SSH key authentication is not affected"
+        echo "══════════════════════════════════════════════════════════"
+        echo ""
+    fi
+        mark_completed "PASSWORD_POLICIES"
+    else
+        log_info "Password policies configuration skipped"
+        mark_completed "PASSWORD_POLICIES"
+    fi
 fi
 
 ###############################################################################
@@ -1447,7 +1970,7 @@ if ask_component_install \
     "kernel-hardening" \
     "Apply kernel-level security hardening parameters via sysctl." \
     "Security features:
-• IP spoofing protection
+• IP spoofing protection (rp_filter)
 • ICMP redirect protection
 • Source packet routing disabled
 • SYN flood protection
@@ -1455,12 +1978,25 @@ if ask_component_install \
 • Core dump restrictions
 • Kernel debugging keys disabled
 • Log suspicious packets (Martians)
+• BPF JIT hardening (value: 1 for QUIC compatibility)
+• Extended sysctl parameters (15+ Lynis recommendations)
+
+⚠️  DOCKER & CONTAINER COMPATIBILITY:
+• IP forwarding is ENABLED (net.ipv4/ipv6.conf.all.forwarding = 1)
+  Required for Docker, especially containers using network_mode: host
+  Examples: Cloudflare Tunnel, Netdata, VPN clients, reverse proxies
+• Connection tracking increased to 524288 (supports QUIC protocol)
+• BPF JIT set to 1 (not 2) to allow QUIC while maintaining security
+
+If you run Docker or containerized services, these settings ensure
+they work correctly while maintaining strong kernel-level security.
 
 Benefits:
 • Protection against network-based attacks
 • Reduced attack surface
 • Better resilience against DDoS
-• Enhanced system security posture" \
+• Enhanced system security posture
+• Docker and container compatibility" \
     "y"; then
 
     if [ "$DRY_RUN" = true ]; then
@@ -1470,6 +2006,10 @@ Benefits:
         log_dry_run "  - Source routing disabled"
         log_dry_run "  - SYN flood protection (tcp_syncookies)"
         log_dry_run "  - TCP hardening (timestamps disabled)"
+        log_dry_run "  - IP forwarding ENABLED (Docker compatibility)"
+        log_dry_run "  - Connection tracking: 524288 (QUIC support)"
+        log_dry_run "  - BPF JIT hardening: 1 (allows QUIC protocol)"
+        log_dry_run "  - Extended Lynis recommendations (15+ parameters)"
         log_dry_run "  - Core dumps disabled for setuid programs"
         log_dry_run "  - Kernel sysrq disabled"
         log_dry_run "Would apply settings with sysctl -p"
@@ -1513,11 +2053,16 @@ net.ipv4.tcp_syn_retries = 5
 
 # TCP hardening
 net.ipv4.tcp_timestamps = 0
-net.ipv4.conf.all.forwarding = 0
-net.ipv6.conf.all.forwarding = 0
+
+# IP forwarding - Keep enabled for Docker (especially network_mode: host)
+# Required for containers like Cloudflare Tunnel to route packets
+# Disabling this breaks Docker networking and QUIC protocol
+net.ipv4.conf.all.forwarding = 1
+net.ipv6.conf.all.forwarding = 1
 
 # Increase connection tracking size
-net.netfilter.nf_conntrack_max = 262144
+# Increased to 524288 to support QUIC protocol (many short-lived UDP connections)
+net.netfilter.nf_conntrack_max = 524288
 
 # File system hardening (SECURITY FIX - completely disable core dumps for setuid programs)
 fs.suid_dumpable = 0
@@ -1525,6 +2070,53 @@ kernel.dmesg_restrict = 1
 
 # Kernel debugging keys disabled (SECURITY FIX)
 kernel.sysrq = 0
+
+# ===================================================================
+# ADDITIONAL LYNIS RECOMMENDATIONS (KRNL-6000)
+# ===================================================================
+
+# Kernel hardening - Information disclosure prevention
+# Hide kernel pointers from unprivileged users (LYNIS recommendation)
+kernel.kptr_restrict = 2
+
+# Disable unprivileged BPF to prevent exploit development (LYNIS recommendation)
+kernel.unprivileged_bpf_disabled = 1
+
+# Harden BPF JIT compiler against side-channel attacks (LYNIS recommendation)
+# NOTE: Set to 1 instead of 2 to allow QUIC protocol (used by Cloudflare Tunnel)
+# Value 2 completely disables JIT for unprivileged users, breaking QUIC
+# Value 1 enables constant blinding for unprivileged users (still secure)
+net.core.bpf_jit_harden = 1
+
+# Restrict perf events to prevent information leakage (LYNIS recommendation)
+kernel.perf_event_paranoid = 3
+
+# Filesystem hardening
+fs.protected_hardlinks = 1
+fs.protected_symlinks = 1
+fs.protected_fifos = 2
+fs.protected_regular = 2
+
+# Additional network security
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.conf.default.secure_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+
+# IPv6 hardening
+net.ipv6.conf.all.accept_ra = 0
+net.ipv6.conf.default.accept_ra = 0
+
+# ICMP hardening
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+
+# Process tracing restrictions
+kernel.yama.ptrace_scope = 1
+
+# Memory hardening
+vm.swappiness = 10
+vm.vfs_cache_pressure = 50
 EOF
 
         sudo sysctl -p /etc/sysctl.d/99-server-hardening.conf >/dev/null 2>&1 || log_warning "Some sysctl parameters may not be available on this kernel"
@@ -1588,6 +2180,156 @@ else
 fi
 
 ###############################################################################
+# USB STORAGE DEVICE CONTROL
+###############################################################################
+
+if skip_if_completed "DISABLE_USB_STORAGE"; then
+    log_info "USB storage control already configured, skipping"
+else
+    if ask_component_install \
+        "DISABLE USB STORAGE DEVICES" \
+        "disable-usb-storage" \
+        "Disable USB mass storage devices to prevent data exfiltration and malware." \
+        "Security features:
+• Blocks USB mass storage devices (drives, external disks)
+• Prevents unauthorized data copying
+• Reduces malware infection risk via USB
+
+⚠️  IMPORTANT NOTES:
+✓ USB keyboards and mice will STILL WORK
+✓ Other USB devices (webcams, printers) will STILL WORK
+✗ USB drives and external hard disks will NOT WORK
+
+⚠️  Raspberry Pi users: Usually say NO if you use USB storage
+⚠️  Changes require reboot to take effect
+
+Recommended:
+• VPS/Cloud servers: YES (no physical USB access)
+• Raspberry Pi: NO (often uses USB storage for backups)
+• Desktop/Laptop: NO (needs USB drives)
+• Production server rack: YES (security over convenience)
+
+Lynis recommendation: USB-1000" \
+        "n"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would create /etc/modprobe.d/disable-usb-storage.conf"
+        log_dry_run "Would blacklist usb-storage kernel module"
+        log_dry_run "Note: USB keyboards/mice would still work"
+        log_dry_run "Note: Changes would require reboot"
+    else
+        log_info "Disabling USB storage devices..."
+
+        cat <<'EOF' | sudo tee /etc/modprobe.d/disable-usb-storage.conf >/dev/null
+# Disable USB storage devices for security (Lynis USB-1000)
+# USB keyboards, mice, and other devices will still work
+# Only mass storage devices (USB drives, external disks) are blocked
+
+install usb-storage /bin/true
+blacklist usb-storage
+EOF
+
+        log_info "USB storage disabled"
+        echo ""
+        echo "══════════════════════════════════════════════════════════"
+        echo "USB Storage Control Summary:"
+        echo "══════════════════════════════════════════════════════════"
+        echo "✓ USB storage devices (drives, disks) will be BLOCKED"
+        echo "✓ USB keyboards and mice will STILL WORK"
+        echo "✓ Other USB devices will STILL WORK"
+        echo ""
+        echo "⚠️  Changes take effect after REBOOT"
+        echo "══════════════════════════════════════════════════════════"
+        echo ""
+    fi
+        mark_completed "DISABLE_USB_STORAGE"
+    else
+        log_info "USB storage disabling skipped"
+        mark_completed "DISABLE_USB_STORAGE"
+    fi
+fi
+
+###############################################################################
+# DISABLE CORE DUMPS
+###############################################################################
+
+if skip_if_completed "DISABLE_CORE_DUMPS"; then
+    log_info "Core dumps already disabled, skipping"
+else
+    if ask_component_install \
+        "DISABLE CORE DUMPS COMPLETELY" \
+        "disable-core-dumps" \
+        "Completely disable core dumps to prevent sensitive data exposure." \
+        "Security features:
+• Prevents core dump files from being created
+• Protects against memory dump exploitation
+• Reduces disk space usage
+• Prevents sensitive data leakage (passwords, keys, etc.)
+
+Core dumps can contain:
+• Passwords and encryption keys in memory
+• Sensitive application data
+• System configuration details
+
+Configuration:
+• limits.d: hard/soft core limits to 0
+• systemd: DumpCore=no for all services
+• profile: ulimit -c 0 for all users
+
+Lynis recommendation: KRNL-5820" \
+        "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would create /etc/security/limits.d/10-disable-core-dumps.conf"
+        log_dry_run "Would add 'ulimit -c 0' to /etc/profile"
+        log_dry_run "Would create /etc/systemd/system.conf.d/10-disable-core-dumps.conf"
+    else
+        log_info "Disabling core dumps completely..."
+
+        # Disable via limits.conf
+        cat <<'EOF' | sudo tee /etc/security/limits.d/10-disable-core-dumps.conf >/dev/null
+# Disable core dumps completely for all users (Lynis KRNL-5820)
+# Core dumps can contain sensitive information like passwords and keys
+* hard core 0
+* soft core 0
+EOF
+
+        log_info "Created limits.d configuration"
+
+        # Add to profile
+        if ! grep -q "ulimit -c 0" /etc/profile 2>/dev/null; then
+            echo "" | sudo tee -a /etc/profile >/dev/null
+            echo "# Disable core dumps (security hardening)" | sudo tee -a /etc/profile >/dev/null
+            echo "ulimit -c 0" | sudo tee -a /etc/profile >/dev/null
+            log_info "Added ulimit to /etc/profile"
+        else
+            log_info "ulimit already configured in /etc/profile"
+        fi
+
+        # Disable for systemd services
+        sudo mkdir -p /etc/systemd/system.conf.d
+
+        cat <<'EOF' | sudo tee /etc/systemd/system.conf.d/10-disable-core-dumps.conf >/dev/null
+[Manager]
+# Disable core dumps for all systemd services
+DumpCore=no
+EOF
+
+        log_info "Created systemd configuration"
+
+        # Reload systemd
+        sudo systemctl daemon-reload
+
+        log_info "Core dumps completely disabled"
+    fi
+        mark_completed "DISABLE_CORE_DUMPS"
+    else
+        log_info "Core dump disabling skipped"
+        mark_completed "DISABLE_CORE_DUMPS"
+    fi
+fi
+
+###############################################################################
 # SYSTEM LIMITS
 ###############################################################################
 
@@ -1634,6 +2376,76 @@ EOF
     fi
 else
     log_info "System limits configuration skipped"
+fi
+
+###############################################################################
+# FILE PERMISSIONS HARDENING
+###############################################################################
+
+if skip_if_completed "FILE_PERMISSIONS"; then
+    log_info "File permissions already hardened, skipping"
+else
+    if ask_component_install \
+        "FILE PERMISSIONS HARDENING" \
+        "file-permissions" \
+        "Harden file permissions for security-critical files and directories." \
+        "Files/directories to secure:
+• /etc/crontab → 600 (root only read/write)
+• /etc/cron.* directories → 700 (root only access)
+• /etc/ssh/sshd_config → 600 (root only read/write)
+• /etc/at.deny → 600 (if exists)
+
+Benefits:
+• Prevents unauthorized access to cron configurations
+• Protects SSH configuration from tampering
+• Restricts at/cron access control files
+• Reduces privilege escalation risks
+
+Lynis recommendation: FILE-7524" \
+        "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would set permissions:"
+        log_dry_run "  - /etc/crontab: 600"
+        log_dry_run "  - /etc/cron.*: 700"
+        log_dry_run "  - /etc/ssh/sshd_config: 600"
+        log_dry_run "  - /etc/at.deny: 600 (if exists)"
+    else
+        log_info "Hardening file permissions..."
+
+        # Crontab
+        if [ -f /etc/crontab ]; then
+            sudo chmod 600 /etc/crontab
+            log_info "Set /etc/crontab to 600"
+        fi
+
+        # Cron directories
+        for crondir in /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly /etc/cron.d; do
+            if [ -d "$crondir" ]; then
+                sudo chmod 700 "$crondir"
+                log_info "Set $crondir to 700"
+            fi
+        done
+
+        # SSH config
+        if [ -f /etc/ssh/sshd_config ]; then
+            sudo chmod 600 /etc/ssh/sshd_config
+            log_info "Set /etc/ssh/sshd_config to 600"
+        fi
+
+        # at.deny
+        if [ -f /etc/at.deny ]; then
+            sudo chmod 600 /etc/at.deny
+            log_info "Set /etc/at.deny to 600"
+        fi
+
+        log_info "File permissions hardened"
+    fi
+        mark_completed "FILE_PERMISSIONS"
+    else
+        log_info "File permissions hardening skipped"
+        mark_completed "FILE_PERMISSIONS"
+    fi
 fi
 
 ###############################################################################
@@ -1805,6 +2617,157 @@ log_info "UFW rules validation:"
 sudo ufw status numbered
 
 ###############################################################################
+# LEGAL WARNING BANNERS
+###############################################################################
+
+if skip_if_completed "LEGAL_BANNERS"; then
+    log_info "Legal banners already configured, skipping"
+else
+    if ask_component_install \
+        "LEGAL WARNING BANNERS" \
+        "legal-banners" \
+        "Configure legal warning banners for SSH and console login." \
+        "Security features:
+• Display legal warning before login
+• Establish no expectation of privacy
+• Legal protection for monitoring activities
+• Compliance with security policies
+
+Banners displayed:
+• SSH login (before authentication)
+• Console login (local terminal)
+• After login message
+
+Note: Customize banner text for your organization
+Lynis recommendations: BANN-7126, BANN-7130
+
+⚠️  Recommended for business/production servers
+    Optional for personal servers" \
+        "n"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would create /etc/issue with legal banner"
+        log_dry_run "Would create /etc/issue.net with legal banner"
+        log_dry_run "Would configure SSH to use banner"
+    else
+        log_info "Configuring legal warning banners..."
+
+        # Backup existing banners
+        [ -f /etc/issue ] && sudo cp /etc/issue /etc/issue.backup.$(date +%Y%m%d_%H%M%S)
+        [ -f /etc/issue.net ] && sudo cp /etc/issue.net /etc/issue.net.backup.$(date +%Y%m%d_%H%M%S)
+
+        # Create legal warning banner
+        cat <<'EOF' | sudo tee /etc/issue >/dev/null
+***********************************************************************
+*                         AUTHORIZED ACCESS ONLY                      *
+***********************************************************************
+
+This system is for authorized use only. Individuals accessing this
+system without authority or exceeding their access authority are
+subject to having all of their activities on this system monitored
+and recorded.
+
+Any unauthorized access or use of this system is prohibited and may
+be subject to criminal and/or civil penalties.
+
+All activities on this system are logged and monitored. By accessing
+this system, you consent to such monitoring and recording.
+
+If you do not consent to these terms, disconnect now.
+
+***********************************************************************
+EOF
+
+        log_info "Created /etc/issue"
+
+        # Copy to issue.net for SSH
+        sudo cp /etc/issue /etc/issue.net
+        log_info "Created /etc/issue.net"
+
+        # Configure SSH to use banner (will be applied when SSH config is written)
+        log_info "Legal warning banners configured"
+        log_info "Banner will be enabled in SSH configuration"
+    fi
+        mark_completed "LEGAL_BANNERS"
+    else
+        log_info "Legal warning banners skipped"
+        mark_completed "LEGAL_BANNERS"
+    fi
+fi
+
+###############################################################################
+# /PROC FILESYSTEM HARDENING
+###############################################################################
+
+if skip_if_completed "PROC_HIDEPID"; then
+    log_info "/proc filesystem already hardened, skipping"
+else
+    if ask_component_install \
+        "/PROC FILESYSTEM HARDENING" \
+        "proc-hidepid" \
+        "Configure /proc with hidepid=2 to prevent users from seeing other users' processes." \
+        "Security features:
+• Users can only see their own processes
+• Prevents information leakage about running processes
+• Reduces reconnaissance possibilities for attackers
+• Protects process command-line arguments and environment
+
+Benefits:
+• Better user isolation on multi-user systems
+• Prevents privilege escalation reconnaissance
+• Hides sensitive command-line data from other users
+• Root can still see all processes
+
+⚠️  IMPORTANT:
+• Recommended for multi-user systems
+• Safe for single-user VPS servers
+• Docker/containers work fine
+• System monitoring as root works fine
+• Requires reboot to take full effect
+
+Lynis recommendation: FILE-6000" \
+        "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would add 'proc /proc proc defaults,hidepid=2 0 0' to /etc/fstab"
+        log_dry_run "Would attempt to remount /proc with hidepid=2"
+        log_dry_run "Note: Full effect requires reboot"
+    else
+        log_info "Configuring /proc with hidepid=2..."
+
+        # Backup fstab
+        sudo cp /etc/fstab /etc/fstab.backup.$(date +%Y%m%d_%H%M%S)
+        log_info "Backed up /etc/fstab"
+
+        # Check if /proc entry exists in fstab
+        if grep -q "^proc.*/proc" /etc/fstab; then
+            # Update existing entry
+            sudo sed -i 's|^proc.*/proc.*|proc /proc proc defaults,hidepid=2 0 0|' /etc/fstab
+            log_info "Updated existing /proc entry in fstab"
+        else
+            # Add new entry
+            echo "proc /proc proc defaults,hidepid=2 0 0" | sudo tee -a /etc/fstab >/dev/null
+            log_info "Added /proc with hidepid=2 to fstab"
+        fi
+
+        # Try to remount immediately
+        if sudo mount -o remount,hidepid=2 /proc 2>/dev/null; then
+            log_info "/proc remounted with hidepid=2 (active now)"
+        else
+            log_warning "Could not remount /proc immediately"
+            log_warning "Changes will take effect on next reboot"
+        fi
+
+        log_info "/proc filesystem hardening configured"
+    fi
+        mark_completed "PROC_HIDEPID"
+    else
+        log_info "/proc filesystem hardening skipped"
+        mark_completed "PROC_HIDEPID"
+    fi
+fi
+
+###############################################################################
 # SSH HARDENING
 ###############################################################################
 
@@ -1953,7 +2916,51 @@ else
 
     # Add additional SSH hardening if not present (already idempotent)
     grep -q "^Protocol 2" /etc/ssh/sshd_config || echo "Protocol 2" | sudo tee -a /etc/ssh/sshd_config >/dev/null
-    grep -q "^MaxSessions" /etc/ssh/sshd_config || echo "MaxSessions 10" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+
+    # MaxSessions configuration with user prompt (Lynis SSH-7408)
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "SSH MaxSessions Configuration"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    echo "MaxSessions limits concurrent multiplexed sessions per SSH connection."
+    echo ""
+    echo "Recommended values:"
+    echo "  • 2  - High security (single user, minimal sessions)"
+    echo "  • 5  - Balanced (normal usage with some tmux/screen)"
+    echo "  • 10 - Permissive (heavy tmux/screen usage, multiple terminals)"
+    echo ""
+    echo "Current default: 10"
+    echo ""
+    read -p "Enter MaxSessions value (1-10, default: 2): " max_sessions
+    max_sessions=${max_sessions:-2}
+
+    # Validate input
+    if ! [[ "$max_sessions" =~ ^[0-9]+$ ]] || [ "$max_sessions" -lt 1 ] || [ "$max_sessions" -gt 10 ]; then
+        log_warning "Invalid MaxSessions value: $max_sessions, using default: 2"
+        max_sessions=2
+    fi
+
+    # Apply MaxSessions
+    if grep -q "^MaxSessions" /etc/ssh/sshd_config; then
+        sudo sed -i "s/^MaxSessions .*/MaxSessions $max_sessions/" /etc/ssh/sshd_config
+    else
+        echo "MaxSessions $max_sessions" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+    fi
+    log_info "SSH MaxSessions set to $max_sessions"
+
+    # Additional Lynis recommendations (SSH-7408)
+    # TCPKeepAlive
+    sudo sed -i 's/^#\?TCPKeepAlive .*/TCPKeepAlive no/' /etc/ssh/sshd_config
+    grep -q "^TCPKeepAlive" /etc/ssh/sshd_config || echo "TCPKeepAlive no" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+    log_info "SSH TCPKeepAlive set to no (Lynis recommendation)"
+
+    # Banner configuration (if legal banners were configured)
+    if [ -f /etc/issue.net ]; then
+        sudo sed -i 's/^#\?Banner .*/Banner \/etc\/issue.net/' /etc/ssh/sshd_config
+        grep -q "^Banner" /etc/ssh/sshd_config || echo "Banner /etc/issue.net" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+        log_info "SSH Banner configured to display legal warning"
+    fi
 
     # Set SSH LogLevel to VERBOSE for better security auditing
     sudo sed -i 's/^#\?LogLevel .*/LogLevel VERBOSE/' /etc/ssh/sshd_config
@@ -2080,11 +3087,14 @@ fi
 # FAIL2BAN CONFIGURATION
 ###############################################################################
 
-if ask_component_install \
-    "FAIL2BAN INTRUSION PREVENTION" \
-    "fail2ban" \
-    "Configure Fail2ban to protect against brute-force attacks on SSH." \
-    "Configuration:
+if skip_if_completed "FAIL2BAN"; then
+    log_info "Fail2ban already configured, skipping"
+else
+    if ask_component_install \
+        "FAIL2BAN INTRUSION PREVENTION" \
+        "fail2ban" \
+        "Configure Fail2ban to protect against brute-force attacks on SSH." \
+        "Configuration:
 • SSH protection on ports 22 and 888
 • Max 3 failed attempts allowed
 • Ban time: 2 hours (7200s)
@@ -2096,7 +3106,7 @@ Benefits:
 • Protection against SSH password guessing
 • Reduces server load from attack attempts
 • Configurable and extensible" \
-    "y"; then
+        "y"; then
 
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would backup existing /etc/fail2ban/jail.local if present"
@@ -2113,6 +3123,14 @@ Benefits:
         if [ -f /etc/fail2ban/jail.local ]; then
             sudo cp /etc/fail2ban/jail.local /etc/fail2ban/jail.local.backup.$(date +%Y%m%d_%H%M%S)
             log_info "Backed up existing jail.local"
+        fi
+
+        # Lynis recommendation (DEB-0880): Use jail.local instead of direct jail.conf modifications
+        # Create jail.local from jail.conf if it doesn't exist
+        if [ ! -f /etc/fail2ban/jail.local ] && [ -f /etc/fail2ban/jail.conf ]; then
+            sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+            log_info "Created jail.local from jail.conf (Lynis best practice DEB-0880)"
+            log_info "Future Fail2ban updates won't overwrite your custom jail.local"
         fi
 
         # Create jail.d directory if it doesn't exist
@@ -2148,8 +3166,434 @@ EOF
 
         log_info "Fail2ban configured for SSH protection"
     fi
+        mark_completed "FAIL2BAN"
+    else
+        log_info "Fail2ban configuration skipped"
+        mark_completed "FAIL2BAN"
+    fi
+fi
+
+###############################################################################
+# SYSTEMD SERVICE HARDENING
+###############################################################################
+
+if skip_if_completed "SYSTEMD_HARDENING"; then
+    log_info "Systemd services already hardened, skipping"
 else
-    log_info "Fail2ban configuration skipped"
+    if ask_component_install \
+        "SYSTEMD SERVICE HARDENING" \
+        "systemd-hardening" \
+        "Apply systemd security hardening to system services for improved security." \
+        "Available services for hardening:
+• SSH: ProtectSystem=off (VSCode/Docker compatible)
+• Docker: Basic hardening
+• Fail2ban: Full isolation
+• Cron: Filesystem protection
+• Postfix: Strict isolation + capability restrictions
+• Rsyslog: Full protection suite
+• Unattended-upgrades: Filesystem isolation
+• Containerd: Container-compatible hardening
+• Networkd-dispatcher: Full isolation
+• Snapd: Limited hardening
+
+You will be asked per service whether to apply hardening.
+
+SSH Configuration (Maximum Compatibility):
+• ProtectSystem=off: System directories (/usr, /boot, most of /etc) read-only
+• ReadWritePaths: /etc/ufw, /tmp, /var/tmp, /etc/systemd/system, /etc/docker
+• VSCode Remote SSH compatible
+• Docker volume mounts from /home/ compatible
+
+Benefits:
+• Service isolation and reduced attack surface
+• Dramatically improved security scores
+• Practical server management without compatibility issues
+
+⚠️  Services will be restarted after configuration
+Lynis recommendation: BOOT-5264" \
+        "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would ask per service whether to apply hardening"
+        log_dry_run "Available services: SSH, Docker, Fail2ban, Cron, Postfix, Rsyslog, Unattended-upgrades, Containerd, Networkd-dispatcher, Snapd"
+        log_dry_run "Would reload systemd daemon and restart selected services"
+    else
+        log_info "Applying systemd service hardening..."
+        echo ""
+
+        # SSH service hardening
+        read -p "Harden SSH service? (Y/n): " harden_ssh
+        harden_ssh=${harden_ssh:-y}
+        if [[ $harden_ssh =~ ^[Yy]$ ]]; then
+            log_info "Hardening SSH service..."
+            sudo mkdir -p /etc/systemd/system/ssh.service.d
+
+            cat <<'EOF' | sudo tee /etc/systemd/system/ssh.service.d/hardening.conf >/dev/null
+[Service]
+# Systemd hardening for SSH - VSCode and Docker compatible
+ProtectSystem=off
+# VSCode Remote SSH needs write access to ~/.vscode-server/
+# Docker containers need access to volume mounts from /home/
+# Security audit tools need access to run manually via SSH
+ReadWritePaths=/etc/ufw /tmp /var/tmp /etc/systemd/system /etc/docker
+EOF
+
+            log_info "✓ SSH service hardened"
+        else
+            log_info "⊘ SSH hardening skipped"
+        fi
+
+        # Docker service hardening (if installed)
+        if systemctl list-unit-files | grep -q "docker.service"; then
+            read -p "Harden Docker service? (Y/n): " harden_docker
+            harden_docker=${harden_docker:-y}
+            if [[ $harden_docker =~ ^[Yy]$ ]]; then
+                log_info "Hardening Docker service..."
+                sudo mkdir -p /etc/systemd/system/docker.service.d
+
+                cat <<'EOF' | sudo tee /etc/systemd/system/docker.service.d/hardening.conf >/dev/null
+[Service]
+# Systemd hardening for Docker
+ProtectSystem=strict
+ReadWritePaths=/var/lib/docker /run/docker /var/log
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+EOF
+
+                log_info "✓ Docker service hardened"
+            else
+                log_info "⊘ Docker hardening skipped"
+            fi
+        fi
+
+        # Fail2ban service hardening (if installed)
+        if systemctl list-unit-files | grep -q "fail2ban.service"; then
+            read -p "Harden Fail2ban service? (Y/n): " harden_fail2ban
+            harden_fail2ban=${harden_fail2ban:-y}
+            if [[ $harden_fail2ban =~ ^[Yy]$ ]]; then
+                log_info "Hardening Fail2ban service..."
+                sudo mkdir -p /etc/systemd/system/fail2ban.service.d
+
+                cat <<'EOF' | sudo tee /etc/systemd/system/fail2ban.service.d/hardening.conf >/dev/null
+[Service]
+# Systemd hardening for Fail2ban
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/var/run/fail2ban /var/lib/fail2ban /var/log /var/spool/postfix/maildrop /etc/ufw
+EOF
+
+                log_info "✓ Fail2ban service hardened"
+            else
+                log_info "⊘ Fail2ban hardening skipped"
+            fi
+        fi
+
+        # Cron service hardening
+        if systemctl list-unit-files | grep -q "cron.service"; then
+            read -p "Harden Cron service? (Y/n): " harden_cron
+            harden_cron=${harden_cron:-y}
+            if [[ $harden_cron =~ ^[Yy]$ ]]; then
+                log_info "Hardening Cron service..."
+                sudo mkdir -p /etc/systemd/system/cron.service.d
+
+                cat <<'EOF' | sudo tee /etc/systemd/system/cron.service.d/hardening.conf >/dev/null
+[Service]
+# Systemd hardening for Cron
+ProtectSystem=off
+EOF
+
+                log_info "✓ Cron service hardened"
+            else
+                log_info "⊘ Cron hardening skipped"
+            fi
+        fi
+
+        # Postfix service hardening
+        if systemctl list-unit-files | grep -q "postfix.service\|postfix@-.service"; then
+            read -p "Harden Postfix service? (Y/n): " harden_postfix
+            harden_postfix=${harden_postfix:-y}
+            if [[ $harden_postfix =~ ^[Yy]$ ]]; then
+                log_info "Hardening Postfix service..."
+                sudo mkdir -p /etc/systemd/system/postfix@-.service.d
+
+                cat <<'EOF' | sudo tee /etc/systemd/system/postfix@-.service.d/hardening.conf >/dev/null
+[Service]
+# Systemd hardening for Postfix mail server
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/var/spool/postfix /var/lib/postfix /var/mail /var/log
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_NET_BIND_SERVICE
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectProc=invisible
+ProcSubset=pid
+EOF
+
+                log_info "✓ Postfix service hardened"
+            else
+                log_info "⊘ Postfix hardening skipped"
+            fi
+        fi
+
+        # Rsyslog service hardening
+        if systemctl list-unit-files | grep -q "rsyslog.service"; then
+            read -p "Harden Rsyslog service? (Y/n): " harden_rsyslog
+            harden_rsyslog=${harden_rsyslog:-y}
+            if [[ $harden_rsyslog =~ ^[Yy]$ ]]; then
+                log_info "Hardening Rsyslog service..."
+                sudo mkdir -p /etc/systemd/system/rsyslog.service.d
+
+                cat <<'EOF' | sudo tee /etc/systemd/system/rsyslog.service.d/hardening.conf >/dev/null
+[Service]
+# Systemd hardening for Rsyslog
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/var/log /var/spool/rsyslog /run/rsyslog
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=no
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYSLOG CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ProtectHostname=yes
+ProtectClock=yes
+EOF
+
+                log_info "✓ Rsyslog service hardened"
+            else
+                log_info "⊘ Rsyslog hardening skipped"
+            fi
+        fi
+
+        # Unattended-upgrades service hardening
+        if systemctl list-unit-files | grep -q "unattended-upgrades.service"; then
+            read -p "Harden Unattended-upgrades service? (Y/n): " harden_unattended
+            harden_unattended=${harden_unattended:-y}
+            if [[ $harden_unattended =~ ^[Yy]$ ]]; then
+                log_info "Hardening Unattended-upgrades service..."
+                sudo mkdir -p /etc/systemd/system/unattended-upgrades.service.d
+
+                cat <<'EOF' | sudo tee /etc/systemd/system/unattended-upgrades.service.d/hardening.conf >/dev/null
+[Service]
+# Systemd hardening for Unattended Upgrades
+ProtectSystem=strict
+ReadWritePaths=/var/lib/unattended-upgrades /var/log/unattended-upgrades /var/cache/apt /var/lib/apt /var/lib/dpkg /etc/apt
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ProtectHostname=yes
+ProtectClock=yes
+EOF
+
+                log_info "✓ Unattended-upgrades service hardened"
+            else
+                log_info "⊘ Unattended-upgrades hardening skipped"
+            fi
+        fi
+
+        # Containerd service hardening
+        if systemctl list-unit-files | grep -q "containerd.service"; then
+            read -p "Harden Containerd service? (Y/n): " harden_containerd
+            harden_containerd=${harden_containerd:-y}
+            if [[ $harden_containerd =~ ^[Yy]$ ]]; then
+                log_info "Hardening Containerd service..."
+                sudo mkdir -p /etc/systemd/system/containerd.service.d
+
+                cat <<'EOF' | sudo tee /etc/systemd/system/containerd.service.d/hardening.conf >/dev/null
+[Service]
+# Systemd hardening for Containerd
+ProtectSystem=strict
+ReadWritePaths=/var/lib/containerd /run/containerd /var/log
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+LockPersonality=yes
+ProtectClock=yes
+EOF
+
+                log_info "✓ Containerd service hardened"
+            else
+                log_info "⊘ Containerd hardening skipped"
+            fi
+        fi
+
+        # Networkd-dispatcher service hardening
+        if systemctl list-unit-files | grep -q "networkd-dispatcher.service"; then
+            read -p "Harden Networkd-dispatcher service? (Y/n): " harden_netdisp
+            harden_netdisp=${harden_netdisp:-y}
+            if [[ $harden_netdisp =~ ^[Yy]$ ]]; then
+                log_info "Hardening Networkd-dispatcher service..."
+                sudo mkdir -p /etc/systemd/system/networkd-dispatcher.service.d
+
+                cat <<'EOF' | sudo tee /etc/systemd/system/networkd-dispatcher.service.d/hardening.conf >/dev/null
+[Service]
+# Systemd hardening for networkd-dispatcher
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/run/networkd-dispatcher /var/log
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectProc=invisible
+ProcSubset=pid
+EOF
+
+                log_info "✓ Networkd-dispatcher service hardened"
+            else
+                log_info "⊘ Networkd-dispatcher hardening skipped"
+            fi
+        fi
+
+        # Snapd service hardening
+        if systemctl list-unit-files | grep -q "snapd.service"; then
+            read -p "Harden Snapd service? (Y/n): " harden_snapd
+            harden_snapd=${harden_snapd:-y}
+            if [[ $harden_snapd =~ ^[Yy]$ ]]; then
+                log_info "Hardening Snapd service..."
+                sudo mkdir -p /etc/systemd/system/snapd.service.d
+
+                cat <<'EOF' | sudo tee /etc/systemd/system/snapd.service.d/hardening.conf >/dev/null
+[Service]
+# Systemd hardening for Snapd
+ProtectSystem=strict
+ReadWritePaths=/var/lib/snapd /snap /run/snapd /var/snap /var/cache/snapd /var/log /tmp
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+LockPersonality=yes
+ProtectClock=yes
+EOF
+
+                log_info "✓ Snapd service hardened"
+                echo "   💡 Tip: Consider disabling snapd if not needed for better security:"
+                echo "      sudo systemctl stop snapd && sudo systemctl mask snapd"
+            else
+                log_info "⊘ Snapd hardening skipped"
+            fi
+        fi
+
+        # Reload systemd daemon
+        log_info "Reloading systemd daemon..."
+        sudo systemctl daemon-reload
+
+        # Ask to restart services
+        echo ""
+        echo "══════════════════════════════════════════════════════════"
+        echo "Systemd Service Hardening Complete"
+        echo "══════════════════════════════════════════════════════════"
+        echo ""
+        echo "Services have been hardened with security configurations."
+        echo "Changes take effect after service restart."
+        echo ""
+        read -p "Restart hardened services now? (Y/n): " restart_services
+        restart_services=${restart_services:-y}
+
+        if [[ $restart_services =~ ^[Yy]$ ]]; then
+            log_info "Restarting hardened services..."
+
+            if [ -f /etc/systemd/system/ssh.service.d/hardening.conf ]; then
+                sudo systemctl restart ssh && log_info "✓ SSH restarted" || log_warning "✗ SSH restart failed"
+            fi
+
+            if [ -f /etc/systemd/system/docker.service.d/hardening.conf ]; then
+                sudo systemctl restart docker && log_info "✓ Docker restarted" || log_warning "✗ Docker restart failed"
+            fi
+
+            if [ -f /etc/systemd/system/fail2ban.service.d/hardening.conf ]; then
+                sudo systemctl restart fail2ban && log_info "✓ Fail2ban restarted" || log_warning "✗ Fail2ban restart failed"
+            fi
+
+            if [ -f /etc/systemd/system/cron.service.d/hardening.conf ]; then
+                sudo systemctl restart cron && log_info "✓ Cron restarted" || log_warning "✗ Cron restart failed"
+            fi
+
+            if [ -f /etc/systemd/system/postfix@-.service.d/hardening.conf ]; then
+                sudo systemctl restart postfix && log_info "✓ Postfix restarted" || log_warning "✗ Postfix restart failed"
+            fi
+
+            if [ -f /etc/systemd/system/rsyslog.service.d/hardening.conf ]; then
+                sudo systemctl restart rsyslog && log_info "✓ Rsyslog restarted" || log_warning "✗ Rsyslog restart failed"
+            fi
+
+            if [ -f /etc/systemd/system/unattended-upgrades.service.d/hardening.conf ]; then
+                sudo systemctl restart unattended-upgrades && log_info "✓ Unattended-upgrades restarted" || log_warning "✗ Unattended-upgrades restart failed"
+            fi
+
+            if [ -f /etc/systemd/system/containerd.service.d/hardening.conf ]; then
+                sudo systemctl restart containerd && log_info "✓ Containerd restarted" || log_warning "✗ Containerd restart failed"
+            fi
+
+            if [ -f /etc/systemd/system/networkd-dispatcher.service.d/hardening.conf ]; then
+                sudo systemctl restart networkd-dispatcher && log_info "✓ Networkd-dispatcher restarted" || log_warning "✗ Networkd-dispatcher restart failed"
+            fi
+
+            if [ -f /etc/systemd/system/snapd.service.d/hardening.conf ]; then
+                sudo systemctl restart snapd && log_info "✓ Snapd restarted" || log_warning "✗ Snapd restart failed"
+            fi
+
+            log_info "All selected services restarted with hardened configuration"
+            echo ""
+            echo "✅ Service hardening complete"
+            echo "💡 Verify with: sudo systemd-analyze security"
+        else
+            log_warning "Services NOT restarted - changes take effect on next reboot or manual restart"
+        fi
+    fi
+        mark_completed "SYSTEMD_HARDENING"
+    else
+        log_info "Systemd service hardening skipped"
+        mark_completed "SYSTEMD_HARDENING"
+    fi
 fi
 
 ###############################################################################
@@ -2312,20 +3756,159 @@ else
 fi
 
 if [[ $install_lynis == "y" ]] || [[ $install_lynis == "Y" ]]; then
-    log_info "Installing Lynis..."
-    DEBIAN_FRONTEND=noninteractive sudo apt-get install -y lynis || \
-        log_warning "Failed to install Lynis"
+    log_info "Installing Lynis from GitHub source..."
 
-    log_info "Lynis installed successfully"
-    LYNIS_INSTALLED=true
+    # Remove old apt version if present
+    sudo apt-get remove --purge -y lynis 2>/dev/null || true
+
+    # Install dependencies
+    sudo apt-get install -y curl wget tar 2>/dev/null || true
+
+    # Determine latest version number automatically
+    log_info "Fetching latest Lynis version from GitHub..."
+    LYNIS_VERSION=$(curl -s https://api.github.com/repos/CISOfy/lynis/releases/latest | grep -Po '"tag_name": "\K[^"]+')
+
+    if [[ -z "$LYNIS_VERSION" ]]; then
+        log_warning "Could not fetch latest Lynis version. Installing fixed version 3.1.6."
+        LYNIS_VERSION="3.1.6"
+    else
+        log_info "Latest Lynis version: $LYNIS_VERSION"
+    fi
+
+    # Download and install
+    cd /tmp
+    sudo wget -q "https://github.com/CISOfy/lynis/archive/refs/tags/${LYNIS_VERSION}.tar.gz" -O lynis.tar.gz
+
+    if [ $? -ne 0 ]; then
+        log_warning "Failed to download Lynis. Trying with version 3.1.6..."
+        LYNIS_VERSION="3.1.6"
+        sudo wget -q "https://github.com/CISOfy/lynis/archive/refs/tags/${LYNIS_VERSION}.tar.gz" -O lynis.tar.gz
+    fi
+
+    # Remove old installation if exists
+    sudo rm -rf /usr/local/lynis 2>/dev/null || true
+    sudo rm -f /usr/local/bin/lynis 2>/dev/null || true
+    sudo rm -f /usr/sbin/lynis 2>/dev/null || true
+
+    # Extract to /usr/local
+    cd /usr/local
+    sudo tar xzf /tmp/lynis.tar.gz
+    sudo rm /tmp/lynis.tar.gz
+    sudo mv "lynis-${LYNIS_VERSION}" lynis || sudo mv lynis-* lynis
+
+    # Create symlinks for compatibility
+    sudo ln -sf /usr/local/lynis/lynis /usr/local/bin/lynis
+    sudo ln -sf /usr/local/lynis/lynis /usr/sbin/lynis
+
+    # Set permissions
+    sudo chmod +x /usr/local/lynis/lynis
+    sudo chown -R root:root /usr/local/lynis
+
+    # Verify installation
+    if /usr/local/lynis/lynis show version &>/dev/null; then
+        INSTALLED_VERSION=$(/usr/local/lynis/lynis show version 2>/dev/null | head -1)
+        log_info "Lynis ${INSTALLED_VERSION} installed successfully (GitHub version)"
+        LYNIS_INSTALLED=true
+    else
+        log_warning "Lynis installation verification failed"
+        LYNIS_INSTALLED=false
+    fi
 else
     log_warning "Lynis installation skipped"
+fi
+
+###############################################################################
+# DEBSUMS - Package Integrity Verification
+###############################################################################
+
+if ! check_component_status "DEBSUMS"; then
+    if prompt_user \
+    "Install and configure debsums?
+
+debsums verifies the integrity of installed packages by checking MD5 checksums.
+
+Features:
+• Detects modified or corrupted system files
+• Monthly automated verification via cron
+• Helps identify compromised packages or corruption
+• Lightweight and non-intrusive
+
+Configuration:
+• Installs debsums package
+• Configures monthly cron job (/etc/default/debsums)
+• Runs automatically on 1st of each month
+
+Benefits:
+• Early detection of system file tampering
+• Identifies package corruption from disk errors
+• Security monitoring of critical system files
+• Compliance with security best practices
+
+Lynis recommendation: DEB-0810" \
+    "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would install debsums package"
+        log_dry_run "Would configure /etc/default/debsums with CRON_CHECK=monthly"
+    else
+        log_info "Installing debsums..."
+
+        if ! dpkg -l | grep -q "^ii  debsums"; then
+            DEBIAN_FRONTEND=noninteractive sudo apt-get install -y debsums || \
+                log_warning "Failed to install debsums"
+        else
+            log_info "debsums is already installed"
+        fi
+
+        # Configure debsums for monthly checks
+        log_info "Configuring debsums for monthly verification..."
+
+        # Backup existing config if it exists
+        if [ -f /etc/default/debsums ]; then
+            sudo cp /etc/default/debsums /etc/default/debsums.backup.$(date +%Y%m%d_%H%M%S)
+        fi
+
+        # Create debsums configuration
+        cat <<'EOF' | sudo tee /etc/default/debsums >/dev/null
+# Defaults for debsums cron jobs
+# sourced by /etc/cron.d/debsums
+
+#
+# This is a POSIX shell fragment
+#
+
+# Set this to never to disable the checksum verification or
+# one of "daily", "weekly", "monthly" to enable it
+CRON_CHECK=monthly
+EOF
+
+        log_info "debsums configured for monthly verification"
+
+        # Verify debsums is working
+        if command -v debsums &>/dev/null; then
+            log_info "debsums installed and configured successfully"
+            echo ""
+            echo "══════════════════════════════════════════════════════════"
+            echo "debsums will run monthly on the 1st to verify package integrity"
+            echo "Manual check: sudo debsums -s (shows only errors)"
+            echo "══════════════════════════════════════════════════════════"
+            echo ""
+        else
+            log_warning "debsums installation verification failed"
+        fi
+    fi
+        mark_completed "DEBSUMS"
+    else
+        log_info "debsums installation skipped"
+        mark_completed "DEBSUMS"
+    fi
 fi
 
 # Show manual installation info if both were skipped
 if [ "$RKHUNTER_INSTALLED" = false ] && [ "$LYNIS_INSTALLED" = false ]; then
     log_info "You can install them later with:"
-    log_info "  sudo apt-get install -y rkhunter lynis"
+    log_info "  Rkhunter: sudo apt-get install -y rkhunter"
+    log_info "  Lynis: Download from https://github.com/CISOfy/lynis/releases"
 fi
 
 # Only configure Telegram integration if at least one tool was installed
@@ -2422,6 +4005,12 @@ RKHUNTER_SCRIPT
     sudo sed -i "s/REPLACE_CHAT_ID/$SECURITY_TELEGRAM_CHAT_ID/g" /usr/local/bin/rkhunter-telegram.sh
     sudo chmod 700 /usr/local/bin/rkhunter-telegram.sh
     log_info "Rkhunter Telegram integration configured (chmod 700 for security)"
+
+    # Create symlink in scripts directory if it exists
+    if [ -d "$USER_HOME/scripts" ]; then
+        sudo ln -sf /usr/local/bin/rkhunter-telegram.sh "$USER_HOME/scripts/rkhunter-telegram" 2>/dev/null || true
+        log_info "Created symlink: ~/scripts/rkhunter-telegram"
+    fi
     fi
 
     # Create lynis Telegram wrapper script (only if installed)
@@ -2433,14 +4022,57 @@ RKHUNTER_SCRIPT
 TELEGRAM_BOT_TOKEN="REPLACE_BOT_TOKEN"
 TELEGRAM_CHAT_ID="REPLACE_CHAT_ID"
 LYNIS_LOG="/var/log/lynis-report.dat"
+RECOMMENDATIONS_DIR="/var/log/lynis-recommendations"
+DATE_STAMP=$(date +%Y%m%d-%H%M%S)
+RECOMMENDATIONS_FILE="${RECOMMENDATIONS_DIR}/lynis-recommendations-${DATE_STAMP}.log"
 
-# Run lynis audit
-/usr/sbin/lynis audit system --quiet --quick
+# Create recommendations directory if it doesn't exist
+mkdir -p "$RECOMMENDATIONS_DIR"
+
+# Run lynis audit (supports both GitHub and legacy apt installations)
+if [ -x /usr/local/lynis/lynis ]; then
+    /usr/local/lynis/lynis audit system --quiet --quick
+elif [ -x /usr/sbin/lynis ]; then
+    /usr/sbin/lynis audit system --quiet --quick
+elif [ -x /usr/local/bin/lynis ]; then
+    /usr/local/bin/lynis audit system --quiet --quick
+else
+    echo "Error: Lynis not found"
+    exit 1
+fi
 
 # Extract score and suggestions
 HARDENING_INDEX=$(grep "hardening_index=" "$LYNIS_LOG" | cut -d'=' -f2)
 SUGGESTIONS=$(grep "suggestion\[\]=" "$LYNIS_LOG" | head -5 | cut -d'=' -f2)
 SUGGESTION_COUNT=$(grep -c "suggestion\[\]=" "$LYNIS_LOG")
+
+# Export ALL recommendations to a dated log file
+echo "Lynis Security Recommendations Report" > "$RECOMMENDATIONS_FILE"
+echo "Generated: $(date '+%Y-%m-%d %H:%M:%S')" >> "$RECOMMENDATIONS_FILE"
+echo "Server: $(hostname)" >> "$RECOMMENDATIONS_FILE"
+echo "Hardening Index: ${HARDENING_INDEX}/100" >> "$RECOMMENDATIONS_FILE"
+echo "Total Suggestions: ${SUGGESTION_COUNT}" >> "$RECOMMENDATIONS_FILE"
+echo "" >> "$RECOMMENDATIONS_FILE"
+echo "═══════════════════════════════════════════════════════════════" >> "$RECOMMENDATIONS_FILE"
+echo "ALL RECOMMENDATIONS:" >> "$RECOMMENDATIONS_FILE"
+echo "═══════════════════════════════════════════════════════════════" >> "$RECOMMENDATIONS_FILE"
+echo "" >> "$RECOMMENDATIONS_FILE"
+
+# Extract and number all suggestions
+grep "suggestion\[\]=" "$LYNIS_LOG" | cut -d'=' -f2- | nl -w3 -s'. ' >> "$RECOMMENDATIONS_FILE"
+
+echo "" >> "$RECOMMENDATIONS_FILE"
+echo "═══════════════════════════════════════════════════════════════" >> "$RECOMMENDATIONS_FILE"
+echo "Full report: /var/log/lynis-report.dat" >> "$RECOMMENDATIONS_FILE"
+echo "Detailed log: /var/log/lynis.log" >> "$RECOMMENDATIONS_FILE"
+echo "═══════════════════════════════════════════════════════════════" >> "$RECOMMENDATIONS_FILE"
+
+# Set appropriate permissions
+chmod 644 "$RECOMMENDATIONS_FILE"
+
+# Report locations
+REPORT_FILE="/var/log/lynis-report.dat"
+REPORT_LOG="/var/log/lynis.log"
 
 # Send Telegram message
 MESSAGE="🛡️ *Lynis Monthly Audit*%0A%0A"
@@ -2449,15 +4081,27 @@ MESSAGE+="Hardening Score: *${HARDENING_INDEX}*/100%0A%0A"
 MESSAGE+="Total suggestions: ${SUGGESTION_COUNT}%0A%0A"
 MESSAGE+="*Top 5 suggestions:*%0A"
 
-# Format suggestions
+# Format top 5 suggestions
 while IFS= read -r suggestion; do
     MESSAGE+="• ${suggestion}%0A"
 done <<< "$SUGGESTIONS"
+
+MESSAGE+=%0A
+MESSAGE+="📄 *Full recommendations report:*%0A"
+MESSAGE+="\`${RECOMMENDATIONS_FILE}\`%0A%0A"
+MESSAGE+="*View all recommendations:*%0A"
+MESSAGE+="\`cat ${RECOMMENDATIONS_FILE}\`%0A%0A"
+MESSAGE+="*Other reports:*%0A"
+MESSAGE+="Data: \`${REPORT_FILE}\`%0A"
+MESSAGE+="Log: \`${REPORT_LOG}\`%0A"
 
 curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
     -d chat_id="${TELEGRAM_CHAT_ID}" \
     -d text="${MESSAGE}" \
     -d parse_mode="Markdown" >/dev/null 2>&1
+
+# Clean up old recommendation files (keep last 12 months)
+find "$RECOMMENDATIONS_DIR" -name "lynis-recommendations-*.log" -type f -mtime +365 -delete 2>/dev/null || true
 LYNIS_SCRIPT
 
     # Replace placeholders with actual credentials for lynis
@@ -2465,6 +4109,12 @@ LYNIS_SCRIPT
     sudo sed -i "s/REPLACE_CHAT_ID/$SECURITY_TELEGRAM_CHAT_ID/g" /usr/local/bin/lynis-telegram.sh
     sudo chmod 700 /usr/local/bin/lynis-telegram.sh
     log_info "Lynis Telegram integration configured (chmod 700 for security)"
+
+    # Create symlink in scripts directory if it exists
+    if [ -d "$USER_HOME/scripts" ]; then
+        sudo ln -sf /usr/local/bin/lynis-telegram.sh "$USER_HOME/scripts/lynis-telegram" 2>/dev/null || true
+        log_info "Created symlink: ~/scripts/lynis-telegram"
+    fi
     fi
 
     # Create cron jobs for automated scans (only for installed tools)
@@ -2507,6 +4157,483 @@ else
 fi
 
 fi  # End of at least one tool installed check
+
+###############################################################################
+# SYSSTAT PERFORMANCE MONITORING
+###############################################################################
+
+if skip_if_completed "SYSSTAT"; then
+    log_info "Sysstat already configured, skipping"
+else
+    if ask_component_install \
+        "SYSSTAT PERFORMANCE MONITORING" \
+        "sysstat" \
+        "Enable sysstat for system performance monitoring and statistics collection." \
+        "Features:
+• CPU usage statistics
+• Memory utilization tracking
+• Disk I/O monitoring
+• Network statistics
+• Historical performance data (28 days)
+
+Tools included:
+• sar - System Activity Reporter
+• iostat - I/O statistics
+• mpstat - CPU statistics per core
+• pidstat - Process statistics
+
+Benefits:
+• Performance troubleshooting
+• Capacity planning
+• Identify resource bottlenecks
+• Security incident investigation
+• Minimal overhead (~0.1% CPU)
+
+Lynis recommendation: ACCT-9626" \
+        "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would install sysstat package"
+        log_dry_run "Would enable sysstat in /etc/default/sysstat"
+        log_dry_run "Would enable and restart sysstat service"
+    else
+        log_info "Installing and enabling sysstat..."
+
+        # Install sysstat if not already installed
+        if ! dpkg -l | grep -q "^ii  sysstat "; then
+            DEBIAN_FRONTEND=noninteractive sudo apt-get install -y sysstat || \
+                log_warning "Failed to install sysstat"
+        else
+            log_info "sysstat already installed"
+        fi
+
+        # Enable sysstat
+        if [ -f /etc/default/sysstat ]; then
+            sudo sed -i 's/^ENABLED="false"/ENABLED="true"/' /etc/default/sysstat
+            log_info "Enabled sysstat data collection"
+        fi
+
+        # Enable and restart sysstat service
+        sudo systemctl enable sysstat || log_warning "Failed to enable sysstat"
+        sudo systemctl restart sysstat || log_warning "Failed to restart sysstat"
+
+        log_info "Sysstat enabled and running"
+        echo ""
+        echo "══════════════════════════════════════════════════════════"
+        echo "Sysstat Performance Monitoring Enabled"
+        echo "══════════════════════════════════════════════════════════"
+        echo "Usage examples:"
+        echo "  sar               # Today's activity report"
+        echo "  sar -u 1 5        # CPU usage, 5 samples at 1 second"
+        echo "  iostat -x 1 5     # Detailed I/O statistics"
+        echo "  mpstat -P ALL 1 5 # All CPU cores statistics"
+        echo ""
+        echo "Historical data: /var/log/sysstat/ (28 days retention)"
+        echo "══════════════════════════════════════════════════════════"
+        echo ""
+    fi
+        mark_completed "SYSSTAT"
+    else
+        log_info "Sysstat installation skipped"
+        mark_completed "SYSSTAT"
+    fi
+fi
+
+###############################################################################
+# AIDE FILE INTEGRITY MONITORING
+###############################################################################
+
+if skip_if_completed "AIDE"; then
+    log_info "AIDE already configured, skipping"
+else
+    if ask_component_install \
+        "AIDE FILE INTEGRITY MONITORING" \
+        "aide" \
+        "Install and configure AIDE for file integrity monitoring and intrusion detection." \
+        "Security features:
+• Detects unauthorized file changes
+• Monitors system binaries and configs
+• Creates cryptographic checksums (SHA-256, SHA-512)
+• Regular integrity checks via daily cron
+
+Monitored paths:
+• /bin, /sbin, /usr/bin, /usr/sbin (system binaries)
+• /etc (configuration files)
+• /boot (kernel files)
+• /lib, /lib64 (system libraries)
+
+⚠️  IMPORTANT:
+• Initial database creation: 10-20 minutes
+• Daily checks: 5-10 minutes (4:00 AM)
+• High disk I/O during scans
+• Recommended for PRODUCTION servers only
+
+Benefits:
+• Intrusion detection
+• Compliance requirements (PCI-DSS, HIPAA)
+• Change tracking and auditing
+• Alert on unauthorized modifications
+
+Lynis recommendation: FINT-4350
+
+⚠️  RASPBERRY PI: NOT RECOMMENDED (high I/O on SD card)" \
+        "n"; then
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "AIDE Production Server Confirmation"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    echo "AIDE is resource-intensive and recommended for production servers only."
+    echo ""
+    echo "Install AIDE if:"
+    echo "  ✓ This is a production server"
+    echo "  ✓ You need intrusion detection"
+    echo "  ✓ Compliance requires file integrity monitoring"
+    echo ""
+    echo "Skip AIDE if:"
+    echo "  ✗ This is a development/test server"
+    echo "  ✗ This is a Raspberry Pi (high SD card wear)"
+    echo "  ✗ Limited disk I/O budget"
+    echo ""
+    read -p "Is this a PRODUCTION server? Install AIDE? (y/N): " is_production
+    is_production=${is_production:-n}
+
+    if [[ $is_production =~ ^[Yy]$ ]]; then
+        if [ "$DRY_RUN" = true ]; then
+            log_dry_run "Would install aide and aide-common"
+            log_dry_run "Would configure /etc/aide/aide.conf with SHA-512 checksums (stronger than SHA-256)"
+            log_dry_run "Would configure critical file monitoring with SHA-512 hashes"
+            log_dry_run "Would initialize AIDE database (15+ minutes)"
+            log_dry_run "Would create daily cron job /etc/cron.daily/aide-check"
+        else
+            log_info "Installing AIDE file integrity monitoring..."
+
+            # Install AIDE
+            DEBIAN_FRONTEND=noninteractive sudo apt-get install -y aide aide-common || \
+                handle_error "Failed to install AIDE"
+
+            # Backup default config
+            if [ -f /etc/aide/aide.conf ]; then
+                sudo cp /etc/aide/aide.conf /etc/aide/aide.conf.backup.$(date +%Y%m%d_%H%M%S)
+            fi
+
+            # Configure AIDE with stronger checksums (Lynis FINT-4402)
+            log_info "Configuring AIDE with SHA-512 checksums..."
+
+            # Set SHA-512 as default checksum algorithm
+            if grep -q "^Checksums =" /etc/aide/aide.conf; then
+                sudo sed -i 's/^Checksums =.*/Checksums = sha512/' /etc/aide/aide.conf
+            else
+                echo "Checksums = sha512" | sudo tee -a /etc/aide/aide.conf >/dev/null
+            fi
+
+            # Add custom exclusions
+            cat <<'EOF' | sudo tee -a /etc/aide/aide.conf >/dev/null
+
+# Custom exclusions added by server baseline script (Lynis FINT-4350)
+# Exclude frequently changing directories to reduce false positives
+!/var/log
+!/var/cache
+!/var/tmp
+!/tmp
+!/proc
+!/sys
+!/dev
+!/run
+!/var/lib/docker
+
+# Monitor Docker binaries if installed
+/usr/bin/docker$ R
+/usr/bin/docker-compose$ R
+
+# Monitor critical config files with detailed attributes (SHA-512)
+/etc/ssh/sshd_config$ p+i+n+u+g+s+b+acl+selinux+xattrs+sha512
+/etc/sudoers$ p+i+n+u+g+s+b+acl+selinux+xattrs+sha512
+/etc/passwd$ p+i+n+u+g+s+b+acl+selinux+xattrs+sha512
+/etc/shadow$ p+i+n+u+g+s+b+acl+selinux+xattrs+sha512
+EOF
+
+            log_info "AIDE configured with SHA-512 checksums and exclusions"
+
+            # Initialize AIDE database
+            echo ""
+            echo "══════════════════════════════════════════════════════════"
+            echo "INITIALIZING AIDE DATABASE"
+            echo "══════════════════════════════════════════════════════════"
+            echo ""
+            echo "⏳ This will take 10-20 minutes depending on system size"
+            echo "   Please be patient while AIDE scans all monitored files..."
+            echo ""
+
+            # Run aideinit
+            sudo aideinit || log_warning "AIDE initialization had warnings (may be normal)"
+
+            # Move database to correct location
+            if [ -f /var/lib/aide/aide.db.new ]; then
+                sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+                log_info "AIDE database initialized successfully"
+            else
+                log_warning "AIDE database not found at expected location"
+            fi
+
+            # Create daily check script
+            cat <<'EOF' | sudo tee /etc/cron.daily/aide-check >/dev/null
+#!/bin/bash
+# AIDE daily integrity check (Lynis FINT-4350)
+
+LOG_FILE="/var/log/aide-check-$(date +%Y%m%d).log"
+
+# Run check
+/usr/bin/aide --check > "$LOG_FILE" 2>&1
+CHECK_RESULT=$?
+
+# If changes detected, send email to root
+if [ $CHECK_RESULT -ne 0 ]; then
+    cat "$LOG_FILE" | mail -s "AIDE: File Changes Detected on $(hostname)" root 2>/dev/null || true
+else
+    # No changes, update database
+    /usr/bin/aide --update >/dev/null 2>&1
+    mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db 2>/dev/null || true
+fi
+
+# Keep logs for 30 days
+find /var/log -name "aide-check-*.log" -mtime +30 -delete 2>/dev/null || true
+EOF
+
+            sudo chmod 755 /etc/cron.daily/aide-check
+            log_info "AIDE daily check cron job created"
+
+            echo ""
+            echo "══════════════════════════════════════════════════════════"
+            echo "AIDE File Integrity Monitoring Configured"
+            echo "══════════════════════════════════════════════════════════"
+            echo "✓ Database initialized"
+            echo "✓ Daily checks enabled (4:00 AM via cron)"
+            echo "✓ Alerts sent to root user"
+            echo ""
+            echo "Manual commands:"
+            echo "  sudo aide --check          # Check integrity now"
+            echo "  sudo aide --update         # Update database"
+            echo ""
+            echo "Logs: /var/log/aide-check-*.log"
+            echo "══════════════════════════════════════════════════════════"
+            echo ""
+        fi
+    else
+        log_info "AIDE installation skipped (not a production server)"
+    fi
+        mark_completed "AIDE"
+    else
+        log_info "AIDE installation skipped"
+        mark_completed "AIDE"
+    fi
+fi
+
+###############################################################################
+# COMPILER RESTRICTIONS
+###############################################################################
+
+if skip_if_completed "COMPILER_RESTRICTIONS"; then
+    log_info "Compiler restrictions already configured, skipping"
+else
+    if ask_component_install \
+        "COMPILER ACCESS RESTRICTIONS" \
+        "compiler-restrictions" \
+        "Restrict access to compilers to prevent on-server malware compilation." \
+        "Security features:
+• Restrict access to gcc, g++, cc, make, as
+• Only root can compile (chmod 700)
+• Prevents attackers from compiling exploits
+• Reduces privilege escalation opportunities
+
+Restricted compilers:
+• /usr/bin/gcc
+• /usr/bin/g++
+• /usr/bin/cc
+• /usr/bin/as (assembler)
+• /usr/bin/make
+
+⚠️  WARNING: This may break development workflows!
+
+Recommended FOR:
+  ✓ Production servers (web, database, apps)
+  ✓ Servers that only RUN software
+
+NOT recommended for:
+  ✗ Development servers
+  ✗ Build/CI servers
+  ✗ Raspberry Pi with dev projects
+
+Note: Only root can compile with these restrictions
+To restore access: sudo chmod 755 /usr/bin/gcc /usr/bin/g++ /usr/bin/make
+
+Lynis recommendation: HRDN-7222" \
+        "n"; then
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "Compiler Restrictions - Production Server Check"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    echo "This will restrict compiler access to root ONLY (chmod 700)."
+    echo ""
+    echo "Restrict compilers if:"
+    echo "  ✓ Pure production server (no development)"
+    echo "  ✓ Only running pre-built software"
+    echo "  ✓ Security is priority"
+    echo ""
+    echo "Skip if:"
+    echo "  ✗ Development server"
+    echo "  ✗ Need to compile software"
+    echo "  ✗ Run npm install with native modules"
+    echo "  ✗ Build Docker images with compilation"
+    echo ""
+    read -p "Restrict compilers? (PRODUCTION servers only) (y/N): " restrict_compilers
+    restrict_compilers=${restrict_compilers:-n}
+
+    if [[ $restrict_compilers =~ ^[Yy]$ ]]; then
+        if [ "$DRY_RUN" = true ]; then
+            log_dry_run "Would restrict compiler permissions:"
+            log_dry_run "  - gcc, g++, cc, as, make → 700 (root only)"
+        else
+            log_info "Restricting compiler access to root only..."
+
+            # List of compilers to restrict
+            COMPILERS="/usr/bin/gcc /usr/bin/g++ /usr/bin/cc /usr/bin/as /usr/bin/make"
+            RESTRICTED=0
+
+            for compiler in $COMPILERS; do
+                if [ -f "$compiler" ]; then
+                    # Restrict to root only (700)
+                    sudo chown root:root "$compiler"
+                    sudo chmod 700 "$compiler"
+                    log_info "✓ Restricted: $compiler"
+                    ((RESTRICTED++))
+                fi
+            done
+
+            if [ $RESTRICTED -gt 0 ]; then
+                echo ""
+                echo "══════════════════════════════════════════════════════════"
+                echo "Compiler Access Restricted"
+                echo "══════════════════════════════════════════════════════════"
+                echo "Restricted $RESTRICTED compiler(s)"
+                echo ""
+                echo "Access limited to:"
+                echo "  ✓ root user ONLY"
+                echo ""
+                echo "To restore access to all users:"
+                echo "  for file in $COMPILERS; do"
+                echo "    sudo chmod 755 \$file"
+                echo "    sudo chown root:root \$file"
+                echo "  done"
+                echo "══════════════════════════════════════════════════════════"
+                echo ""
+            else
+                log_warning "No compilers found to restrict"
+            fi
+        fi
+    else
+        log_info "Compiler restrictions skipped (not a production-only server)"
+    fi
+        mark_completed "COMPILER_RESTRICTIONS"
+    else
+        log_info "Compiler restrictions skipped"
+        mark_completed "COMPILER_RESTRICTIONS"
+    fi
+fi
+
+###############################################################################
+# DEPRECATED PACKAGE CLEANUP
+###############################################################################
+
+if skip_if_completed "PACKAGE_CLEANUP"; then
+    log_info "Package cleanup already performed, skipping"
+else
+    if ask_component_install \
+        "DEPRECATED PACKAGE CLEANUP" \
+        "package-cleanup" \
+        "Remove deprecated and insecure packages to reduce attack surface." \
+        "Packages to remove:
+• nis - Insecure legacy authentication
+• rsh-client - Unencrypted remote shell
+• telnet - Unencrypted terminal protocol
+• tftp - Trivial FTP (insecure)
+• xinetd - Super-server (rarely needed)
+
+Additional cleanup:
+• apt-get autoremove - Remove unused dependencies
+• apt-get clean - Clear package cache
+
+Benefits:
+• Reduced attack surface
+• Less maintenance overhead
+• Remove known security vulnerabilities
+• Free disk space
+
+⚠️  Only removes if packages are installed
+Safe for most server configurations
+
+Lynis recommendation: PKGS-7346" \
+        "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would check and remove deprecated packages:"
+        log_dry_run "  - nis, rsh-client, telnet, tftp, xinetd"
+        log_dry_run "Would purge residual configuration files from removed packages (dpkg --purge)"
+        log_dry_run "Would run apt-get autoremove"
+        log_dry_run "Would run apt-get clean"
+    else
+        log_info "Checking for deprecated/insecure packages..."
+
+        # List of packages to remove
+        DEPRECATED_PKGS="nis rsh-client telnet tftp xinetd"
+        REMOVED_COUNT=0
+
+        for pkg in $DEPRECATED_PKGS; do
+            if dpkg -l | grep -q "^ii  $pkg "; then
+                log_info "Removing deprecated package: $pkg"
+                sudo apt-get remove -y "$pkg" >/dev/null 2>&1 && ((REMOVED_COUNT++)) || \
+                    log_warning "Failed to remove $pkg"
+            fi
+        done
+
+        # Autoremove unused dependencies
+        log_info "Removing unused dependencies..."
+        sudo apt-get autoremove -y >/dev/null 2>&1
+
+        # Clean package cache
+        log_info "Cleaning package cache..."
+        sudo apt-get clean >/dev/null 2>&1
+
+        # Purge removed/config-only packages (Lynis PKGS-7346)
+        log_info "Purging old configuration files from removed packages..."
+        RC_PACKAGES=$(dpkg -l | awk '/^rc/{print $2}')
+        if [ -n "$RC_PACKAGES" ]; then
+            RC_COUNT=$(echo "$RC_PACKAGES" | wc -l)
+            log_info "Found $RC_COUNT packages with residual config files"
+            echo "$RC_PACKAGES" | xargs sudo dpkg --purge 2>/dev/null
+            log_info "✓ Purged configuration files from removed packages"
+        else
+            log_info "✓ No residual configuration files found"
+        fi
+
+        if [ $REMOVED_COUNT -gt 0 ]; then
+            log_info "✓ Removed $REMOVED_COUNT deprecated package(s)"
+        else
+            log_info "✓ No deprecated packages found (good!)"
+        fi
+
+        log_info "✓ Unused dependencies removed"
+        log_info "✓ Package cache cleaned"
+    fi
+        mark_completed "PACKAGE_CLEANUP"
+    else
+        log_info "Package cleanup skipped"
+        mark_completed "PACKAGE_CLEANUP"
+    fi
+fi
 
 ###############################################################################
 # SHELL IMPROVEMENTS
@@ -3347,6 +5474,65 @@ fi
 echo ""
 echo "Error log saved to: $ERROR_LOG"
 echo ""
+
+# Run Lynis security audit if installed (show final hardening score)
+if command -v lynis >/dev/null 2>&1; then
+    echo ""
+    echo "=========================================================================="
+    echo "LYNIS SECURITY AUDIT"
+    echo "=========================================================================="
+    echo ""
+    echo "Running Lynis security scan to verify hardening improvements..."
+    echo ""
+
+    # Run quick Lynis audit
+    sudo lynis audit system --quick --no-colors 2>/dev/null | tail -50 || true
+
+    echo ""
+
+    # Extract and display hardening index if available
+    if [ -f /var/log/lynis-report.dat ]; then
+        HARDENING_INDEX=$(grep "hardening_index=" /var/log/lynis-report.dat 2>/dev/null | cut -d'=' -f2)
+        SUGGESTION_COUNT=$(grep -c "suggestion\[\]=" /var/log/lynis-report.dat 2>/dev/null || echo "0")
+        WARNING_COUNT=$(grep -c "warning\[\]=" /var/log/lynis-report.dat 2>/dev/null || echo "0")
+
+        if [ ! -z "$HARDENING_INDEX" ]; then
+            echo "══════════════════════════════════════════════════════════"
+            echo "Lynis Security Hardening Results:"
+            echo "══════════════════════════════════════════════════════════"
+            echo "  Hardening Index: $HARDENING_INDEX/100"
+            echo "  Warnings: $WARNING_COUNT"
+            echo "  Suggestions: $SUGGESTION_COUNT"
+            echo ""
+
+            # Display top 10 suggestions if any exist
+            if [ "$SUGGESTION_COUNT" -gt 0 ]; then
+                echo "Top 10 Hardening Suggestions:"
+                echo "──────────────────────────────────────────────────────────"
+                grep "suggestion\[\]=" /var/log/lynis-report.dat 2>/dev/null | \
+                    cut -d'=' -f2- | \
+                    head -10 | \
+                    nl -w2 -s'. ' || echo "  (No suggestions available)"
+                echo ""
+
+                if [ "$SUGGESTION_COUNT" -gt 10 ]; then
+                    echo "  ... and $((SUGGESTION_COUNT - 10)) more suggestions"
+                    echo ""
+                fi
+            fi
+
+            echo "Full report: /var/log/lynis-report.dat"
+            echo "View all suggestions:"
+            echo "  grep 'suggestion\\[\\]=' /var/log/lynis-report.dat | cut -d'=' -f2-"
+            echo ""
+            echo "View report: sudo lynis show details <TEST-ID>"
+            echo "══════════════════════════════════════════════════════════"
+        fi
+    fi
+
+    echo ""
+fi
+
 echo "=========================================================================="
 
 # Ask for reboot

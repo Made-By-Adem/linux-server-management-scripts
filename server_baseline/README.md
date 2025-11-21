@@ -34,7 +34,7 @@ sudo bash install_script.sh --interactive
 
 **⚠️ IMPORTANT:** This script contains **no hardcoded credentials or private endpoints**. All tokens and sensitive configuration are provided interactively by you during setup.
 
-**🆕 NEW in v3.0:** The script now supports three modes:
+**🆕 NEW:** The script now supports three modes:
 - `--fresh-install`: Minimal prompts for fresh servers (original behavior)
 - `--interactive`: Safe mode for existing servers - asks permission for each component
 - `--dry-run`: Preview mode - shows what would be done without making changes
@@ -66,15 +66,34 @@ This script transforms a fresh Ubuntu/Debian server into a **production-ready, h
 
 ### Main Features
 
-1. **Complete System Update** - Updates all packages to the latest versions
-2. **Development Environment** - Installs Python, Node.js, Git, and essential tools
-3. **Docker & Containerization** - Complete Docker installation with Docker Compose
-4. **Security** - SSH hardening, firewall configuration, fail2ban, automatic updates
-5. **Monitoring** - Optional Netdata monitoring with Telegram alerts
-6. **Container Management** - Portainer for easy Docker management
-7. **Cloudflare Tunnel** - Secure external access without port forwarding
-8. **System Optimization** - Swap configuration, kernel hardening, logging
-9. **Security Scanning** - Optional Rkhunter and Lynis with automated scans
+1. **Complete System Update** - Updates all packages to the latest versions with security repository verification
+2. **System Configuration** - Timezone (Europe/Amsterdam) and FQDN hostname setup
+3. **Development Environment** - Installs Python, Node.js, Git, and essential tools
+4. **Docker & Containerization** - Complete Docker installation with Docker Compose
+5. **Advanced Security Hardening** - 18 comprehensive security layers based on Lynis recommendations
+   - Security repository configuration
+   - FQDN hostname configuration (improves system identification)
+   - Password policies & PAM hardening (SHA-512 with 65536 rounds + password aging policies)
+   - Extended kernel hardening (15+ sysctl parameters)
+   - USB storage control (with Raspberry Pi support)
+   - Core dump protection
+   - File permissions hardening
+   - Legal warning banners
+   - /proc filesystem hardening (hidepid=2)
+   - SSH hardening with configurable MaxSessions
+   - Fail2ban with jail.local best practices
+   - Systemd service hardening (PrivateTmp=no for Lynis/Rkhunter manual execution)
+   - Sysstat performance monitoring
+   - AIDE file integrity monitoring with SHA-512 checksums (production servers)
+   - Compiler access restrictions with chmod 700 (production servers)
+   - Package integrity verification with debsums (monthly automated checks)
+   - Deprecated package cleanup with residual config purging
+6. **Monitoring** - Optional Netdata monitoring with Telegram alerts
+7. **Container Management** - Portainer for easy Docker management
+8. **Cloudflare Tunnel** - Secure external access without port forwarding
+9. **System Optimization** - Swap configuration, kernel hardening, logging
+10. **Security Scanning** - Optional Rkhunter and Lynis with automated scans
+11. **Backwards Compatibility** - Safe re-run on existing installations (skips completed sections)
 
 ---
 
@@ -140,6 +159,28 @@ This script transforms a fresh Ubuntu/Debian server into a **production-ready, h
 - Simple backups
 - Automatic restart on crashes
 
+### System Configuration
+
+**Timezone Configuration**
+
+- Sets timezone to Europe/Amsterdam
+- Enables NTP time synchronization
+- Ensures consistent log timestamps
+- Important for scheduled tasks and cron jobs
+
+**FQDN Hostname Configuration**
+
+- Configures hostname with Fully Qualified Domain Name (.local)
+- Updates /etc/hosts with proper FQDN mapping
+- Example: `server` becomes `server.local`
+- Benefits:
+  - Better system identification in logs and monitoring
+  - Required for some services (mail servers, SSL certificates)
+  - Prevents hostname resolution warnings
+  - Improves Lynis security score (NAME-4404)
+- Verification: `hostname --fqdn` shows full domain name
+- Required for proper DNS resolution and network identification
+
 ### Security
 
 **Firewall (UFW - Uncomplicated Firewall)**
@@ -164,24 +205,63 @@ This script transforms a fresh Ubuntu/Debian server into a **production-ready, h
 - Rate limiting on SSH connections
 - Optional IP whitelist for trusted locations
 - **LogLevel VERBOSE** for enhanced security auditing
+- **Configurable MaxSessions** - Interactive prompt (default: 2, recommended for security)
 - **Configurable SSH forwarding** (AllowTcpForwarding, AllowAgentForwarding) - default enabled for flexibility
+- TCPKeepAlive disabled for improved security
+- Banner support for legal warnings
 - Why: SSH is the gateway to your server, must be optimally secured
 
-**Kernel Hardening (NEW in v2.1)**
+**Kernel Hardening (Enhanced in current with Docker/Container Compatibility)**
 - **IP source routing disabled** on all interfaces (prevents spoofing attacks)
 - **Martian packet logging enabled** (logs suspicious network packets)
 - **Kernel debug keys disabled** (kernel.sysrq=0 for security)
-- **Core dumps disabled** for setuid programs (fs.suid_dumpable=0)
+- **Core dumps disabled** for setuid programs and completely system-wide
 - **Uncommon protocols blacklisted** (DCCP, SCTP, RDS, TIPC) - reduces attack surface
+- **Extended sysctl hardening** (15+ additional parameters from Lynis recommendations):
+  - kernel.kptr_restrict = 2 (hide kernel pointers)
+  - kernel.unprivileged_bpf_disabled = 1 (prevent unprivileged BPF)
+  - **net.core.bpf_jit_harden = 1** (allows QUIC protocol, set to 1 not 2 for compatibility)
+  - **net.ipv4.conf.all.forwarding = 1** (Docker compatibility, especially network_mode: host)
+  - **net.ipv6.conf.all.forwarding = 1** (required for containerized services)
+  - **net.netfilter.nf_conntrack_max = 524288** (increased for QUIC protocol support)
+  - kernel.perf_event_paranoid = 3 (restrict performance events)
+  - fs.protected_hardlinks = 1 (protect hardlinks)
+  - fs.protected_symlinks = 1 (protect symlinks)
+  - fs.protected_fifos = 2 (protect FIFOs)
+  - fs.protected_regular = 2 (protect regular files)
+  - kernel.yama.ptrace_scope = 1 (restrict ptrace)
+  - vm.swappiness = 10 (reduce swap usage)
+  - vm.vfs_cache_pressure = 50 (optimize cache)
 - SYN flood protection and TCP hardening
-- Why: Prevents kernel-level attacks and network exploits
+- **Docker/Container Compatibility**: IP forwarding enabled for Docker containers using `network_mode: host` (Cloudflare Tunnel, Netdata, VPN clients, reverse proxies)
+- **QUIC Protocol Support**: BPF JIT and connection tracking optimized for modern protocols
+- Why: Prevents kernel-level attacks while maintaining compatibility with containerized services
 
-**Advanced Package Security (NEW in v2.1)**
+**Password & Authentication Hardening (NEW, Enhanced)**
+
+- SHA-512 password hashing with 65536 rounds (slow brute-force attacks)
+- Strong password quality requirements (12+ chars, complexity)
+- **Password aging policies** (NEW):
+  - PASS_MIN_DAYS=7 (minimum days between password changes)
+  - PASS_MAX_DAYS=365 (maximum password age - annual renewal)
+  - PASS_WARN_AGE=30 (warning 30 days before expiration)
+  - Applied to existing user accounts automatically (chage command)
+- Per-user temporary directories (libpam-tmpdir)
+- Only affects password-based logins (SSH keys unaffected)
+- Why: Defense in depth, compliance requirements (Lynis AUTH-9286) - even though SSH keys are primary auth method
+
+**Advanced Package Security**
 - **apt-listchanges**: Review security changes before package upgrades
-- **debsums**: Verify integrity of installed packages (detect tampering)
+- **debsums**: Verify integrity of installed packages with MD5 checksums
+  - Monthly automated verification via cron job
+  - Detects modified or corrupted system files
+  - Helps identify compromised packages or disk corruption
+  - Lightweight and runs automatically on 1st of each month
+  - Manual check: `sudo debsums -s` (shows only errors)
 - **apt-show-versions**: Better package version tracking
 - **needrestart**: Know when to restart services after updates
-- Why: Prevent compromised packages and maintain system integrity
+- **Residual config cleanup** (NEW): Purges configuration files from removed packages
+- Why: Prevent compromised packages, maintain system integrity, reduce attack surface (Lynis DEB-0810)
 
 **Automatic Updates**
 - Initial full system upgrade during installation (`apt-get upgrade`)
@@ -194,6 +274,117 @@ This script transforms a fresh Ubuntu/Debian server into a **production-ready, h
 - Logs all root commands
 - Tracks who does what on the server
 - Why: Detects unwanted changes and helps with incident response
+
+### Additional Security Hardening (NEW)
+
+**USB Storage Control:**
+
+- Optionally disable USB mass storage devices
+- Prevents data exfiltration and malware via USB drives
+- USB keyboards/mice still work normally
+- Raspberry Pi-aware (warns about USB storage usage)
+- Default: Disabled for safety (can be enabled on VPS/cloud servers)
+
+**File Permissions Hardening:**
+
+- Secure permissions on critical files
+- /etc/crontab → 600 (root only)
+- /etc/cron.* directories → 700 (root only)
+- /etc/ssh/sshd_config → 600 (root only)
+- /etc/at.deny → 600 (if exists)
+
+**Legal Warning Banners:**
+
+- Optional login warning banners
+- Displays legal notice before SSH login
+- Establishes no expectation of privacy
+- Recommended for business/production servers
+
+**/proc Filesystem Hardening:**
+
+- Configured with hidepid=2
+- Users can only see their own processes
+- Prevents information leakage about running processes
+- Safe for single-user VPS and multi-user systems
+- Root can still see all processes
+
+**Fail2ban Best Practices:**
+
+- Uses jail.local instead of jail.conf (Lynis DEB-0880)
+- Prevents configuration overwrites during updates
+- Configuration preserved in /etc/fail2ban/jail.d/
+
+**Systemd Service Hardening (Maximum Compatibility):**
+
+- **SSH Service (VSCode/Lynis/Rkhunter Compatible):**
+  - ❌ PrivateTmp: DISABLED to allow manual Lynis/Rkhunter execution via SSH
+  - ❌ ProtectSystem=off: DISABLED because `apt install` requires write access to system directories (ProtectSystem=full is too restrictive)
+  - ❌ ProtectHome: DISABLED for VSCode Remote SSH and Docker volume mount compatibility
+  - ❌ NoNewPrivileges: DISABLED for VSCode server processes
+  - ReadWritePaths: `/etc/ufw /tmp /var/tmp /etc/systemd/system /etc/docker`
+
+- **Docker Service:**
+  - NoNewPrivileges only (minimal hardening to maintain functionality)
+
+- **Fail2ban Service (Full Hardening):**
+  - PrivateTmp + ProtectSystem + ProtectHome + NoNewPrivileges
+  - ReadWritePaths: `/var/run/fail2ban /var/lib/fail2ban /var/log /var/spool/postfix/maildrop /etc/ufw`
+
+- **Cron Service:**
+  - PrivateTmp + ProtectSystem + NoNewPrivileges
+
+**Why PrivateTmp/ProtectHome/ProtectSystem are disabled for SSH:**
+- PrivateTmp blocks manual Lynis/Rkhunter scans (need access to system `/tmp`)
+- ProtectSystem=full is too restrictive for `apt install` operations via SSH
+- VSCode Remote SSH needs write access to `~/.vscode-server/`
+- Docker containers need access to volume mounts from `/home/`
+- This configuration works out-of-the-box for development/staging servers
+
+**Security Note:** Even without PrivateTmp/ProtectHome/ProtectSystem/NoNewPrivileges on SSH, you still have:
+- ✅ SSH key authentication only (no passwords)
+- ✅ Port 888 instead of 22 (reduced bot attacks)
+- ✅ UFW firewall + Fail2ban protection
+- ✅ All 16 other current hardening layers active
+- ✅ Practical server management without compatibility issues
+
+**Sysstat Performance Monitoring:**
+
+- System performance statistics collection
+- CPU, memory, disk I/O, network monitoring
+- Historical data retention (28 days)
+- Tools: sar, iostat, mpstat, pidstat
+- Minimal overhead (~0.1% CPU)
+
+**AIDE File Integrity Monitoring (Production Servers):**
+
+- **SHA-512 cryptographic checksums** (NEW in current - stronger than SHA-256)
+- Configured with SHA-512 as default checksum algorithm
+- Critical files monitored with SHA-512: /etc/ssh/sshd_config, /etc/sudoers, /etc/passwd, /etc/shadow
+- Daily integrity checks via cron (4:00 AM)
+- Monitors: /bin, /sbin, /usr/bin, /usr/sbin, /etc, /boot, /lib
+- Email alerts on unauthorized changes
+- Only recommended for production servers (high I/O)
+- Not recommended for Raspberry Pi (SD card wear)
+- Database initialization: 10-20 minutes
+- Why: SHA-512 provides better protection against collision attacks (Lynis FINT-4402)
+
+**Compiler Access Restrictions (Production Servers):**
+
+- Restricts access to gcc, g++, cc, make, as with chmod 700
+- Only root can compile code (no group access)
+- Prevents attackers from compiling exploits on-server
+- Only recommended for pure production servers
+- Not for development/build/CI servers
+- To restore: `sudo chmod 755 /usr/bin/gcc /usr/bin/g++ /usr/bin/make`
+
+**Deprecated Package Cleanup (Enhanced):**
+
+- Removes insecure legacy packages (nis, rsh-client, telnet, tftp, xinetd)
+- **Purges residual configuration files** (NEW): Removes config files from previously removed packages
+- Runs apt-get autoremove for unused dependencies
+- Clears apt cache to free disk space
+- Reduces attack surface and eliminates configuration remnants
+- Why: Configuration files can contain sensitive data or outdated settings (Lynis PKGS-7346)
 
 **Optional Security Scans:**
 
@@ -1238,6 +1429,282 @@ sudo cat /var/log/unattended-upgrades/unattended-upgrades.log
 
 ## Troubleshooting
 
+### V4.0 Security Hardening Issues
+
+**"UFW reload fails with 'No usable temporary directory found'"**
+
+**Cause:** SSH systemd hardening with `PrivateTmp=yes` isolates `/tmp` without proper ReadWritePaths.
+
+**Solution:**
+```bash
+# Edit SSH hardening config
+sudo nano /etc/systemd/system/ssh.service.d/hardening.conf
+
+# Ensure this line exists:
+ReadWritePaths=/etc/ufw /tmp /var/tmp /etc/systemd/system /etc/docker
+
+# Reload and restart
+sudo systemctl daemon-reload
+sudo systemctl restart ssh
+
+# Log out and back in for changes to take effect
+exit
+# Then reconnect via SSH
+```
+
+**"Cloudflare Tunnel fails with 'timeout: no recent network activity'"**
+
+**Cause:** IP forwarding disabled by kernel hardening, blocking QUIC protocol.
+
+**Solution:**
+```bash
+# Check current IP forwarding status
+sysctl net.ipv4.conf.all.forwarding
+sysctl net.ipv6.conf.all.forwarding
+
+# If set to 0, enable it:
+sudo nano /etc/sysctl.d/99-server-hardening.conf
+
+# Change these lines:
+net.ipv4.conf.all.forwarding = 1
+net.ipv6.conf.all.forwarding = 1
+net.core.bpf_jit_harden = 1  # Must be 1, not 2
+net.netfilter.nf_conntrack_max = 524288
+
+# Apply changes
+sudo sysctl -p /etc/sysctl.d/99-server-hardening.conf
+
+# Restart Cloudflare Tunnel
+sudo docker compose restart
+```
+
+**"Docker containers using network_mode: host can't connect"**
+
+**Cause:** Same as Cloudflare Tunnel - IP forwarding disabled.
+
+**Solution:** Follow Cloudflare Tunnel solution above. Containers using `network_mode: host` (like Netdata, VPN clients, reverse proxies) require IP forwarding to be enabled.
+
+**"VSCode Remote SSH or Docker volume mounts not working"**
+
+**Note:** The script is **pre-configured** to work with VSCode Remote SSH and Docker volume mounts from `/home`. These should work out-of-the-box.
+
+**If you upgraded from an older version** or modified the hardening configuration:
+
+```bash
+# Check your current SSH hardening config
+cat /etc/systemd/system/ssh.service.d/hardening.conf
+
+# Should look like this:
+[Service]
+# Systemd hardening for SSH (Lynis BOOT-5264) - VSCode compatible
+PrivateTmp=yes
+ProtectSystem=full
+# ProtectHome and NoNewPrivileges disabled for VSCode/Docker compatibility
+ReadWritePaths=/etc/ufw /tmp /var/tmp /etc/systemd/system /etc/docker
+```
+
+**If ProtectHome or NoNewPrivileges are present**, update to the current configuration:
+
+```bash
+sudo nano /etc/systemd/system/ssh.service.d/hardening.conf
+
+# Remove or comment out these lines:
+# ProtectHome=read-only  (or any ProtectHome setting)
+# NoNewPrivileges=yes
+
+# Also remove /home from ReadWritePaths (not needed without ProtectHome)
+
+# Reload and restart
+sudo systemctl daemon-reload
+sudo systemctl restart ssh
+```
+
+**Why this works:**
+- VSCode needs to write to `~/.vscode-server/` - works without ProtectHome
+- Docker needs access to volume mounts from `/home/` - works without ProtectHome
+- You still have strong security from other hardening layers
+
+**"Cannot write to /etc from SSH session"**
+
+**Cause:** SSH systemd hardening with `ProtectSystem=full` makes `/etc` read-only.
+
+**V4.0 Already Includes Common /etc Paths:**
+
+The current script includes these essential `/etc` directories in ReadWritePaths:
+- ✅ `/etc/ufw` - UFW firewall configuration
+- ✅ `/etc/systemd/system` - Service configuration files
+- ✅ `/etc/docker` - Docker daemon configuration
+
+**If you need to write to OTHER /etc files:**
+
+**Option A: Temporary Remount (Most Secure - Recommended)**
+```bash
+# Temporarily remount /etc as read-write
+sudo mount -o remount,rw /etc
+
+# Make your changes
+sudo nano /etc/your-file
+
+# /etc automatically returns to read-only after SSH restart
+# This is by design for security
+```
+
+**Benefits:**
+- ✅ Maximum security - /etc remains protected
+- ✅ Conscious decision required for /etc modifications
+- ✅ No permanent security reduction
+
+**Option B: Add Specific Path (Balanced Security)**
+```bash
+# Edit SSH hardening config
+sudo nano /etc/systemd/system/ssh.service.d/hardening.conf
+
+# Add ONLY the specific directory you need (example: /etc/nginx):
+ReadWritePaths=/etc/ufw /tmp /var/tmp /home /etc/systemd/system /etc/docker /etc/nginx
+
+# Reload and restart
+sudo systemctl daemon-reload
+sudo systemctl restart ssh
+exit  # Log out and back in
+```
+
+**Benefits:**
+- ✅ Convenient for frequently modified directories
+- ✅ Most of /etc remains protected
+- ⚠️  Slightly reduced security for that specific path
+
+**Option C: Full /etc Access (NOT Recommended)**
+```bash
+# Add entire /etc to ReadWritePaths
+ReadWritePaths=/etc/ufw /tmp /var/tmp /home /etc/systemd/system /etc/docker /etc
+
+# Reload and restart
+sudo systemctl daemon-reload
+sudo systemctl restart ssh
+exit
+```
+
+**Drawbacks:**
+- ❌ Significantly reduced security
+- ❌ Compromised SSH session can modify any /etc file
+- ❌ Lower Lynis score
+- ❌ Not recommended for production servers
+
+**Recommendation:** Use Option A (temporary remount) for occasional changes, or Option B for specific directories you modify frequently. Avoid Option C unless absolutely necessary.
+
+**"Cannot edit scripts in /usr/local/bin from SSH session"**
+
+**Cause:** SSH systemd hardening with `ProtectSystem=full` makes `/usr` (including `/usr/local/bin`) read-only.
+
+**Affected Files:**
+- `/usr/local/bin/lynis-telegram.sh` - Lynis monitoring script
+- `/usr/local/bin/rkhunter-telegram.sh` - Rootkit scanner script
+- Any other custom scripts you've added to `/usr/local/bin`
+
+**Option A: Temporary Remount (Most Secure - Recommended)**
+```bash
+# Temporarily remount /usr as read-write
+sudo mount -o remount,rw /usr
+
+# Make your changes
+sudo nano /usr/local/bin/lynis-telegram.sh
+sudo nano /usr/local/bin/rkhunter-telegram.sh
+
+# /usr automatically returns to read-only after SSH restart
+# This is by design for security
+```
+
+**Benefits:**
+- ✅ Maximum security - /usr remains protected
+- ✅ Conscious decision required for system modifications
+- ✅ No permanent security reduction
+- ✅ Best practice for production servers
+
+**Option B: Add /usr/local/bin to ReadWritePaths (Balanced Security)**
+```bash
+# Edit SSH hardening config
+sudo nano /etc/systemd/system/ssh.service.d/hardening.conf
+
+# Add /usr/local/bin to ReadWritePaths:
+ReadWritePaths=/etc/ufw /tmp /var/tmp /etc/systemd/system /etc/docker /usr/local/bin
+
+# Reload and restart
+sudo systemctl daemon-reload
+sudo systemctl restart ssh
+exit  # Log out and back in
+```
+
+**Benefits:**
+- ✅ Convenient for frequently modified scripts
+- ✅ /usr system directories remain protected
+- ⚠️  Slightly reduced security for /usr/local/bin
+
+**Option C: Full /usr Access (NOT Recommended)**
+```bash
+# Add entire /usr to ReadWritePaths
+ReadWritePaths=/etc/ufw /tmp /var/tmp /etc/systemd/system /etc/docker /usr
+
+# Reload and restart
+sudo systemctl daemon-reload
+sudo systemctl restart ssh
+exit
+```
+
+**Drawbacks:**
+- ❌ Significantly reduced security
+- ❌ Compromised SSH session can modify system binaries
+- ❌ Lower Lynis score
+- ❌ Not recommended for any server environment
+
+**Recommendation:** Use Option A (temporary remount) for occasional script updates, or Option B if you need to update monitoring scripts frequently. Never use Option C - it exposes critical system directories.
+
+**"Cannot run Lynis/Rkhunter manually via SSH"**
+
+**Cause:** SSH systemd hardening with `PrivateTmp=yes` isolates `/tmp` per SSH session. Lynis and Rkhunter need access to the system-wide `/tmp` directory to create temporary files.
+
+**Error you might see:**
+```
+mktemp: failed to create file via template '/tmp/lynis.XXXXXXXXXX': No such file or directory
+```
+
+**Solution: Run scripts outside SSH session context**
+
+```bash
+# For manual Lynis audit with Telegram notification:
+sudo bash -c 'cd / && /usr/local/bin/lynis-telegram.sh'
+
+# For manual Rkhunter scan with Telegram notification:
+sudo bash -c 'cd / && /usr/local/bin/rkhunter-telegram.sh'
+
+# For manual Lynis audit without Telegram (interactive):
+sudo bash -c 'cd / && lynis audit system'
+
+# For manual Rkhunter scan without Telegram (interactive):
+sudo bash -c 'cd / && rkhunter --check --skip-keypress'
+```
+
+**Why this works:**
+- `sudo bash -c` creates a new shell process outside your SSH session context
+- This shell has access to the system-wide `/tmp` directory
+- `cd /` ensures the script runs from root directory (simulates cron environment)
+- This is exactly how cron executes these scripts automatically
+
+**Automated scans still work normally:**
+- Cron jobs are not affected by SSH hardening
+- Daily/monthly scans via cron work perfectly
+- Only manual execution via SSH requires the `bash -c` wrapper
+
+**Alternative: Clean up stale PID files**
+
+If you see "PID file exists" warnings:
+```bash
+# Remove stale Lynis PID file
+sudo rm -f /var/run/lynis.pid
+
+# Remove stale Rkhunter lock file (if exists)
+sudo rm -f /var/lib/rkhunter/rkhunter.lock
+```
+
 ### Installation Problems
 
 **"No internet connectivity detected"**
@@ -1589,6 +2056,48 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/sendMessage" \
 # Replace <BOT_TOKEN> and <CHAT_ID>
 ```
 
+### Security Audit & Recommendations
+
+**View Lynis Security Recommendations:**
+
+```bash
+# View all Lynis recommendations
+grep 'suggestion\[\]=' /var/log/lynis-report.dat | cut -d'=' -f2-
+
+# Count total suggestions
+grep -c 'suggestion\[\]=' /var/log/lynis-report.dat
+
+# View top 10 suggestions
+grep 'suggestion\[\]=' /var/log/lynis-report.dat | cut -d'=' -f2- | head -10
+
+# View hardening score
+grep 'hardening_index=' /var/log/lynis-report.dat | cut -d'=' -f2
+
+# Run new Lynis scan
+sudo lynis audit system --quick
+
+# View detailed test results
+sudo lynis show details <TEST-ID>
+```
+
+**Lynis Report Locations:**
+- Main report: `/var/log/lynis-report.dat` (machine-readable format)
+- Detailed log: `/var/log/lynis.log` (human-readable format)
+- Last scan results available after installation completes
+
+**Understanding Lynis Output:**
+- **Hardening Index**: 0-100 score
+- **Suggestions**: Recommendations to improve security further
+- **Warnings**: Potential security issues that should be addressed
+- **Tests**: Individual security checks performed
+
+**Example Recommendations You Might See:**
+- Add legal banners (already optional)
+- Configure additional firewall rules for specific services
+- Enable compiler restrictions (already optional for production)
+- File integrity monitoring improvements
+- Additional SSH hardening options
+
 ### Check Logs
 
 **Most important logs:**
@@ -1692,7 +2201,61 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
 
 ## Changelog
 
-### Version 3.0 (Current) - Interactive & Safe for Existing Servers
+### Current Release - Comprehensive Lynis-Based Hardening
+
+- **NEW: 17 Advanced Security Hardening Sections** (Based on Lynis audit recommendations):
+  - **Security Repository Configuration**: Verifies and configures official security update repositories
+  - **Password Policies & PAM Hardening**: SHA-512 with 65536 rounds, libpam-pwquality, libpam-tmpdir
+  - **Extended Kernel Hardening**: 15+ additional sysctl parameters (kptr_restrict, BPF hardening, protected files, ptrace restrictions)
+  - **USB Storage Control**: Optional blacklisting with Raspberry Pi awareness
+  - **Complete Core Dump Protection**: limits.d, systemd, and profile configuration
+  - **File Permissions Hardening**: Secures crontab, cron directories, SSH config, at.deny
+  - **Legal Warning Banners**: Optional /etc/issue and /etc/issue.net configuration
+  - **/proc Filesystem Hardening**: hidepid=2 for process isolation
+  - **Enhanced SSH Hardening**: Configurable MaxSessions (default: 2), TCPKeepAlive disabled
+  - **Fail2ban Best Practices**: jail.local usage (DEB-0880 compliance)
+  - **Systemd Service Hardening**: PrivateTmp, ProtectSystem, ProtectHome, NoNewPrivileges for SSH/Docker/Fail2ban/Cron
+  - **Sysstat Monitoring**: System performance statistics collection (sar, iostat, mpstat, pidstat)
+  - **AIDE File Integrity Monitoring**: Production server option with daily checks and email alerts
+  - **Compiler Restrictions**: Production server option to restrict gcc/g++/make access
+  - **Deprecated Package Cleanup**: Removes nis, rsh-client, telnet, tftp, xinetd
+
+- **NEW: Backwards Compatibility System**:
+  - All 13 new security sections support `skip_if_completed()` checks
+  - Safe re-run on existing installations without re-prompting
+  - Only new/unconfigured features are prompted
+  - State tracking in `/var/lib/server-setup/installation.state`
+  - Seamless upgrade path from older script versions
+
+- **NEW: Interactive Configuration Prompts**:
+  - SSH MaxSessions: User-configurable (1-10, default: 2) with validation
+  - USB Storage: Platform-aware prompt (Raspberry Pi warning, default: no)
+  - Legal Banners: Optional (recommended for business, default: no)
+  - AIDE: Production server check (not for RPi/dev servers, default: no)
+  - Compiler Restrictions: Production-only check (breaks dev workflows, default: no)
+  - Systemd Service Restart: Optional immediate restart after hardening
+
+- **Enhanced Security Defaults**:
+  - Lynis hardening score improvement: Expected 73 → 90-95+
+  - Reduced Lynis suggestions from 34 to ~10-15
+  - All configurations follow security best practices
+  - Conservative defaults (security over convenience)
+
+- **Platform Compatibility**:
+  - Raspberry Pi support with platform-specific warnings
+  - VPS/Cloud server optimizations
+  - Production vs. development server detection
+  - Appropriate defaults per platform type
+
+- **Improved User Experience**:
+  - Clear explanations for each security section
+  - Impact descriptions before configuration
+  - Raspberry Pi-specific warnings where relevant
+  - Default values shown in prompts
+  - Dry-run mode shows all new sections
+
+### Previous Release - Interactive & Safe for Existing Servers
+
 - **NEW: Three Operation Modes:**
   - `--fresh-install`: Minimal prompts for fresh servers (fast setup)
   - `--interactive`: Safe mode for existing servers with component-by-component confirmation
@@ -1750,7 +2313,7 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
   - Rollback capabilities for quick restoration
   - Suitable for both development and production environments
 
-### Version 2.1
+### Earlier Release - Enhanced Security
 - **Enhanced Kernel Hardening:**
   - Fixed `net.ipv4.conf.default.accept_source_route = 0` (IP source routing disabled on new interfaces)
   - Fixed `net.ipv4.conf.default.log_martians = 1` (log suspicious packets on new interfaces)
@@ -1793,7 +2356,7 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
   - All security tools now Ubuntu-compatible
   - Better cross-distribution support
 
-### Version 2.0
+### Earlier Release - Core Functionality
 - Resume functionality on interrupts
 - Telegram integration for monitoring and security alerts
 - Rkhunter and Lynis security scanning with automatic reports
@@ -1803,7 +2366,7 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
 - Journald configuration with log rotation
 - Smart swap configuration based on RAM
 
-### Version 1.0
+### Initial Release
 - Initial release
 - Basic server setup and hardening
 - Docker, Python, Node.js installation

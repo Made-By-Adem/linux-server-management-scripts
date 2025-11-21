@@ -12,6 +12,17 @@ This repository contains two main toolsets:
 A comprehensive script for setting up and securing new Ubuntu/Debian servers (including Raspberry Pi). Features interactive mode for existing servers and fresh-install mode for new deployments.
 
 **Key Features:**
+
+- **17 Advanced Security Hardening Layers** (NEW in v4.0, Enhanced in v4.1 - Based on Lynis recommendations)
+  - Security repository verification
+  - Password policies & PAM hardening (SHA-512 with 65536 rounds + password aging)
+  - Extended kernel hardening (15+ sysctl parameters)
+  - USB storage control, core dump protection
+  - File permissions, legal banners, /proc hardening
+  - SSH MaxSessions configuration, Fail2ban best practices
+  - Systemd service hardening (PrivateTmp=no for Lynis/Rkhunter manual execution)
+  - Sysstat monitoring, AIDE file integrity with SHA-512 checksums (production)
+  - Compiler restrictions, residual config cleanup
 - System hardening and security configuration
 - Automated user setup with SSH keys
 - Firewall configuration (UFW)
@@ -19,6 +30,7 @@ A comprehensive script for setting up and securing new Ubuntu/Debian servers (in
 - Docker and Docker Compose installation
 - Optional services: Portainer, Netdata, Cloudflare Tunnel
 - Resume capability for interrupted installations
+- Backwards compatibility (safe re-run on existing installations)
 - Dry-run mode for testing
 
 **Use Cases:**

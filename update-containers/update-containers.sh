@@ -210,6 +210,33 @@ setup_logging() {
     log_info "Logging started: $LOG_FILE"
 }
 
+# Function to create symlink in scripts directory
+create_symlink() {
+    local script_path="$(realpath "$0")"
+    local script_dir="$(dirname "$script_path")"
+    local symlink_name="update-containers"
+
+    # Only create symlink if script is in /home/scripts or ~/scripts
+    if [[ "$script_dir" =~ ^/home/[^/]+/scripts$ ]] || [[ "$script_dir" == "/home/scripts" ]]; then
+        # Check if symlink already exists and points to this script
+        if [ -L "$script_dir/$symlink_name" ]; then
+            local current_target="$(readlink -f "$script_dir/$symlink_name")"
+            if [ "$current_target" = "$script_path" ]; then
+                # Symlink already exists and is correct
+                return 0
+            fi
+        fi
+
+        # Create or update symlink
+        ln -sf "$script_path" "$script_dir/$symlink_name" 2>/dev/null || true
+
+        # Verify symlink was created successfully
+        if [ -L "$script_dir/$symlink_name" ]; then
+            log_info "Created symlink: $script_dir/$symlink_name -> $script_path"
+        fi
+    fi
+}
+
 ###############################################################################
 # System Update Functions
 ###############################################################################
@@ -716,6 +743,7 @@ EOF
     check_root "$@"
     check_docker
     setup_logging
+    create_symlink
 
     log_info "Script started by: ${SUDO_USER:-root}"
 
