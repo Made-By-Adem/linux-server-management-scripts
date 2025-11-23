@@ -169,9 +169,28 @@ sudo reboot
 |---------|---------|
 | ⚠️ SSH Keys Required | Script disables password login |
 | ⚠️ USB Storage | Answer 'n' to USB blacklist - Pi may use USB storage |
-| ⚠️ AIDE Monitoring | Answer 'n' - causes excessive SD card writes |
+| 🚫 **AIDE Monitoring** | **NEVER install on Raspberry Pi** - see warning below |
 | ⚠️ Swap Size | Auto-configured for Pi's limited RAM |
 | ⚠️ Slower Installation | Pi is slower than VPS - be patient |
+
+> ### 🚫 CRITICAL: AIDE on Raspberry Pi
+>
+> **NEVER install AIDE on a Raspberry Pi!** The script will automatically skip AIDE on Pi hardware, but if you're asked:
+>
+> **ALWAYS answer 'n' (NO) to AIDE installation.**
+>
+> **Why AIDE is dangerous on Raspberry Pi:**
+>
+> - **SD Card Destruction**: AIDE performs massive disk I/O during initialization (10-20 min of continuous writes) and daily scans, drastically reducing SD card lifespan
+> - **Filesystem Corruption**: Heavy I/O on flash storage causes EXT4 errors like `failed to convert unwritten extents to written extents` leading to potential data loss
+> - **System Crashes**: AIDE initialization can cause bus errors, kernel panics, and system hangs on Pi hardware
+> - **Resource Exhaustion**: Pi's limited RAM and I/O bandwidth cannot handle AIDE's full filesystem scans
+>
+> **Safe alternatives already included in this script:**
+>
+> - ✅ **rkhunter** - Lightweight rootkit detection
+> - ✅ **Lynis** - Security auditing without heavy I/O
+> - ✅ **debsums** - Package integrity verification (monthly, minimal I/O)
 
 ---
 
@@ -1643,12 +1662,13 @@ A: The script doesn't store passwords. Only tokens are stored:
 - **Telegram credentials for Netdata**: Stored in Docker environment variables (container-level isolation) ✅ Secure
 
 **Token Security:**
-All Telegram tokens are properly secured with restricted permissions. The security scan wrapper scripts (`rkhunter-telegram.sh`, `lynis-telegram.sh`) are automatically set to chmod 700 (read/execute only by root), preventing other users from accessing the tokens.
+All Telegram tokens are properly secured with restricted permissions. The security scan wrapper scripts (`rkhunter-telegram.sh`, `lynis-telegram.sh`, `aide-telegram.sh`) are automatically set to chmod 700 (read/execute only by root), preventing other users from accessing the tokens.
 
 **Q: How often do security scans run?**
-A:
-- Rkhunter: Daily at 03:00 (only sends alert on warnings)
+
+- Rkhunter: Daily at 03:00 (sends daily status update)
 - Lynis: Monthly on the 1st at 04:00
+- AIDE: Daily at 05:00 (sends alert on file changes, status if no changes)
 
 Check cron:
 ```bash
@@ -1970,6 +1990,7 @@ exit
 **Affected Files:**
 - `/usr/local/bin/lynis-telegram.sh` - Lynis monitoring script
 - `/usr/local/bin/rkhunter-telegram.sh` - Rootkit scanner script
+- `/usr/local/bin/aide-telegram.sh` - AIDE integrity monitoring script
 - Any other custom scripts you've added to `/usr/local/bin`
 
 **Option A: Temporary Remount (Most Secure - Recommended)**
@@ -1980,6 +2001,7 @@ sudo mount -o remount,rw /usr
 # Make your changes
 sudo nano /usr/local/bin/lynis-telegram.sh
 sudo nano /usr/local/bin/rkhunter-telegram.sh
+sudo nano /usr/local/bin/aide-telegram.sh
 
 # /usr automatically returns to read-only after SSH restart
 # This is by design for security
@@ -2047,11 +2069,17 @@ sudo bash -c 'cd / && /usr/local/bin/lynis-telegram.sh'
 # For manual Rkhunter scan with Telegram notification:
 sudo bash -c 'cd / && /usr/local/bin/rkhunter-telegram.sh'
 
+# For manual AIDE check with Telegram notification:
+sudo bash -c 'cd / && /usr/local/bin/aide-telegram.sh'
+
 # For manual Lynis audit without Telegram (interactive):
 sudo bash -c 'cd / && lynis audit system'
 
 # For manual Rkhunter scan without Telegram (interactive):
 sudo bash -c 'cd / && rkhunter --check --skip-keypress'
+
+# For manual AIDE check without Telegram:
+sudo aide --check
 ```
 
 **Why this works:**

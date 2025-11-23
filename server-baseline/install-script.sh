@@ -4159,12 +4159,14 @@ DATE_STAMP=$(date '+%Y-%m-%d %H:%M')
 CHECK_RESULT=$?
 
 # Parse results
-ADDED=$(grep -c "^Added:" "$LOG_FILE" 2>/dev/null || echo "0")
-REMOVED=$(grep -c "^Removed:" "$LOG_FILE" 2>/dev/null || echo "0")
-CHANGED=$(grep -c "^Changed:" "$LOG_FILE" 2>/dev/null || echo "0")
+ADDED=$(grep "^Added:" "$LOG_FILE" 2>/dev/null | wc -l)
+REMOVED=$(grep "^Removed:" "$LOG_FILE" 2>/dev/null | wc -l)
+CHANGED=$(grep "^Changed:" "$LOG_FILE" 2>/dev/null | wc -l)
+
+TOTAL=$((ADDED + REMOVED + CHANGED))
 
 # If changes detected (exit code != 0)
-if [ $CHECK_RESULT -ne 0 ] && [ $((ADDED + REMOVED + CHANGED)) -gt 0 ]; then
+if [ "$CHECK_RESULT" -ne 0 ] && [ "$TOTAL" -gt 0 ]; then
     # Get summary of changes (first 10 lines of each type)
     CHANGES_SUMMARY=""
 
@@ -4382,6 +4384,55 @@ fi
 if skip_if_completed "AIDE"; then
     log_info "AIDE already configured, skipping"
 else
+    # Detect Raspberry Pi
+    IS_RASPBERRY_PI=false
+    if grep -qi "raspberry\|bcm27\|bcm28" /proc/cpuinfo 2>/dev/null || \
+       [ -f /sys/firmware/devicetree/base/model ] && grep -qi "raspberry" /sys/firmware/devicetree/base/model 2>/dev/null; then
+        IS_RASPBERRY_PI=true
+    fi
+
+    # Show strong warning for Raspberry Pi
+    if [ "$IS_RASPBERRY_PI" = true ]; then
+        echo ""
+        echo -e "${RED}╔═══════════════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${RED}║                                                                           ║${NC}"
+        echo -e "${RED}║   ██████╗  █████╗ ███╗   ██╗ ██████╗ ███████╗██████╗                     ║${NC}"
+        echo -e "${RED}║   ██╔══██╗██╔══██╗████╗  ██║██╔════╝ ██╔════╝██╔══██╗                    ║${NC}"
+        echo -e "${RED}║   ██║  ██║███████║██╔██╗ ██║██║  ███╗█████╗  ██████╔╝                    ║${NC}"
+        echo -e "${RED}║   ██║  ██║██╔══██║██║╚██╗██║██║   ██║██╔══╝  ██╔══██╗                    ║${NC}"
+        echo -e "${RED}║   ██████╔╝██║  ██║██║ ╚████║╚██████╔╝███████╗██║  ██║                    ║${NC}"
+        echo -e "${RED}║   ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝                    ║${NC}"
+        echo -e "${RED}║                                                                           ║${NC}"
+        echo -e "${RED}║              AIDE IS NOT RECOMMENDED FOR RASPBERRY PI                     ║${NC}"
+        echo -e "${RED}║                                                                           ║${NC}"
+        echo -e "${RED}╚═══════════════════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${RED}${BOLD}RISKS OF RUNNING AIDE ON RASPBERRY PI:${NC}"
+        echo ""
+        echo -e "${RED}  ✗ SD CARD WEAR:${NC} AIDE performs intensive disk I/O that significantly"
+        echo -e "    reduces SD card lifespan. Database init alone writes gigabytes of data."
+        echo ""
+        echo -e "${RED}  ✗ FILESYSTEM CORRUPTION:${NC} Heavy I/O on flash storage can cause EXT4"
+        echo -e "    errors like 'failed to convert unwritten extents' leading to data loss."
+        echo ""
+        echo -e "${RED}  ✗ SYSTEM INSTABILITY:${NC} AIDE initialization (10-20 min) can cause"
+        echo -e "    system hangs, bus errors, and kernel panics on Pi hardware."
+        echo ""
+        echo -e "${RED}  ✗ RESOURCE EXHAUSTION:${NC} Pi's limited RAM and I/O bandwidth are"
+        echo -e "    overwhelmed by AIDE's full filesystem scans."
+        echo ""
+        echo -e "${YELLOW}ALTERNATIVES FOR RASPBERRY PI:${NC}"
+        echo "  • Use rkhunter (already in this script) - lightweight rootkit detection"
+        echo "  • Use Lynis (already in this script) - security auditing without heavy I/O"
+        echo "  • Monitor critical files with inotifywait (event-based, no scanning)"
+        echo "  • Use remote/cloud-based integrity monitoring"
+        echo ""
+        echo -e "${BOLD}Raspberry Pi detected. AIDE installation will be skipped.${NC}"
+        echo ""
+        read -p "Press Enter to continue..."
+        log_warning "AIDE skipped - not recommended for Raspberry Pi hardware"
+        mark_completed "AIDE"
+    else
     if ask_component_install \
         "AIDE FILE INTEGRITY MONITORING" \
         "aide" \
@@ -4410,9 +4461,7 @@ Benefits:
 • Change tracking and auditing
 • Alert on unauthorized modifications
 
-Lynis recommendation: FINT-4350
-
-⚠️  RASPBERRY PI: NOT RECOMMENDED (high I/O on SD card)" \
+Lynis recommendation: FINT-4350" \
         "n"; then
 
     echo ""
@@ -4429,7 +4478,6 @@ Lynis recommendation: FINT-4350
     echo ""
     echo "Skip AIDE if:"
     echo "  ✗ This is a development/test server"
-    echo "  ✗ This is a Raspberry Pi (high SD card wear)"
     echo "  ✗ Limited disk I/O budget"
     echo ""
     read -p "Is this a PRODUCTION server? Install AIDE? (y/N): " is_production
@@ -4565,6 +4613,7 @@ EOF
         log_info "AIDE installation skipped"
         mark_completed "AIDE"
     fi
+    fi  # End of Raspberry Pi else branch
 fi
 
 ###############################################################################
