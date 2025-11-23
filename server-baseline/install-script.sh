@@ -3731,6 +3731,7 @@ install_lynis=${install_lynis:-n}
 # Install selected tools
 RKHUNTER_INSTALLED=false
 LYNIS_INSTALLED=false
+AIDE_INSTALLED=false
 
 if [[ $install_rkhunter == "y" ]] || [[ $install_rkhunter == "Y" ]]; then
     log_info "Installing Rkhunter..."
@@ -4142,6 +4143,105 @@ LYNIS_SCRIPT
     fi
     fi
 
+    # Create AIDE Telegram wrapper script (only if installed)
+    if [ "$AIDE_INSTALLED" = true ]; then
+    cat <<'AIDE_SCRIPT' | sudo tee /usr/local/bin/aide-telegram.sh
+#!/bin/bash
+# AIDE integrity check with Telegram notifications
+
+TELEGRAM_BOT_TOKEN="REPLACE_BOT_TOKEN"
+TELEGRAM_CHAT_ID="REPLACE_CHAT_ID"
+LOG_FILE="/var/log/aide-check-$(date +%Y%m%d).log"
+DATE_STAMP=$(date '+%Y-%m-%d %H:%M')
+
+# Run AIDE check
+/usr/bin/aide --check > "$LOG_FILE" 2>&1
+CHECK_RESULT=$?
+
+# Parse results
+ADDED=$(grep -c "^Added:" "$LOG_FILE" 2>/dev/null || echo "0")
+REMOVED=$(grep -c "^Removed:" "$LOG_FILE" 2>/dev/null || echo "0")
+CHANGED=$(grep -c "^Changed:" "$LOG_FILE" 2>/dev/null || echo "0")
+
+# If changes detected (exit code != 0)
+if [ $CHECK_RESULT -ne 0 ] && [ $((ADDED + REMOVED + CHANGED)) -gt 0 ]; then
+    # Get summary of changes (first 10 lines of each type)
+    CHANGES_SUMMARY=""
+
+    if [ "$ADDED" -gt 0 ]; then
+        CHANGES_SUMMARY+="*Added files ($ADDED):*%0A"
+        CHANGES_SUMMARY+=$(grep "^Added:" "$LOG_FILE" | head -5 | sed 's/Added: /• /g' | tr '\n' '%' | sed 's/%/%0A/g')
+        CHANGES_SUMMARY+="%0A"
+    fi
+
+    if [ "$REMOVED" -gt 0 ]; then
+        CHANGES_SUMMARY+="*Removed files ($REMOVED):*%0A"
+        CHANGES_SUMMARY+=$(grep "^Removed:" "$LOG_FILE" | head -5 | sed 's/Removed: /• /g' | tr '\n' '%' | sed 's/%/%0A/g')
+        CHANGES_SUMMARY+="%0A"
+    fi
+
+    if [ "$CHANGED" -gt 0 ]; then
+        CHANGES_SUMMARY+="*Changed files ($CHANGED):*%0A"
+        CHANGES_SUMMARY+=$(grep "^Changed:" "$LOG_FILE" | head -5 | sed 's/Changed: /• /g' | tr '\n' '%' | sed 's/%/%0A/g')
+        CHANGES_SUMMARY+="%0A"
+    fi
+
+    # Send alert message
+    MESSAGE="🚨 *AIDE Integrity Alert*%0A%0A"
+    MESSAGE+="Server: $(hostname)%0A"
+    MESSAGE+="Date: ${DATE_STAMP}%0A%0A"
+    MESSAGE+="⚠️ *File changes detected!*%0A%0A"
+    MESSAGE+="Summary:%0A"
+    MESSAGE+="• Added: ${ADDED}%0A"
+    MESSAGE+="• Removed: ${REMOVED}%0A"
+    MESSAGE+="• Changed: ${CHANGED}%0A%0A"
+    MESSAGE+="${CHANGES_SUMMARY}%0A"
+    MESSAGE+="Full log: \`$LOG_FILE\`%0A%0A"
+    MESSAGE+="_Review changes and update database if legitimate:_%0A"
+    MESSAGE+="\`sudo aide --update && sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db\`"
+
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHAT_ID}" \
+        -d text="${MESSAGE}" \
+        -d parse_mode="Markdown" >/dev/null 2>&1
+else
+    # No changes - send daily status (optional, comment out if too noisy)
+    MESSAGE="✅ *AIDE Daily Check*%0A%0A"
+    MESSAGE+="Server: $(hostname)%0A"
+    MESSAGE+="Date: ${DATE_STAMP}%0A"
+    MESSAGE+="Status: *No changes detected*%0A%0A"
+    MESSAGE+="File integrity verified."
+
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHAT_ID}" \
+        -d text="${MESSAGE}" \
+        -d parse_mode="Markdown" >/dev/null 2>&1
+
+    # Auto-update database when no changes (keeps baseline current)
+    /usr/bin/aide --update >/dev/null 2>&1
+    mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db 2>/dev/null || true
+fi
+
+# Keep logs for 30 days
+find /var/log -name "aide-check-*.log" -mtime +30 -delete 2>/dev/null || true
+AIDE_SCRIPT
+
+    # Replace placeholders with actual credentials for AIDE
+    sudo sed -i "s/REPLACE_BOT_TOKEN/$SECURITY_TELEGRAM_BOT_TOKEN/g" /usr/local/bin/aide-telegram.sh
+    sudo sed -i "s/REPLACE_CHAT_ID/$SECURITY_TELEGRAM_CHAT_ID/g" /usr/local/bin/aide-telegram.sh
+    sudo chmod 700 /usr/local/bin/aide-telegram.sh
+    log_info "AIDE Telegram integration configured (chmod 700 for security)"
+
+    # Create symlink in scripts directory if it exists
+    if [ -d "$USER_HOME/scripts" ]; then
+        sudo ln -sf /usr/local/bin/aide-telegram.sh "$USER_HOME/scripts/aide-telegram" 2>/dev/null || true
+        log_info "Created symlink: ~/scripts/aide-telegram"
+    fi
+
+    # Remove the old email-based cron job and replace with Telegram version
+    sudo rm -f /etc/cron.daily/aide-check 2>/dev/null || true
+    fi
+
     # Create cron jobs for automated scans (only for installed tools)
     CRON_CONTENT=""
 
@@ -4155,7 +4255,15 @@ LYNIS_SCRIPT
             CRON_CONTENT+=$'\n'
         fi
         CRON_CONTENT+="# Lynis monthly audit on 1st of month at 04:00"$'\n'
-        CRON_CONTENT+="0 4 1 * * root /usr/local/bin/lynis-telegram.sh"
+        CRON_CONTENT+="0 4 1 * * root /usr/local/bin/lynis-telegram.sh"$'\n'
+    fi
+
+    if [ "$AIDE_INSTALLED" = true ]; then
+        if [ ! -z "$CRON_CONTENT" ]; then
+            CRON_CONTENT+=$'\n'
+        fi
+        CRON_CONTENT+="# AIDE daily integrity check at 05:00"$'\n'
+        CRON_CONTENT+="0 5 * * * root /usr/local/bin/aide-telegram.sh"
     fi
 
     if [ ! -z "$CRON_CONTENT" ]; then
@@ -4169,6 +4277,9 @@ LYNIS_SCRIPT
     fi
     if [ "$LYNIS_INSTALLED" = true ]; then
         log_info "Lynis: Monthly audits on 1st of month at 04:00"
+    fi
+    if [ "$AIDE_INSTALLED" = true ]; then
+        log_info "AIDE: Daily integrity checks at 05:00"
     fi
 else
     log_warning "Telegram integration skipped - no credentials provided"
@@ -4398,6 +4509,7 @@ EOF
             if [ -f /var/lib/aide/aide.db.new ]; then
                 sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
                 log_info "AIDE database initialized successfully"
+                AIDE_INSTALLED=true
             else
                 log_warning "AIDE database not found at expected location"
             fi
