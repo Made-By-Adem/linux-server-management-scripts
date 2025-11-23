@@ -981,7 +981,7 @@ if ask_component_install \
 • lsb-release, software-properties-common - Repository management
 • rsyslog - System logging
 • git - Version control
-• htop, iotop, nethogs - System monitoring tools
+• htop, atop, iotop, nethogs - System monitoring tools
 • lm-sensors - Hardware monitoring (temperature, voltage, fans)
 • fail2ban - Intrusion prevention
 • libpam-tmpdir - Per-user temporary directories (security)
@@ -1004,6 +1004,7 @@ Note: You will be able to select individual packages in the next step" \
         ["rsyslog"]="System logging"
         ["git"]="Version control system"
         ["htop"]="Interactive process viewer"
+        ["atop"]="Advanced system and process monitor"
         ["iotop"]="I/O monitoring tool"
         ["nethogs"]="Network bandwidth monitor per process"
         ["lm-sensors"]="Hardware monitoring (temperature, voltage, fans)"
@@ -1025,6 +1026,7 @@ Note: You will be able to select individual packages in the next step" \
         ["rsyslog"]="System logging daemon. Collects and stores logs from system services. Essential for troubleshooting and security auditing."
         ["git"]="Distributed version control system. Track code changes, collaborate with others, and deploy from repositories."
         ["htop"]="Interactive process viewer with CPU/memory graphs, process tree, and easy process management (kill, renice, etc.)."
+        ["atop"]="Advanced system monitor that logs CPU, memory, disk, and network activity over time. Unlike htop, atop stores historical data allowing you to analyze past performance. Great for post-incident analysis and long-term monitoring."
         ["iotop"]="Shows disk I/O usage per process. Helps identify which processes are causing disk bottlenecks or high I/O wait."
         ["nethogs"]="Groups network bandwidth by process (unlike iftop which shows per-connection). Find which program is using your bandwidth."
         ["lm-sensors"]="Monitors hardware sensors: CPU temperature, fan speeds, voltages. Use 'sensors' command to check system health."
@@ -1061,7 +1063,7 @@ Note: You will be able to select individual packages in the next step" \
             echo "Press Enter to accept the default (Y = install, n = skip)"
             echo ""
 
-            for pkg in curl wget net-tools ufw unattended-upgrades ca-certificates gnupg lsb-release software-properties-common rsyslog git htop iotop nethogs lm-sensors fail2ban libpam-tmpdir; do
+            for pkg in curl wget net-tools ufw unattended-upgrades ca-certificates gnupg lsb-release software-properties-common rsyslog git htop atop iotop nethogs lm-sensors fail2ban libpam-tmpdir; do
                 desc="${ESSENTIAL_PACKAGES[$pkg]}"
                 details="${PACKAGE_DETAILS[$pkg]}"
 
@@ -5418,7 +5420,7 @@ echo "  - Automatic updates: Enabled"
 echo "  - Kernel hardening: Applied"
 echo ""
 echo "Monitoring tools installed:"
-echo "  - htop, iotop, nethogs"
+echo "  - htop, atop, iotop, nethogs"
 if [ "$NETDATA_CONFIGURED" = true ]; then
 echo "  - Netdata Docker container (http://$SERVER_IP:19999)"
 if [ "$TELEGRAM_CONFIGURED" = true ]; then

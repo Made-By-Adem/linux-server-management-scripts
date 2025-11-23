@@ -129,6 +129,7 @@ This script transforms a fresh Ubuntu/Debian server into a **production-ready, h
 
 **Monitoring Tools:**
 - `htop` - Interactive process viewer (better than top)
+- `atop` - Advanced system monitor with historical logging
 - `iotop` - Disk I/O monitoring per process
 - `nethogs` - Network traffic monitoring per process
 
@@ -955,6 +956,9 @@ sudo fail2ban-client status sshd | grep "Banned IP"
 ```bash
 # Interactive monitoring
 htop
+
+# Historical system monitoring (logs CPU, memory, disk, network over time)
+atop
 
 # Disk I/O
 sudo iotop
@@ -1957,6 +1961,10 @@ sudo ufw enable
 # Check resources
 htop
 # Look at CPU and RAM usage
+
+# Check historical data (what happened before?)
+atop
+# Press 't' to go back in time, analyze past performance
 
 # Check disk I/O
 sudo iotop
