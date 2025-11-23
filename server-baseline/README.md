@@ -1,5 +1,7 @@
 # Server Baseline - Automated Server Installation & Hardening Script
 
+> **Part of:** [Linux Server Management Scripts](https://github.com/MadeByAdem/linux-server-management-scripts)
+
 A comprehensive, user-friendly installation script for Ubuntu/Debian servers that fully configures, secures, and optimizes your server with a single command.
 
 ## Table of Contents
@@ -51,11 +53,11 @@ ssh-copy-id user@your-server-ip
 ssh user@your-server-ip
 
 # 2. Download the script
-git clone https://github.com/MadeByAdem/server_baseline.git
-cd server_baseline
+git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+cd linux-server-management-scripts/server-baseline
 
 # 3. Run in fresh-install mode (minimal prompts)
-sudo bash install_script.sh --fresh-install
+sudo bash install-script.sh --fresh-install
 
 # 4. IMPORTANT: Test new SSH port BEFORE closing this terminal!
 #    Open a NEW terminal and test:
@@ -91,14 +93,14 @@ ssh-copy-id user@your-server-ip  # Skip if already done
 ssh user@your-server-ip
 
 # 2. Download the script
-git clone https://github.com/MadeByAdem/server_baseline.git
-cd server_baseline
+git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+cd linux-server-management-scripts/server-baseline
 
 # 3. Preview what will happen (recommended!)
-sudo bash install_script.sh --dry-run
+sudo bash install-script.sh --dry-run
 
 # 4. Run in interactive mode - confirms each component
-sudo bash install_script.sh --interactive
+sudo bash install-script.sh --interactive
 
 # 5. For each component, you'll see:
 #    - Current status
@@ -144,11 +146,11 @@ ssh-copy-id pi@raspberrypi.local           # or use IP address
 ssh pi@raspberrypi.local
 
 # 2. Download the script
-git clone https://github.com/MadeByAdem/server_baseline.git
-cd server_baseline
+git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+cd linux-server-management-scripts/server-baseline
 
 # 3. Run in fresh-install mode
-sudo bash install_script.sh --fresh-install
+sudo bash install-script.sh --fresh-install
 
 # 4. During installation, note these Pi-specific prompts:
 #    - USB storage: Answer 'n' (Pi often boots from USB/SD)
@@ -194,14 +196,14 @@ systemctl list-units --type=service --state=running
 ssh pi@raspberrypi.local
 
 # 2. Download the script
-git clone https://github.com/MadeByAdem/server_baseline.git
-cd server_baseline
+git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+cd linux-server-management-scripts/server-baseline
 
 # 3. Preview ALL changes first
-sudo bash install_script.sh --section --dry-run
+sudo bash install-script.sh --section --dry-run
 
 # 4. Run with section selection (SAFEST approach)
-sudo bash install_script.sh --section
+sudo bash install-script.sh --section
 
 # 5. When the menu appears, select ONLY safe sections:
 #    Enter: 1 3 7 8 9 10 11 12 15 16 17 19
@@ -260,7 +262,7 @@ docker ps
 ssh -i ~/.ssh/id_ed25519 pi@raspberrypi.local
 
 # 2. Run section 13
-sudo bash install_script.sh --section
+sudo bash install-script.sh --section
 # Enter: 13
 
 # 3. KEEP THIS TERMINAL OPEN and test in new terminal:
@@ -398,7 +400,7 @@ For a Raspberry Pi or server with running Docker containers, these sections are 
 
 ```bash
 # Safe sections for hardening an existing server:
-sudo bash install_script.sh --section
+sudo bash install-script.sh --section
 # Select: 1 3 7 8 9 10 11 12 15 16 17 19
 
 # This includes:
@@ -1022,8 +1024,8 @@ Automatic security updates are convenient but can rarely cause problems.
 
 **Option A: With Git (recommended)**
 ```bash
-git clone https://github.com/MadeByAdem/server_baseline.git
-cd server_baseline
+git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+cd linux-server-management-scripts/server-baseline
 ```
 
 **Option B: Direct Download**
@@ -1036,13 +1038,13 @@ cd server_baseline-main
 **Option C: Copy and Paste**
 ```bash
 # Create a file
-nano install_script.sh
+nano install-script.sh
 
 # Paste the script content
 # Press Ctrl+X, then Y, then Enter to save
 
 # Make executable
-chmod +x install_script.sh
+chmod +x install-script.sh
 ```
 
 ### Step 2: Check Your SSH Key
@@ -1062,7 +1064,7 @@ ssh-copy-id user@your-server-ip
 ### Step 3: Run the Script
 
 ```bash
-sudo bash install_script.sh
+sudo bash install-script.sh
 ```
 
 ### Step 4: Answer the Questions
@@ -1174,7 +1176,7 @@ The script has resume functionality for major installation sections. If it's int
 
 ```bash
 # Just run again:
-sudo bash install_script.sh
+sudo bash install-script.sh
 
 # You'll get options:
 # 1. Resume (skips completed parts)
@@ -1195,7 +1197,7 @@ sudo bash install_script.sh
 **To start from scratch:**
 ```bash
 sudo rm -f /var/lib/server-setup/installation.state
-sudo bash install_script.sh
+sudo bash install-script.sh
 ```
 
 ### Manual Installations After Script
@@ -1778,6 +1780,26 @@ sudo cat /var/log/unattended-upgrades/unattended-upgrades.log
 
 ## Troubleshooting
 
+### "unable to execute ./install-script.sh: No such file or directory"
+
+**Problem:** The script exists but gives "No such file or directory" error.
+
+**Cause:** The script has Windows-style line endings (CRLF) instead of Unix line endings (LF). This happens when the file was edited or transferred from a Windows system.
+
+**Solution:**
+```bash
+# Fix line endings with sed
+sed -i 's/\r$//' ./install-script.sh
+
+# Or install and use dos2unix
+sudo apt install dos2unix
+dos2unix ./install-script.sh
+```
+
+**Prevention:** The repository includes a `.gitattributes` file that ensures correct line endings when cloning. If you manually copy files, always convert line endings.
+
+---
+
 ### V4.0 Security Hardening Issues
 
 **"UFW reload fails with 'No usable temporary directory found'"**
@@ -2118,7 +2140,7 @@ free -h
 sudo apt-get install -f
 
 # Resume script
-sudo bash install_script.sh
+sudo bash install-script.sh
 # Choose option 1 (Resume)
 ```
 
@@ -2509,7 +2531,7 @@ Contributions are welcome! If you have improvements:
 ## Support
 
 **Need help?**
-- Open a [GitHub Issue](https://github.com/MadeByAdem/server_baseline/issues)
+- Open a [GitHub Issue](https://github.com/MadeByAdem/linux-server-management-scripts/issues)
 - Check [FAQ section](#faq) first
 - Check [Troubleshooting section](#troubleshooting) first
 

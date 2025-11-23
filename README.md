@@ -6,7 +6,7 @@ A collection of professional bash scripts for Ubuntu/Debian server management, a
 
 This repository contains two main toolsets:
 
-### 1. [Server Baseline Setup](server_baseline/)
+### 1. [Server Baseline Setup](server-baseline/)
 **Purpose:** Fresh server installation and hardening automation
 
 A comprehensive script for setting up and securing new Ubuntu/Debian servers (including Raspberry Pi). Features interactive mode for existing servers and fresh-install mode for new deployments.
@@ -39,11 +39,11 @@ A comprehensive script for setting up and securing new Ubuntu/Debian servers (in
 - Standardizing server configurations
 - Automated deployments
 
-[→ Full Documentation](server_baseline/README.md)
+[→ Full Documentation](server-baseline/README.md)
 
 ---
 
-### 2. [Docker Container Updates](update_docker_containers/)
+### 2. [Docker Container Updates](update-containers/)
 **Purpose:** Safe and automated Docker container updates
 
 A smart script for updating Docker containers managed by Docker Compose. Supports both manual (interactive) and automated (unattended) workflows.
@@ -64,7 +64,7 @@ A smart script for updating Docker containers managed by Docker Compose. Support
 - Selective container updates
 - Scheduled cron jobs
 
-[→ Full Documentation](update_docker_containers/README.md)
+[→ Full Documentation](update-containers/README.md)
 
 ---
 
@@ -74,28 +74,28 @@ A smart script for updating Docker containers managed by Docker Compose. Support
 
 ```bash
 # Fresh server installation
-cd server_baseline
-sudo bash install_script.sh --fresh-install
+cd server-baseline
+sudo bash install-script.sh --fresh-install
 
 # Interactive mode (existing server)
-sudo bash install_script.sh --interactive
+sudo bash install-script.sh --interactive
 
 # Dry-run (preview changes)
-sudo bash install_script.sh --dry-run
+sudo bash install-script.sh --dry-run
 ```
 
 ### Docker Container Updates
 
 ```bash
 # Interactive mode (select containers manually)
-cd update_docker_containers
-sudo bash update_containers.sh --interactive
+cd update-containers
+sudo bash update-containers.sh --interactive
 
 # Unattended mode (update all containers)
-sudo bash update_containers.sh --unattended
+sudo bash update-containers.sh --unattended
 
 # With system updates
-sudo bash update_containers.sh --unattended --update-system
+sudo bash update-containers.sh --unattended --update-system
 ```
 
 ---
@@ -120,34 +120,34 @@ sudo bash update_containers.sh --unattended --update-system
 
 ```bash
 # Clone to your server
-git clone https://github.com/MadeByAdem/Scripts.git
-cd Scripts
+git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+cd linux-server-management-scripts
 ```
 
 ### Make Scripts Executable
 
 ```bash
 # Server baseline
-chmod +x server_baseline/install_script.sh
+chmod +x server-baseline/install-script.sh
 
 # Container updates
-chmod +x update_docker_containers/update_containers.sh
+chmod +x update-containers/update-containers.sh
 ```
 
 ### Optional: Install System-Wide
 
 ```bash
 # Server baseline
-sudo cp server_baseline/install_script.sh /usr/local/bin/server-setup
+sudo cp server-baseline/install-script.sh /usr/local/bin/server-setup
 sudo chmod +x /usr/local/bin/server-setup
 
 # Container updates
-sudo cp update_docker_containers/update_containers.sh /usr/local/bin/docker-update
-sudo chmod +x /usr/local/bin/docker-update
+sudo cp update-containers/update-containers.sh /usr/local/bin/update-containers
+sudo chmod +x /usr/local/bin/update-containers
 
 # Now you can run from anywhere:
 sudo server-setup --help
-sudo docker-update --help
+sudo update-containers --help
 ```
 
 ---
@@ -158,11 +158,11 @@ sudo docker-update --help
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/MadeByAdem/Scripts.git
-cd Scripts/server_baseline
+git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+cd linux-server-management-scripts/server-baseline
 
 # 2. Run fresh installation
-sudo bash install_script.sh --fresh-install
+sudo bash install-script.sh --fresh-install
 
 # 3. Follow the interactive prompts
 # - Creates user with sudo access
@@ -179,21 +179,21 @@ sudo bash install_script.sh --fresh-install
 sudo crontab -e
 
 # Add this line for Sunday 3 AM updates:
-0 3 * * 0 /path/to/Scripts/update_docker_containers/update_containers.sh --unattended --update-system >> /var/log/docker-updates/cron.log 2>&1
+0 3 * * 0 /path/to/linux-server-management-scripts/update-containers/update-containers.sh --unattended --update-system >> /var/log/docker-updates/cron.log 2>&1
 ```
 
 ### Scenario 3: Manual Container Maintenance
 
 ```bash
 # Update specific containers interactively
-cd Scripts/update_docker_containers
-sudo bash update_containers.sh --interactive
+cd linux-server-management-scripts/update-containers
+sudo bash update-containers.sh --interactive
 
 # Preview changes first
-sudo bash update_containers.sh --dry-run
+sudo bash update-containers.sh --dry-run
 
 # Then run the actual update
-sudo bash update_containers.sh --interactive
+sudo bash update-containers.sh --interactive
 ```
 
 ---
@@ -261,6 +261,17 @@ Both scripts provide detailed logging:
 
 ### Common Issues
 
+**"unable to execute ./script.sh: No such file or directory"**
+```bash
+# This error occurs when scripts have Windows line endings (CRLF)
+# Fix with sed:
+sed -i 's/\r$//' ./script.sh
+
+# Or use dos2unix:
+sudo apt install dos2unix
+dos2unix ./script.sh
+```
+
 **Script requires sudo**
 ```bash
 # Always run with sudo
@@ -270,16 +281,16 @@ sudo bash script.sh --mode
 **Docker not found (Container Updates)**
 ```bash
 # Install Docker first using server baseline
-cd server_baseline
-sudo bash install_script.sh --interactive
+cd server-baseline
+sudo bash install-script.sh --interactive
 # Select Docker installation when prompted
 ```
 
 **Permission denied errors**
 ```bash
 # Ensure scripts are executable
-chmod +x server_baseline/install_script.sh
-chmod +x update_docker_containers/update_containers.sh
+chmod +x server-baseline/install-script.sh
+chmod +x update-containers/update-containers.sh
 ```
 
 **Container not found error**
@@ -292,8 +303,8 @@ chmod +x update_docker_containers/update_containers.sh
 ```
 
 For more specific troubleshooting, see individual README files:
-- [Server Baseline Troubleshooting](server_baseline/README.md#troubleshooting)
-- [Container Updates Troubleshooting](update_docker_containers/README.md#troubleshooting)
+- [Server Baseline Troubleshooting](server-baseline/README.md#troubleshooting)
+- [Container Updates Troubleshooting](update-containers/README.md#troubleshooting)
 
 ---
 
@@ -350,8 +361,8 @@ For enterprise or critical systems, consult a professional DevOps engineer.
 ## 📚 Additional Resources
 
 ### Documentation
-- [Server Baseline Setup - Full Guide](server_baseline/README.md)
-- [Docker Container Updates - Full Guide](update_docker_containers/README.md)
+- [Server Baseline Setup - Full Guide](server-baseline/README.md)
+- [Docker Container Updates - Full Guide](update-containers/README.md)
 
 ### Useful Links
 - [Docker Documentation](https://docs.docker.com/)
@@ -363,8 +374,8 @@ For enterprise or critical systems, consult a professional DevOps engineer.
 
 ## 💡 Support
 
-- **Issues:** [GitHub Issues](https://github.com/MadeByAdem/Scripts/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/MadeByAdem/Scripts/discussions)
+- **Issues:** [GitHub Issues](https://github.com/MadeByAdem/linux-server-management-scripts/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/MadeByAdem/linux-server-management-scripts/discussions)
 - **Documentation:** Individual README files in each directory
 
 ---

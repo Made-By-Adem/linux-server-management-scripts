@@ -1,19 +1,21 @@
 # Docker Container Update Tool
 
+> **Part of:** [Linux Server Management Scripts](https://github.com/MadeByAdem/linux-server-management-scripts)
+
 A user-friendly bash script for safely updating Docker containers with visual feedback and comprehensive logging.
 
 ## 🚀 Quickstart
 
 ```bash
-# 1. Download the script
-git clone https://github.com/MadeByAdem/docker-update-tool.git
-cd docker-update-tool
+# 1. Download the repository
+git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+cd linux-server-management-scripts/update-containers
 
 # 2. Make it executable
-chmod +x update_containers.sh
+chmod +x update-containers.sh
 
 # 3. Run with sudo
-sudo ./update_containers.sh
+sudo ./update-containers.sh
 ```
 
 ---
@@ -153,40 +155,40 @@ For each container:
 
 ```bash
 # Clone the repository
-git clone https://github.com/MadeByAdem/docker-update-tool.git
-cd docker-update-tool
+git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+cd linux-server-management-scripts/update-containers
 
 # Make executable
-chmod +x update_containers.sh
+chmod +x update-containers.sh
 
 # Test the script
-sudo ./update_containers.sh
+sudo ./update-containers.sh
 ```
 
 ### Option 2: Direct Download
 
 ```bash
 # Download the script
-wget https://raw.githubusercontent.com/MadeByAdem/docker-update-tool/main/update_containers.sh
+wget https://raw.githubusercontent.com/MadeByAdem/linux-server-management-scripts/main/update-containers/update-containers.sh
 
 # Make executable
-chmod +x update_containers.sh
+chmod +x update-containers.sh
 
 # Run
-sudo ./update_containers.sh
+sudo ./update-containers.sh
 ```
 
 ### Option 3: System-wide Installation
 
 ```bash
 # Copy to /usr/local/bin for system-wide use
-sudo cp update_containers.sh /usr/local/bin/docker-update
+sudo cp update-containers.sh /usr/local/bin/update-containers
 
 # Make executable
-sudo chmod +x /usr/local/bin/docker-update
+sudo chmod +x /usr/local/bin/update-containers
 
 # Now you can run it from anywhere:
-sudo docker-update
+sudo update-containers
 ```
 
 ---
@@ -199,22 +201,22 @@ The script supports three modes of operation:
 
 ```bash
 # Interactive mode - manually select containers
-sudo ./update_containers.sh --interactive
+sudo ./update-containers.sh --interactive
 
 # Unattended mode - automatically update all containers
-sudo ./update_containers.sh --unattended
+sudo ./update-containers.sh --unattended
 
 # Dry-run mode - preview what would be updated
-sudo ./update_containers.sh --dry-run
-sudo ./update_containers.sh --interactive --dry-run
+sudo ./update-containers.sh --dry-run
+sudo ./update-containers.sh --interactive --dry-run
 
 # With system package updates
-sudo ./update_containers.sh --unattended --update-system
-sudo ./update_containers.sh --interactive --update-system
+sudo ./update-containers.sh --unattended --update-system
+sudo ./update-containers.sh --interactive --update-system
 
 # Show help (also shown when no mode is specified)
-sudo ./update_containers.sh --help
-sudo ./update_containers.sh
+sudo ./update-containers.sh --help
+sudo ./update-containers.sh
 ```
 
 ### Modes Explained
@@ -363,16 +365,16 @@ Dry-run mode allows you to **preview all changes** that would be made, without a
 
 ```bash
 # Dry-run with interactive mode (default)
-sudo ./update_containers.sh --dry-run
+sudo ./update-containers.sh --dry-run
 
 # Dry-run with interactive selection
-sudo ./update_containers.sh --interactive --dry-run
+sudo ./update-containers.sh --interactive --dry-run
 
 # Dry-run with unattended mode (all containers)
-sudo ./update_containers.sh --unattended --dry-run
+sudo ./update-containers.sh --unattended --dry-run
 
 # Dry-run with system updates
-sudo ./update_containers.sh --dry-run --update-system
+sudo ./update-containers.sh --dry-run --update-system
 ```
 
 ### What Dry-Run Shows
@@ -495,19 +497,19 @@ sudo crontab -e
 
 ```bash
 # Every Sunday at 03:00 - update all containers
-0 3 * * 0 /path/to/update_containers.sh --unattended >> /var/log/docker-updates/cron.log 2>&1
+0 3 * * 0 /path/to/update-containers.sh --unattended >> /var/log/docker-updates/cron.log 2>&1
 
 # Every Sunday at 03:00 - update system AND all containers
-0 3 * * 0 /path/to/update_containers.sh --unattended --update-system >> /var/log/docker-updates/cron.log 2>&1
+0 3 * * 0 /path/to/update-containers.sh --unattended --update-system >> /var/log/docker-updates/cron.log 2>&1
 
 # Every Monday at 02:00
-0 2 * * 1 /path/to/update_containers.sh --unattended >> /var/log/docker-updates/cron.log 2>&1
+0 2 * * 1 /path/to/update-containers.sh --unattended >> /var/log/docker-updates/cron.log 2>&1
 
 # First day of the month at 04:00
-0 4 1 * * /path/to/update_containers.sh --unattended >> /var/log/docker-updates/cron.log 2>&1
+0 4 1 * * /path/to/update-containers.sh --unattended >> /var/log/docker-updates/cron.log 2>&1
 
 # Every Saturday at 02:30 with system updates
-30 2 * * 6 /path/to/update_containers.sh --unattended --update-system >> /var/log/docker-updates/cron.log 2>&1
+30 2 * * 6 /path/to/update-containers.sh --unattended --update-system >> /var/log/docker-updates/cron.log 2>&1
 ```
 
 #### Method 2: Alternative - Direct Path in Crontab
@@ -516,15 +518,15 @@ If you installed the script system-wide:
 
 ```bash
 # Install system-wide first (if not done already)
-sudo cp update_containers.sh /usr/local/bin/docker-update
-sudo chmod +x /usr/local/bin/docker-update
+sudo cp update-containers.sh /usr/local/bin/update-containers
+sudo chmod +x /usr/local/bin/update-containers
 
 # Add to crontab
 sudo crontab -e
 
 # Add one of these lines:
-0 3 * * 0 /usr/local/bin/docker-update --unattended >> /var/log/docker-updates/cron.log 2>&1
-0 3 * * 0 /usr/local/bin/docker-update --unattended --update-system >> /var/log/docker-updates/cron.log 2>&1
+0 3 * * 0 /usr/local/bin/update-containers --unattended >> /var/log/docker-updates/cron.log 2>&1
+0 3 * * 0 /usr/local/bin/update-containers --unattended --update-system >> /var/log/docker-updates/cron.log 2>&1
 ```
 
 #### Method 3: With Email Notifications
@@ -540,7 +542,7 @@ sudo crontab -e
 
 # Add:
 MAILTO="your@email.com"
-0 3 * * 0 /path/to/update_containers.sh --unattended --update-system
+0 3 * * 0 /path/to/update-containers.sh --unattended --update-system
 ```
 
 #### Cron Time Schedule Explained
@@ -668,19 +670,39 @@ This ensures:
 
 ### Common Problems
 
-#### 1. "This script must be run as root"
+#### 1. "unable to execute ./update-containers.sh: No such file or directory"
+
+**Problem:** The script exists but gives "No such file or directory" error.
+
+**Cause:** The script has Windows-style line endings (CRLF) instead of Unix line endings (LF). This happens when the file was edited or transferred from a Windows system.
+
+**Solution:**
+```bash
+# Fix line endings with sed
+sed -i 's/\r$//' ./update-containers.sh
+
+# Or install and use dos2unix
+sudo apt install dos2unix
+dos2unix ./update-containers.sh
+```
+
+**Prevention:** The repository includes a `.gitattributes` file that ensures correct line endings when cloning. If you manually copy files, always convert line endings.
+
+---
+
+#### 2. "This script must be run as root"
 
 **Problem:** Script executed without sudo.
 
 **Solution:**
 ```bash
 # Always use sudo
-sudo ./update_containers.sh
+sudo ./update-containers.sh
 ```
 
 ---
 
-#### 2. "Docker is not installed" or "Docker daemon is not running"
+#### 3. "Docker is not installed" or "Docker daemon is not running"
 
 **Problem:** Docker not installed or not started.
 
@@ -702,7 +724,7 @@ sudo sh get-docker.sh
 
 ---
 
-#### 3. "No docker-compose directory found"
+#### 4. "No docker-compose directory found"
 
 **Problem:** Script cannot find the compose directory.
 
@@ -724,12 +746,12 @@ mkdir -p ~/docker/<container-name>
 mv /path/to/docker-compose.yml ~/docker/<container-name>/
 
 # Or edit the script to add your location
-# Edit line 208 in update_containers.sh
+# Edit line 208 in update-containers.sh
 ```
 
 ---
 
-#### 4. "Container not active after update"
+#### 5. "Container not active after update"
 
 **Problem:** Container doesn't start after update.
 
@@ -760,7 +782,7 @@ docker compose up -d
 
 ---
 
-#### 5. Container starts but doesn't work correctly
+#### 6. Container starts but doesn't work correctly
 
 **Problem:** Container is running but not functioning.
 
@@ -783,7 +805,7 @@ docker exec -it <container-name> /bin/sh
 
 ---
 
-#### 6. "Permission denied" errors
+#### 7. "Permission denied" errors
 
 **Problem:** No access to files/directories.
 
@@ -794,7 +816,7 @@ sudo mkdir -p /var/log/docker-updates
 sudo chmod 755 /var/log/docker-updates
 
 # Ensure script is executable
-chmod +x update_containers.sh
+chmod +x update-containers.sh
 
 # Check file permissions of compose directories
 ls -la ~/docker/
@@ -802,7 +824,7 @@ ls -la ~/docker/
 
 ---
 
-#### 7. Script hangs/freezes
+#### 8. Script hangs/freezes
 
 **Problem:** Script seems to freeze.
 
@@ -825,7 +847,7 @@ ping 8.8.8.8
 ping registry.hub.docker.com
 
 # If really stuck, kill the process
-sudo pkill -f update_containers.sh
+sudo pkill -f update-containers.sh
 
 # Check and cleanup any leftover containers
 docker ps -a
@@ -860,8 +882,8 @@ sudo systemctl start cron
 sudo systemctl enable cron
 
 # Ensure script uses full paths
-# Instead of: ./update_containers.sh
-# Use: /full/path/to/update_containers.sh
+# Instead of: ./update-containers.sh
+# Use: /full/path/to/update-containers.sh
 
 # Ensure PATH variable is correct in crontab
 sudo crontab -e
@@ -879,7 +901,7 @@ sudo /usr/local/bin/docker-update-auto
 For extra debug information, add `-x` to shebang:
 
 ```bash
-# Edit update_containers.sh
+# Edit update-containers.sh
 # Change first line from:
 #!/bin/bash
 
@@ -963,7 +985,7 @@ For extra debug information, add `-x` to shebang:
 If you have compose files in other locations:
 
 ```bash
-# Edit update_containers.sh
+# Edit update-containers.sh
 # Find function: find_compose_dir (around line 204)
 
 # Add your custom directories to common_dirs array:
@@ -998,7 +1020,7 @@ You can create different cron jobs for different container types:
 
 ### Need Help?
 
-- **Issues:** [GitHub Issues](https://github.com/MadeByAdem/docker-update-tool/issues)
+- **Issues:** [GitHub Issues](https://github.com/MadeByAdem/linux-server-management-scripts/issues)
 - **Questions:** Check this README and Troubleshooting section first
 
 ### Contributing
@@ -1072,8 +1094,9 @@ MIT License - see [LICENSE.md](LICENSE.md)
 - Docker & Docker Compose
 - Linux utilities
 
-**Inspired by:**
-- [Server Baseline Script](https://github.com/MadeByAdem/server_baseline)
+**Related:**
+
+- [Server Baseline Script](../server-baseline/) - Comprehensive server setup and hardening
 
 ---
 

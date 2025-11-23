@@ -1,0 +1,8 @@
+# Force Unix line endings for shell scripts
+*.sh text eol=lf
+
+# Force Unix line endings for systemd configs
+*.conf text eol=lf
+
+# Force Unix line endings for other config files
+*.service text eol=lf
