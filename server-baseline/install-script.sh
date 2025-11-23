@@ -651,11 +651,17 @@ if [ "$DRY_RUN" = true ]; then
     log_info "Report will be saved to: $DRY_RUN_REPORT"
 fi
 
-# Show help if no mode specified
+# Auto-detect mode if not specified
 if [ -z "$MODE" ]; then
-    echo -e "${YELLOW}No mode specified.${NC}"
-    echo ""
-    show_usage
+    if [ "$DRY_RUN" = true ]; then
+        # In dry-run mode, default to fresh-install to show full preview
+        MODE="fresh-install"
+        log_info "No mode specified, using fresh-install mode for dry-run preview"
+    else
+        echo -e "${YELLOW}No mode specified.${NC}"
+        echo ""
+        show_usage
+    fi
 fi
 
 # Show section selection menu if --section was used
