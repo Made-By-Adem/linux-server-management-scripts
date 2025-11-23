@@ -2,35 +2,297 @@
 
 A comprehensive, user-friendly installation script for Ubuntu/Debian servers that fully configures, secures, and optimizes your server with a single command.
 
-## 🚀 Quickstart
+## Table of Contents
 
-### For Fresh Servers:
+- [Quickstart - Choose Your Scenario](#-quickstart---choose-your-scenario)
+- [What Does This Script Do?](#what-does-this-script-do)
+- [Section Safety Guide](#section-safety-guide)
+- [Who Is This For?](#who-is-this-for)
+- [What Does It Install?](#what-does-it-install)
+- [Why These Installations?](#why-these-installations)
+- [Security Measures](#security-measures)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Supported Platforms](#supported-platforms)
+- [Important Warnings](#important-warnings)
+- [Usage](#usage)
+- [After Installation](#after-installation)
+- [FAQ](#faq)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+
+---
+
+## 🚀 Quickstart - Choose Your Scenario
+
+| Scenario | Best Mode | Estimated Time |
+|----------|-----------|----------------|
+| [New Ubuntu Server](#scenario-1-new-ubuntu-server) | `--fresh-install` | 15-30 min |
+| [Existing Ubuntu Server](#scenario-2-existing-ubuntu-server-in-use) | `--interactive` | 20-40 min |
+| [New Raspberry Pi](#scenario-3-new-raspberry-pi) | `--fresh-install` | 20-45 min |
+| [Existing Raspberry Pi](#scenario-4-existing-raspberry-pi-in-use) | `--section` | 15-30 min |
+
+---
+
+### Scenario 1: New Ubuntu Server
+
+**Situation:** Fresh Ubuntu VPS or dedicated server, no services installed yet.
+
+#### Prerequisites
 ```bash
-# 1. Ensure you have SSH key access configured
-ssh-copy-id user@your-server
+# On your LOCAL machine - set up SSH key access first
+ssh-keygen -t ed25519 -C "your@email.com"  # Skip if you already have a key
+ssh-copy-id user@your-server-ip
+```
 
-# 2. Download and run the script
+#### Step-by-Step
+```bash
+# 1. Connect to your server
+ssh user@your-server-ip
+
+# 2. Download the script
 git clone https://github.com/MadeByAdem/server_baseline.git
 cd server_baseline
+
+# 3. Run in fresh-install mode (minimal prompts)
 sudo bash install_script.sh --fresh-install
 
-# 3. Test new SSH port before closing old connection
-ssh -p 888 user@your-server
+# 4. IMPORTANT: Test new SSH port BEFORE closing this terminal!
+#    Open a NEW terminal and test:
+ssh -p 888 user@your-server-ip
+
+# 5. If step 4 works, you can close port 22:
+sudo sed -i '/^Port 22$/d' /etc/ssh/sshd_config
+sudo systemctl restart ssh
 ```
 
-### For Existing Servers (SAFE MODE):
+#### Warnings for This Scenario
+| Warning | Details |
+|---------|---------|
+| ⚠️ SSH Keys Required | Script disables password login - ensure your key works first |
+| ⚠️ Keep Terminal Open | Don't close your SSH session until you've tested port 888 |
+| ⚠️ Reboot Needed | Some kernel changes require a reboot to take effect |
+
+---
+
+### Scenario 2: Existing Ubuntu Server (In Use)
+
+**Situation:** Ubuntu server already running services (web server, databases, applications), but NO Docker containers.
+
+#### Prerequisites
 ```bash
-# 1. Download and review what would happen (dry-run)
+# Ensure you have SSH key access (password will be disabled)
+ssh-copy-id user@your-server-ip  # Skip if already done
+```
+
+#### Step-by-Step
+```bash
+# 1. Connect to your server
+ssh user@your-server-ip
+
+# 2. Download the script
 git clone https://github.com/MadeByAdem/server_baseline.git
 cd server_baseline
+
+# 3. Preview what will happen (recommended!)
 sudo bash install_script.sh --dry-run
 
-# 2. Run in interactive mode (asks permission for each component)
+# 4. Run in interactive mode - confirms each component
 sudo bash install_script.sh --interactive
 
-# 3. Backup is automatically created before any changes
-# Rollback script available at: /var/backups/server-setup-backup-*/rollback.sh
+# 5. For each component, you'll see:
+#    - Current status
+#    - What will change
+#    - Option to skip or proceed
+
+# 6. Test new SSH port in a NEW terminal before closing this one
+ssh -p 888 user@your-server-ip
 ```
+
+#### Warnings for This Scenario
+| Warning | Details |
+|---------|---------|
+| ⚠️ UFW Firewall | When asked, add any custom ports your services use (e.g., 3000, 8080) |
+| ⚠️ Service Restarts | System updates may restart some services automatically |
+| ⚠️ SSH Keys Required | Ensure your key works before SSH hardening section |
+| ⚠️ Backup Created | Automatic backup at `/var/backups/server-setup-backup-*/` |
+
+#### Services to Check After Installation
+```bash
+# Verify your services are still running
+systemctl status nginx        # or apache2
+systemctl status postgresql   # or mysql
+systemctl status your-app
+```
+
+---
+
+### Scenario 3: New Raspberry Pi
+
+**Situation:** Fresh Raspberry Pi OS installation, no services configured yet.
+
+#### Prerequisites
+```bash
+# On your LOCAL machine - set up SSH key access
+ssh-keygen -t ed25519 -C "your@email.com"  # Skip if you already have a key
+ssh-copy-id pi@raspberrypi.local           # or use IP address
+```
+
+#### Step-by-Step
+```bash
+# 1. Connect to your Pi
+ssh pi@raspberrypi.local
+
+# 2. Download the script
+git clone https://github.com/MadeByAdem/server_baseline.git
+cd server_baseline
+
+# 3. Run in fresh-install mode
+sudo bash install_script.sh --fresh-install
+
+# 4. During installation, note these Pi-specific prompts:
+#    - USB storage: Answer 'n' (Pi often boots from USB/SD)
+#    - AIDE file integrity: Answer 'n' (causes SD card wear)
+#    - Swap: Script auto-detects Pi and adjusts swap size
+
+# 5. Test new SSH port in a NEW terminal
+ssh -p 888 pi@raspberrypi.local
+
+# 6. Reboot to apply all changes
+sudo reboot
+```
+
+#### Warnings for This Scenario
+| Warning | Details |
+|---------|---------|
+| ⚠️ SSH Keys Required | Script disables password login |
+| ⚠️ USB Storage | Answer 'n' to USB blacklist - Pi may use USB storage |
+| ⚠️ AIDE Monitoring | Answer 'n' - causes excessive SD card writes |
+| ⚠️ Swap Size | Auto-configured for Pi's limited RAM |
+| ⚠️ Slower Installation | Pi is slower than VPS - be patient |
+
+---
+
+### Scenario 4: Existing Raspberry Pi (In Use)
+
+**Situation:** Raspberry Pi already running Docker containers, Home Assistant, Pi-hole, media servers, or other services that MUST NOT be interrupted.
+
+#### Prerequisites
+```bash
+# Ensure SSH key access
+ssh-copy-id pi@raspberrypi.local  # Skip if already done
+
+# Check what's currently running
+ssh pi@raspberrypi.local
+docker ps                          # List running containers
+systemctl list-units --type=service --state=running
+```
+
+#### Step-by-Step
+```bash
+# 1. Connect to your Pi
+ssh pi@raspberrypi.local
+
+# 2. Download the script
+git clone https://github.com/MadeByAdem/server_baseline.git
+cd server_baseline
+
+# 3. Preview ALL changes first
+sudo bash install_script.sh --section --dry-run
+
+# 4. Run with section selection (SAFEST approach)
+sudo bash install_script.sh --section
+
+# 5. When the menu appears, select ONLY safe sections:
+#    Enter: 1 3 7 8 9 10 11 12 15 16 17 19
+#
+#    This includes:
+#    1  - System updates
+#    3  - Timezone
+#    7  - Security repository
+#    8  - Password hardening
+#    9  - Deprecated cleanup
+#    10 - Kernel hardening
+#    11 - Core dump disable
+#    12 - Umask hardening
+#    15 - Fail2ban
+#    16 - Lynis scanner
+#    17 - Rkhunter scanner
+#    19 - Audit logging
+
+# 6. Reboot when convenient (not urgent)
+sudo reboot
+```
+
+#### Sections to AVOID
+| Section | Why Skip It |
+|---------|-------------|
+| **6 (docker)** | **WILL DESTROY ALL CONTAINERS AND DATA** |
+| **13 (ssh-hardening)** | Only if you're sure about SSH keys |
+| **14 (ufw-firewall)** | May block container ports - see below if needed |
+| **18 (systemd-hardening)** | Restarts Docker = brief container downtime |
+| **20-22 (containers)** | Only if you want these specific tools |
+
+#### If You Want Firewall (Section 14)
+```bash
+# If you choose to run UFW, do this AFTER:
+
+# 1. Check what ports your containers use
+docker ps --format "table {{.Names}}\t{{.Ports}}"
+
+# 2. Add rules for each container port
+sudo ufw allow 8123/tcp comment 'Home Assistant'
+sudo ufw allow 53/tcp comment 'Pi-hole DNS'
+sudo ufw allow 53/udp comment 'Pi-hole DNS'
+sudo ufw allow 80/tcp comment 'Pi-hole Web'
+sudo ufw allow 32400/tcp comment 'Plex'
+# Add more as needed...
+
+# 3. Verify your containers still work
+docker ps
+```
+
+#### If You Want SSH Hardening (Section 13)
+```bash
+# BEFORE running section 13:
+
+# 1. Verify your SSH key works
+ssh -i ~/.ssh/id_ed25519 pi@raspberrypi.local
+
+# 2. Run section 13
+sudo bash install_script.sh --section
+# Enter: 13
+
+# 3. KEEP THIS TERMINAL OPEN and test in new terminal:
+ssh -p 888 pi@raspberrypi.local
+
+# 4. Only close old terminal if step 3 works!
+```
+
+#### Warnings for This Scenario
+| Warning | Details |
+|---------|---------|
+| 🚫 **NEVER Section 6** | Docker reinstall destroys ALL containers and volumes |
+| ⚠️ Container Ports | If using UFW, manually add all container ports |
+| ⚠️ Brief Restarts | Section 18 causes ~10 second container restart |
+| ⚠️ Test SSH First | Before section 13, verify your key works |
+| ✅ Backup Auto-Created | Rollback available at `/var/backups/server-setup-backup-*/` |
+
+#### Verify After Installation
+```bash
+# Check all containers are still running
+docker ps
+
+# Check container logs for errors
+docker logs <container-name>
+
+# Check services
+systemctl status docker
+```
+
+---
+
+⚠️ **Need more details?** See the [Section Safety Guide](#section-safety-guide) for a complete breakdown of all 23 sections.
 
 **⚠️ IMPORTANT:** This script contains **no hardcoded credentials or private endpoints**. All tokens and sensitive configuration are provided interactively by you during setup.
 
@@ -44,6 +306,7 @@ sudo bash install_script.sh --interactive
 ## Table of Contents
 
 - [What Does This Script Do?](#what-does-this-script-do)
+- [Section Safety Guide](#section-safety-guide)
 - [Who Is This For?](#who-is-this-for)
 - [What Does It Install?](#what-does-it-install)
 - [Why These Installations?](#why-these-installations)
@@ -94,6 +357,88 @@ This script transforms a fresh Ubuntu/Debian server into a **production-ready, h
 9. **System Optimization** - Swap configuration, kernel hardening, logging
 10. **Security Scanning** - Optional Rkhunter and Lynis with automated scans
 11. **Backwards Compatibility** - Safe re-run on existing installations (skips completed sections)
+
+---
+
+## Section Safety Guide
+
+When running this script on a server with existing services (Docker containers, databases, web servers, etc.), use `--section` mode to select only the sections you need. This table helps you understand the risk level of each section.
+
+### Section Reference
+
+| # | Section | Risk Level | Safe for Running Services? | Notes |
+|---|---------|------------|---------------------------|-------|
+| 1 | system-update | Low | Yes | May restart some services automatically after updates |
+| 2 | hostname | Low | Yes | Only changes hostname, no service impact |
+| 3 | timezone | Low | Yes | Only affects log timestamps |
+| 4 | swap | Low | Yes | Only if no swap exists; won't modify existing swap |
+| 5 | dev-environment | Low | Yes | Installs Python, Node.js, Git - additive only |
+| 6 | docker | **HIGH** | **NO** | **Will STOP and REMOVE all containers!** Skip if you have running containers |
+| 7 | security-repository | Low | Yes | Only adds apt repositories |
+| 8 | password-hardening | Low | Yes | Only affects new password changes |
+| 9 | deprecated-cleanup | Low | Yes | Only removes unused legacy packages |
+| 10 | kernel-hardening | Medium | Yes | Requires reboot for full effect |
+| 11 | core-dump-disable | Low | Yes | No service impact |
+| 12 | umask-hardening | Low | Yes | Only affects new files |
+| 13 | ssh-hardening | **MEDIUM** | Yes* | *Ensure you have SSH keys configured first! Changes port to 888 |
+| 14 | ufw-firewall | **HIGH** | **Caution** | Choose "MERGE" mode to preserve existing rules. Add container ports! |
+| 15 | fail2ban | Low | Yes | Additive security, won't block existing connections |
+| 16 | lynis | Low | Yes | Security scanner only, no changes |
+| 17 | rkhunter | Low | Yes | Rootkit scanner only, no changes |
+| 18 | systemd-hardening | Medium | Yes* | *May restart Docker, SSH, Fail2ban services |
+| 19 | audit-logging | Low | Yes | Additive logging only |
+| 20 | netdata | Low | Yes | New container, won't affect existing ones |
+| 21 | portainer | Low | Yes | New container, won't affect existing ones |
+| 22 | cloudflare-tunnel | Low | Yes | New container, won't affect existing ones |
+| 23 | telegram | Low | Yes | Configuration only |
+
+### Recommended Sections for Existing Servers
+
+For a Raspberry Pi or server with running Docker containers, these sections are safe to run:
+
+```bash
+# Safe sections for hardening an existing server:
+sudo bash install_script.sh --section
+# Select: 1 3 7 8 9 10 11 12 15 16 17 19
+
+# This includes:
+# 1  - System updates
+# 3  - Timezone
+# 7  - Security repository
+# 8  - Password hardening
+# 9  - Deprecated cleanup
+# 10 - Kernel hardening (reboot needed)
+# 11 - Core dump disable
+# 12 - Umask hardening
+# 15 - Fail2ban
+# 16 - Lynis scanner
+# 17 - Rkhunter scanner
+# 19 - Audit logging
+```
+
+### Sections to SKIP or Handle Carefully
+
+| Section | Action | Reason |
+|---------|--------|--------|
+| **6 (docker)** | **SKIP** | Will destroy all existing containers and data |
+| **13 (ssh-hardening)** | Careful | Only run if you have SSH keys. Keep old terminal open! |
+| **14 (ufw-firewall)** | Careful | Choose MERGE mode. Manually add ports your containers need |
+| **18 (systemd-hardening)** | Careful | Will restart Docker service (brief container restart) |
+
+### UFW Firewall - Adding Container Ports
+
+If you run section 14 (ufw-firewall), you need to add ports for your existing services:
+
+```bash
+# After running UFW section, add your container ports:
+sudo ufw allow 8080/tcp comment 'My web app'
+sudo ufw allow 3000/tcp comment 'Node.js app'
+sudo ufw allow 5432/tcp comment 'PostgreSQL'
+# etc.
+
+# View current rules:
+sudo ufw status numbered
+```
 
 ---
 
