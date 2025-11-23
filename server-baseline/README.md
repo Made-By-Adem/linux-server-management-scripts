@@ -499,6 +499,10 @@ sudo ufw status numbered
 - `iotop` - Disk I/O monitoring per process
 - `nethogs` - Network traffic monitoring per process
 
+**Disk Health Tools:**
+- `smartmontools` - Disk health monitoring via S.M.A.R.T. data (detects failing drives early)
+- `nvme-cli` - NVMe SSD diagnostics and health monitoring (essential for NVMe drives including Raspberry Pi 5 with NVMe HAT)
+
 ### Development Environments
 
 **Python 3 (system repository version)**

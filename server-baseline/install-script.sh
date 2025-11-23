@@ -847,6 +847,122 @@ Lynis recommendation: NAME-4404" \
 fi
 
 ###############################################################################
+# DNS DOMAIN NAME CONFIGURATION
+###############################################################################
+
+if ! check_component_status "DNS_DOMAIN_NAME"; then
+    # Check if dnsdomainname is already configured
+    CURRENT_DNS_DOMAIN=$(dnsdomainname 2>/dev/null || echo "")
+
+    if [ -n "$CURRENT_DNS_DOMAIN" ] && [ "$CURRENT_DNS_DOMAIN" != "(none)" ]; then
+        log_info "DNS domain name already configured: $CURRENT_DNS_DOMAIN"
+        mark_completed "DNS_DOMAIN_NAME"
+    else
+        if prompt_user \
+    "Configure DNS domain name?
+
+The DNS domain name (dnsdomainname) is used for hostname resolution and
+service identification. Lynis recommends setting this for proper system
+identification.
+
+Configuration:
+• Sets the search domain in /etc/resolv.conf
+• Updates /etc/hosts with domain information
+• Improves DNS resolution for local services
+
+Current status:
+• Hostname: $(hostname)
+• DNS domain: ${CURRENT_DNS_DOMAIN:-not set}
+
+Examples of domain names:
+• local (for home networks)
+• internal (for private networks)
+• yourdomain.com (for corporate networks)
+
+Lynis recommendation: NAME-4028" \
+    "y"; then
+
+        if [ "$DRY_RUN" = true ]; then
+            log_dry_run "Would configure DNS domain name"
+            log_dry_run "Would update /etc/hosts and /etc/resolv.conf"
+        else
+            echo ""
+            echo "Enter the DNS domain name for this server."
+            echo "Examples: local, internal, home.lan, company.com"
+            echo ""
+            read -p "DNS domain name (default: local): " DNS_DOMAIN
+            DNS_DOMAIN=${DNS_DOMAIN:-local}
+
+            log_info "Configuring DNS domain name: $DNS_DOMAIN"
+
+            # Update /etc/hosts with domain
+            CURRENT_HOSTNAME=$(hostname -s 2>/dev/null || hostname)
+            FQDN_WITH_DOMAIN="${CURRENT_HOSTNAME}.${DNS_DOMAIN}"
+
+            # Update the 127.0.1.1 line in /etc/hosts
+            if grep -q "127.0.1.1" /etc/hosts; then
+                sudo sed -i "s/^127.0.1.1.*/127.0.1.1 $FQDN_WITH_DOMAIN $CURRENT_HOSTNAME/" /etc/hosts
+            else
+                echo "127.0.1.1 $FQDN_WITH_DOMAIN $CURRENT_HOSTNAME" | sudo tee -a /etc/hosts >/dev/null
+            fi
+            log_info "Updated /etc/hosts with: 127.0.1.1 $FQDN_WITH_DOMAIN $CURRENT_HOSTNAME"
+
+            # Add search domain to /etc/resolv.conf if not using systemd-resolved
+            if [ ! -L /etc/resolv.conf ] || ! systemctl is-active systemd-resolved &>/dev/null; then
+                # Only add if not already present
+                if ! grep -q "^search.*$DNS_DOMAIN" /etc/resolv.conf 2>/dev/null; then
+                    if grep -q "^search" /etc/resolv.conf 2>/dev/null; then
+                        sudo sed -i "s/^search.*/search $DNS_DOMAIN/" /etc/resolv.conf
+                    else
+                        echo "search $DNS_DOMAIN" | sudo tee -a /etc/resolv.conf >/dev/null
+                    fi
+                    log_info "Added search domain to /etc/resolv.conf"
+                fi
+            else
+                log_info "systemd-resolved detected - search domain managed by systemd"
+                # For systemd-resolved, we can set the search domain via resolvectl
+                if command -v resolvectl &>/dev/null; then
+                    # Note: This is temporary and won't persist across reboots
+                    # For persistent config, need to edit /etc/systemd/resolved.conf
+                    if [ -f /etc/systemd/resolved.conf ]; then
+                        if ! grep -q "^Domains=" /etc/systemd/resolved.conf; then
+                            echo "Domains=$DNS_DOMAIN" | sudo tee -a /etc/systemd/resolved.conf >/dev/null
+                            sudo systemctl restart systemd-resolved
+                            log_info "Added search domain to systemd-resolved"
+                        fi
+                    fi
+                fi
+            fi
+
+            # Verify configuration
+            NEW_DNS_DOMAIN=$(dnsdomainname 2>/dev/null || echo "")
+            if [ -n "$NEW_DNS_DOMAIN" ] && [ "$NEW_DNS_DOMAIN" != "(none)" ]; then
+                log_info "DNS domain name configured successfully: $NEW_DNS_DOMAIN"
+            else
+                log_info "DNS domain configured in /etc/hosts (dnsdomainname may require re-login to update)"
+            fi
+
+            echo ""
+            echo "══════════════════════════════════════════════════════════"
+            echo "DNS Domain Configuration Summary:"
+            echo "══════════════════════════════════════════════════════════"
+            echo "✓ Domain: $DNS_DOMAIN"
+            echo "✓ FQDN: $FQDN_WITH_DOMAIN"
+            echo "✓ /etc/hosts updated"
+            echo ""
+            echo "Verify with: dnsdomainname"
+            echo "══════════════════════════════════════════════════════════"
+            echo ""
+        fi
+            mark_completed "DNS_DOMAIN_NAME"
+        else
+            log_info "DNS domain name configuration skipped"
+            mark_completed "DNS_DOMAIN_NAME"
+        fi
+    fi
+fi
+
+###############################################################################
 # SYSTEM UPDATE
 ###############################################################################
 
@@ -989,6 +1105,7 @@ if ask_component_install \
 • git - Version control
 • htop, atop, iotop, nethogs - System monitoring tools
 • lm-sensors - Hardware monitoring (temperature, voltage, fans)
+• smartmontools, nvme-cli - Disk health monitoring (SMART/NVMe diagnostics)
 • fail2ban - Intrusion prevention
 • libpam-tmpdir - Per-user temporary directories (security)
 
@@ -1014,6 +1131,8 @@ Note: You will be able to select individual packages in the next step" \
         ["iotop"]="I/O monitoring tool"
         ["nethogs"]="Network bandwidth monitor per process"
         ["lm-sensors"]="Hardware monitoring (temperature, voltage, fans)"
+        ["smartmontools"]="Disk health monitoring (SMART data)"
+        ["nvme-cli"]="NVMe SSD management and diagnostics"
         ["fail2ban"]="Intrusion prevention system"
         ["libpam-tmpdir"]="Per-user temporary directories (Lynis security recommendation)"
     )
@@ -1036,6 +1155,8 @@ Note: You will be able to select individual packages in the next step" \
         ["iotop"]="Shows disk I/O usage per process. Helps identify which processes are causing disk bottlenecks or high I/O wait."
         ["nethogs"]="Groups network bandwidth by process (unlike iftop which shows per-connection). Find which program is using your bandwidth."
         ["lm-sensors"]="Monitors hardware sensors: CPU temperature, fan speeds, voltages. Use 'sensors' command to check system health."
+        ["smartmontools"]="Monitors disk health using S.M.A.R.T. data. Detects failing drives before data loss. Use 'smartctl -a /dev/sdX' to check disk status, or 'smartctl -t short /dev/sdX' for self-tests. Essential for early warning of disk failures."
+        ["nvme-cli"]="Management tool for NVMe SSDs. Check health with 'nvme smart-log /dev/nvme0n1', view firmware info, and monitor wear level. Recommended for servers with NVMe drives (including Raspberry Pi 5 with NVMe HAT)."
         ["fail2ban"]="Scans log files for malicious patterns (e.g., failed SSH logins) and temporarily bans offending IPs via firewall rules."
         ["libpam-tmpdir"]="Creates per-user private /tmp directories. Prevents users from accessing each other's temp files (security hardening)."
     )
@@ -1069,7 +1190,7 @@ Note: You will be able to select individual packages in the next step" \
             echo "Press Enter to accept the default (Y = install, n = skip)"
             echo ""
 
-            for pkg in curl wget net-tools ufw unattended-upgrades ca-certificates gnupg lsb-release software-properties-common rsyslog git htop atop iotop nethogs lm-sensors fail2ban libpam-tmpdir; do
+            for pkg in curl wget net-tools ufw unattended-upgrades ca-certificates gnupg lsb-release software-properties-common rsyslog git htop atop iotop nethogs lm-sensors smartmontools nvme-cli fail2ban libpam-tmpdir; do
                 desc="${ESSENTIAL_PACKAGES[$pkg]}"
                 details="${PACKAGE_DETAILS[$pkg]}"
 
@@ -1327,6 +1448,7 @@ Lynis recommendations: AUTH-9230, AUTH-9262, AUTH-9286, DEB-0280" \
         log_dry_run "Would configure SHA-512 rounds in /etc/login.defs (ENCRYPT_METHOD, SHA_CRYPT_MIN_ROUNDS, SHA_CRYPT_MAX_ROUNDS)"
         log_dry_run "Would set password quality requirements in /etc/security/pwquality.conf"
         log_dry_run "Would configure password aging in /etc/login.defs (PASS_MIN_DAYS=7, PASS_MAX_DAYS=365, PASS_WARN_AGE=30)"
+        log_dry_run "Would configure UMASK to 027 in /etc/login.defs (Lynis AUTH-9328)"
         log_dry_run "Would apply password aging to existing user accounts (UID>=1000) using chage"
     else
         log_info "Configuring password policies and PAM hardening..."
@@ -1471,6 +1593,16 @@ EOF
 
             log_info "Password aging policies configured"
 
+            # Configure UMASK to 027 (Lynis AUTH-9328)
+            log_info "Configuring default UMASK to 027..."
+            if grep -q "^UMASK" /etc/login.defs; then
+                sudo sed -i 's/^UMASK.*/UMASK 027/' /etc/login.defs
+                log_info "Updated UMASK to 027"
+            else
+                echo "UMASK 027" | sudo tee -a /etc/login.defs >/dev/null
+                log_info "Added UMASK 027"
+            fi
+
             # Apply password aging to existing user accounts (except system accounts)
             log_info "Applying password aging to existing user accounts..."
             AGING_COUNT=0
@@ -1489,6 +1621,7 @@ EOF
         echo "Password Policy Configuration Summary:"
         echo "══════════════════════════════════════════════════════════"
         echo "✓ SHA-512 hashing with 65536 rounds (PAM + login.defs)"
+        echo "✓ UMASK set to 027 (new files: owner=rwx, group=rx, others=none)"
         echo "✓ Minimum password length: 12 characters"
         echo "✓ Required: 3 different character classes"
         echo "✓ Required: At least 1 digit, 1 uppercase, 1 lowercase, 1 special char"
@@ -2303,6 +2436,91 @@ EOF
 fi
 
 ###############################################################################
+# DISABLE FIREWIRE STORAGE
+###############################################################################
+
+if skip_if_completed "DISABLE_FIREWIRE_STORAGE"; then
+    log_info "Firewire storage control already configured, skipping"
+else
+    if ask_component_install \
+        "DISABLE FIREWIRE STORAGE DEVICES" \
+        "disable-firewire-storage" \
+        "Disable Firewire (IEEE 1394) storage devices to prevent data exfiltration." \
+        "Security features:
+• Blocks Firewire storage devices
+• Prevents unauthorized data copying via Firewire
+• Reduces DMA attack surface (Firewire has direct memory access)
+
+⚠️  IMPORTANT NOTES:
+✓ Modern servers rarely use Firewire
+✓ Disabling reduces attack surface significantly
+✗ Firewire devices will NOT work after this
+
+Recommended:
+• VPS/Cloud servers: YES (no physical Firewire access)
+• Modern servers: YES (Firewire is legacy technology)
+• Older workstations with Firewire: NO
+
+Lynis recommendation: STRG-1846" \
+        "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would create /etc/modprobe.d/disable-firewire.conf"
+        log_dry_run "Would blacklist firewire-core, firewire-ohci, firewire-sbp2 kernel modules"
+        log_dry_run "Note: Changes would require reboot"
+    else
+        log_info "Disabling Firewire storage devices..."
+
+        cat <<'EOF' | sudo tee /etc/modprobe.d/disable-firewire.conf >/dev/null
+# Disable Firewire (IEEE 1394) for security (Lynis STRG-1846)
+# Firewire has DMA capabilities which can be exploited for attacks
+# Most modern servers don't need Firewire support
+
+# Core Firewire modules
+install firewire-core /bin/true
+blacklist firewire-core
+
+# Firewire OHCI controller
+install firewire-ohci /bin/true
+blacklist firewire-ohci
+
+# Firewire storage (SBP-2 protocol)
+install firewire-sbp2 /bin/true
+blacklist firewire-sbp2
+
+# Legacy IEEE 1394 modules (older kernels)
+install ohci1394 /bin/true
+blacklist ohci1394
+install sbp2 /bin/true
+blacklist sbp2
+install dv1394 /bin/true
+blacklist dv1394
+install raw1394 /bin/true
+blacklist raw1394
+install video1394 /bin/true
+blacklist video1394
+EOF
+
+        log_info "Firewire storage disabled"
+        echo ""
+        echo "══════════════════════════════════════════════════════════"
+        echo "Firewire Storage Control Summary:"
+        echo "══════════════════════════════════════════════════════════"
+        echo "✓ Firewire storage devices will be BLOCKED"
+        echo "✓ DMA attack surface reduced"
+        echo ""
+        echo "⚠️  Changes take effect after REBOOT"
+        echo "══════════════════════════════════════════════════════════"
+        echo ""
+    fi
+        mark_completed "DISABLE_FIREWIRE_STORAGE"
+    else
+        log_info "Firewire storage disabling skipped"
+        mark_completed "DISABLE_FIREWIRE_STORAGE"
+    fi
+fi
+
+###############################################################################
 # DISABLE CORE DUMPS
 ###############################################################################
 
@@ -2379,6 +2597,89 @@ EOF
     else
         log_info "Core dump disabling skipped"
         mark_completed "DISABLE_CORE_DUMPS"
+    fi
+fi
+
+###############################################################################
+# DISABLE CUPS PRINTING SERVICE
+###############################################################################
+
+if skip_if_completed "DISABLE_CUPS"; then
+    log_info "CUPS configuration already processed, skipping"
+else
+    # Check if CUPS is installed
+    if systemctl list-unit-files cups.service &>/dev/null 2>&1 || dpkg -l cups 2>/dev/null | grep -q "^ii"; then
+        if ask_component_install \
+            "DISABLE CUPS PRINTING SERVICE" \
+            "disable-cups" \
+            "Disable CUPS (Common Unix Printing System) if printing is not needed." \
+            "Security features:
+• Disables unnecessary printing service
+• Reduces attack surface (CUPS has had security vulnerabilities)
+• Frees up system resources
+
+⚠️  IMPORTANT NOTES:
+✓ Most servers don't need printing capability
+✓ Can be re-enabled later if needed
+✗ Local and network printing will NOT work after this
+
+Recommended:
+• VPS/Cloud servers: YES (no printing needed)
+• Headless servers: YES (no printing needed)
+• Desktop/Workstation: NO (may need printing)
+
+Lynis recommendation: PRNT-2307" \
+            "y"; then
+
+        if [ "$DRY_RUN" = true ]; then
+            log_dry_run "Would disable CUPS service: sudo systemctl disable --now cups"
+            log_dry_run "Would disable cups-browsed if present"
+        else
+            log_info "Disabling CUPS printing service..."
+
+            # Disable and stop CUPS
+            if systemctl is-active cups &>/dev/null; then
+                sudo systemctl stop cups
+                log_info "Stopped CUPS service"
+            fi
+            sudo systemctl disable cups 2>/dev/null || true
+            log_info "Disabled CUPS service"
+
+            # Also disable cups-browsed if present (browsing for network printers)
+            if systemctl list-unit-files cups-browsed.service &>/dev/null 2>&1; then
+                if systemctl is-active cups-browsed &>/dev/null; then
+                    sudo systemctl stop cups-browsed
+                fi
+                sudo systemctl disable cups-browsed 2>/dev/null || true
+                log_info "Disabled cups-browsed service"
+            fi
+
+            # Mask the services to prevent accidental re-enabling
+            sudo systemctl mask cups.service 2>/dev/null || true
+            sudo systemctl mask cups.socket 2>/dev/null || true
+            log_info "Masked CUPS services"
+
+            echo ""
+            echo "══════════════════════════════════════════════════════════"
+            echo "CUPS Printing Service Disabled:"
+            echo "══════════════════════════════════════════════════════════"
+            echo "✓ CUPS service stopped and disabled"
+            echo "✓ Service masked to prevent accidental re-enabling"
+            echo ""
+            echo "To re-enable printing later:"
+            echo "  sudo systemctl unmask cups.service cups.socket"
+            echo "  sudo systemctl enable --now cups"
+            echo "══════════════════════════════════════════════════════════"
+            echo ""
+        fi
+            mark_completed "DISABLE_CUPS"
+        else
+            log_info "CUPS disabling skipped"
+            mark_completed "DISABLE_CUPS"
+        fi
+    else
+        log_info "CUPS is not installed, skipping"
+        mark_completed "DISABLE_CUPS"
     fi
 fi
 
@@ -3855,14 +4156,14 @@ debsums verifies the integrity of installed packages by checking MD5 checksums.
 
 Features:
 • Detects modified or corrupted system files
-• Monthly automated verification via cron
+• Daily automated verification via cron
 • Helps identify compromised packages or corruption
 • Lightweight and non-intrusive
 
 Configuration:
 • Installs debsums package
-• Configures monthly cron job (/etc/default/debsums)
-• Runs automatically on 1st of each month
+• Configures daily cron job (/etc/default/debsums)
+• Runs automatically every day
 
 Benefits:
 • Early detection of system file tampering
@@ -3875,7 +4176,7 @@ Lynis recommendation: DEB-0810" \
 
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would install debsums package"
-        log_dry_run "Would configure /etc/default/debsums with CRON_CHECK=monthly"
+        log_dry_run "Would configure /etc/default/debsums with CRON_CHECK=yes (daily)"
     else
         log_info "Installing debsums..."
 
@@ -3886,8 +4187,8 @@ Lynis recommendation: DEB-0810" \
             log_info "debsums is already installed"
         fi
 
-        # Configure debsums for monthly checks
-        log_info "Configuring debsums for monthly verification..."
+        # Configure debsums for daily checks (Lynis PKGS-7370)
+        log_info "Configuring debsums for daily verification..."
 
         # Backup existing config if it exists
         if [ -f /etc/default/debsums ]; then
@@ -3903,19 +4204,19 @@ Lynis recommendation: DEB-0810" \
 # This is a POSIX shell fragment
 #
 
-# Set this to never to disable the checksum verification or
-# one of "daily", "weekly", "monthly" to enable it
-CRON_CHECK=monthly
+# Set this to 'yes' to enable daily checksum verification
+# Lynis recommendation: PKGS-7370 - enable regular integrity checking
+CRON_CHECK=yes
 EOF
 
-        log_info "debsums configured for monthly verification"
+        log_info "debsums configured for daily verification"
 
         # Verify debsums is working
         if command -v debsums &>/dev/null; then
             log_info "debsums installed and configured successfully"
             echo ""
             echo "══════════════════════════════════════════════════════════"
-            echo "debsums will run monthly on the 1st to verify package integrity"
+            echo "debsums will run daily to verify package integrity"
             echo "Manual check: sudo debsums -s (shows only errors)"
             echo "══════════════════════════════════════════════════════════"
             echo ""
@@ -5588,6 +5889,7 @@ echo "  - Kernel hardening: Applied"
 echo ""
 echo "Monitoring tools installed:"
 echo "  - htop, atop, iotop, nethogs"
+echo "  - smartmontools, nvme-cli (disk health)"
 if [ "$NETDATA_CONFIGURED" = true ]; then
 echo "  - Netdata Docker container (http://$SERVER_IP:19999)"
 if [ "$TELEGRAM_CONFIGURED" = true ]; then
