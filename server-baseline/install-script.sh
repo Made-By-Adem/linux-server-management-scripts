@@ -308,6 +308,8 @@ show_section_menu() {
     echo " 21. portainer               - Install Portainer"
     echo " 22. cloudflare-tunnel       - Configure Cloudflare Tunnel"
     echo " 23. telegram                - Configure Telegram notifications"
+    echo " 24. legal-banners           - Legal warning banners"
+    echo " 25. custom-motd             - Custom MOTD (Message of the Day)"
     echo ""
     echo "Enter section numbers separated by spaces (e.g., 1 3 18)"
     echo "Or press ENTER to cancel"
@@ -344,6 +346,8 @@ show_section_menu() {
         [21]="portainer"
         [22]="cloudflare-tunnel"
         [23]="telegram"
+        [24]="legal-banners"
+        [25]="custom-motd"
     )
 
     # Parse selection
@@ -3046,6 +3050,75 @@ EOF
     else
         log_info "Legal warning banners skipped"
         mark_completed "LEGAL_BANNERS"
+    fi
+fi
+
+###############################################################################
+# CUSTOM MOTD (Message of the Day)
+###############################################################################
+
+if skip_if_completed "CUSTOM_MOTD"; then
+    log_info "Custom MOTD already configured, skipping"
+else
+    if ask_component_install \
+        "CUSTOM MOTD" \
+        "custom-motd" \
+        "Configure a custom Message of the Day (MOTD) shown after login." \
+        "Features:
+• Displays hostname prominently after login
+• Shows server purpose/usage description
+• Helps identify servers in multi-server environments
+• Professional server identification
+
+The MOTD is displayed after successful SSH login.
+You will be asked to provide a description of the server's purpose.
+
+💡 Recommended for all servers to improve identification" \
+        "y"; then
+
+    if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would ask for server usage description"
+        log_dry_run "Would create /etc/update-motd.d/01-custom with custom MOTD"
+    else
+        log_info "Configuring custom MOTD..."
+
+        # Ask user for server usage description
+        echo ""
+        echo "Enter a description of this server's purpose/usage."
+        echo "Examples: Docker Host, Web Server, Database Server, Development, Monitoring"
+        echo ""
+        read -p "Server usage description: " SERVER_USAGE
+        SERVER_USAGE=${SERVER_USAGE:-General Purpose Server}
+
+        # Create custom MOTD script
+        cat <<EOF | sudo tee /etc/update-motd.d/01-custom >/dev/null
+#!/bin/sh
+HOST=\$(hostname)
+
+cat <<MOTD
+***********************************************************************
+*                         \$HOST
+*                         USED FOR: $SERVER_USAGE
+***********************************************************************
+MOTD
+EOF
+
+        # Make the script executable
+        sudo chmod +x /etc/update-motd.d/01-custom
+        log_info "Created /etc/update-motd.d/01-custom"
+        log_info "Server usage set to: $SERVER_USAGE"
+
+        # Disable default MOTD components that may clutter the output (optional)
+        # Users can re-enable these if desired
+        if [ -f /etc/update-motd.d/10-help-text ]; then
+            sudo chmod -x /etc/update-motd.d/10-help-text 2>/dev/null || true
+            log_info "Disabled default help-text MOTD"
+        fi
+    fi
+        mark_completed "CUSTOM_MOTD"
+    else
+        log_info "Custom MOTD skipped"
+        mark_completed "CUSTOM_MOTD"
     fi
 fi
 
