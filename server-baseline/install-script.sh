@@ -1108,6 +1108,7 @@ if ask_component_install \
 • rsyslog - System logging
 • git - Version control
 • htop, atop, iotop, nethogs - System monitoring tools
+• tree - Directory structure visualization
 • lm-sensors - Hardware monitoring (temperature, voltage, fans)
 • smartmontools, nvme-cli - Disk health monitoring (SMART/NVMe diagnostics)
 • fail2ban - Intrusion prevention
@@ -1134,6 +1135,7 @@ Note: You will be able to select individual packages in the next step" \
         ["atop"]="Advanced system and process monitor"
         ["iotop"]="I/O monitoring tool"
         ["nethogs"]="Network bandwidth monitor per process"
+        ["tree"]="Directory structure visualization"
         ["lm-sensors"]="Hardware monitoring (temperature, voltage, fans)"
         ["smartmontools"]="Disk health monitoring (SMART data)"
         ["nvme-cli"]="NVMe SSD management and diagnostics"
@@ -1158,6 +1160,7 @@ Note: You will be able to select individual packages in the next step" \
         ["atop"]="Advanced system monitor that logs CPU, memory, disk, and network activity over time. Unlike htop, atop stores historical data allowing you to analyze past performance. Great for post-incident analysis and long-term monitoring."
         ["iotop"]="Shows disk I/O usage per process. Helps identify which processes are causing disk bottlenecks or high I/O wait."
         ["nethogs"]="Groups network bandwidth by process (unlike iftop which shows per-connection). Find which program is using your bandwidth."
+        ["tree"]="Displays directory structures in a tree-like format. Useful for visualizing project layouts, documenting folder hierarchies, and quickly understanding codebase organization. Use 'tree -L 2' to limit depth."
         ["lm-sensors"]="Monitors hardware sensors: CPU temperature, fan speeds, voltages. Use 'sensors' command to check system health."
         ["smartmontools"]="Monitors disk health using S.M.A.R.T. data. Detects failing drives before data loss. Use 'smartctl -a /dev/sdX' to check disk status, or 'smartctl -t short /dev/sdX' for self-tests. Essential for early warning of disk failures."
         ["nvme-cli"]="Management tool for NVMe SSDs. Check health with 'nvme smart-log /dev/nvme0n1', view firmware info, and monitor wear level. Recommended for servers with NVMe drives (including Raspberry Pi 5 with NVMe HAT)."
@@ -1194,7 +1197,7 @@ Note: You will be able to select individual packages in the next step" \
             echo "Press Enter to accept the default (Y = install, n = skip)"
             echo ""
 
-            for pkg in curl wget net-tools ufw unattended-upgrades ca-certificates gnupg lsb-release software-properties-common rsyslog git htop atop iotop nethogs lm-sensors smartmontools nvme-cli fail2ban libpam-tmpdir; do
+            for pkg in curl wget net-tools ufw unattended-upgrades ca-certificates gnupg lsb-release software-properties-common rsyslog git htop atop iotop nethogs tree lm-sensors smartmontools nvme-cli fail2ban libpam-tmpdir; do
                 desc="${ESSENTIAL_PACKAGES[$pkg]}"
                 details="${PACKAGE_DETAILS[$pkg]}"
 
