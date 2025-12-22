@@ -470,6 +470,44 @@ ask_component_install() {
     fi
 }
 
+# Simple prompt function for yes/no questions
+# Usage: prompt_user "Question text" "default_answer"
+prompt_user() {
+    local prompt_text="$1"
+    local default="${2:-y}"
+
+    # In dry-run mode, just return yes
+    if [ "$DRY_RUN" = true ]; then
+        return 0
+    fi
+
+    # In fresh-install mode, use defaults without asking
+    if [ "$MODE" = "fresh-install" ]; then
+        if [[ "$default" =~ ^[Yy]$ ]]; then
+            return 0
+        else
+            return 1
+        fi
+    fi
+
+    # Interactive mode: show prompt and ask
+    echo ""
+    echo "=========================================================================="
+    echo "$prompt_text"
+    echo "=========================================================================="
+    echo ""
+
+    local answer
+    read -p "Proceed? (Y/n, default: $default): " answer
+    answer=${answer:-$default}
+
+    if [[ $answer =~ ^[Yy]$ ]] || [[ -z "$answer" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Function to create comprehensive backup
 create_backup() {
     if [ "$DRY_RUN" = true ]; then
