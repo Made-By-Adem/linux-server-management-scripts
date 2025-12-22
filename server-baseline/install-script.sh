@@ -4509,6 +4509,9 @@ RECOMMENDATIONS_FILE="${RECOMMENDATIONS_DIR}/lynis-recommendations-${DATE_STAMP}
 # Create recommendations directory if it doesn't exist
 mkdir -p "$RECOMMENDATIONS_DIR"
 
+# Remove stale PID file if exists (prevents "another process running" warning)
+rm -f /run/lynis/lynis.pid 2>/dev/null || true
+
 # Run lynis audit (supports both GitHub and legacy apt installations)
 if [ -x /usr/local/lynis/lynis ]; then
     /usr/local/lynis/lynis audit system --quiet --quick
@@ -4523,8 +4526,11 @@ fi
 
 # Extract score and suggestions
 HARDENING_INDEX=$(grep "hardening_index=" "$LYNIS_LOG" | cut -d'=' -f2)
-SUGGESTIONS=$(grep "suggestion\[\]=" "$LYNIS_LOG" | head -5 | cut -d'=' -f2)
 SUGGESTION_COUNT=$(grep -c "suggestion\[\]=" "$LYNIS_LOG")
+
+# Extract top 5 suggestions - get only the description (second field after TEST-ID)
+# Format in lynis: suggestion[]=TEST-ID|Description|Details|Solution|
+SUGGESTIONS_CLEAN=$(grep "suggestion\[\]=" "$LYNIS_LOG" | head -5 | cut -d'|' -f2)
 
 # Export ALL recommendations to a dated log file
 echo "Lynis Security Recommendations Report" > "$RECOMMENDATIONS_FILE"
@@ -4538,8 +4544,12 @@ echo "ALL RECOMMENDATIONS:" >> "$RECOMMENDATIONS_FILE"
 echo "═══════════════════════════════════════════════════════════════" >> "$RECOMMENDATIONS_FILE"
 echo "" >> "$RECOMMENDATIONS_FILE"
 
-# Extract and number all suggestions
-grep "suggestion\[\]=" "$LYNIS_LOG" | cut -d'=' -f2- | nl -w3 -s'. ' >> "$RECOMMENDATIONS_FILE"
+# Extract and format all suggestions with TEST-ID and description
+grep "suggestion\[\]=" "$LYNIS_LOG" | while IFS= read -r line; do
+    TEST_ID=$(echo "$line" | cut -d'=' -f2 | cut -d'|' -f1)
+    DESCRIPTION=$(echo "$line" | cut -d'|' -f2)
+    echo "[$TEST_ID] $DESCRIPTION"
+done | nl -w3 -s'. ' >> "$RECOMMENDATIONS_FILE"
 
 echo "" >> "$RECOMMENDATIONS_FILE"
 echo "═══════════════════════════════════════════════════════════════" >> "$RECOMMENDATIONS_FILE"
@@ -4554,31 +4564,36 @@ chmod 644 "$RECOMMENDATIONS_FILE"
 REPORT_FILE="/var/log/lynis-report.dat"
 REPORT_LOG="/var/log/lynis.log"
 
-# Send Telegram message
-MESSAGE="🛡️ *Lynis Monthly Audit*%0A%0A"
-MESSAGE+="Server: $(hostname)%0A"
-MESSAGE+="Hardening Score: *${HARDENING_INDEX}*/100%0A%0A"
-MESSAGE+="Total suggestions: ${SUGGESTION_COUNT}%0A%0A"
-MESSAGE+="*Top 5 suggestions:*%0A"
+# Function to escape HTML special characters
+escape_html() {
+    echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
+}
 
-# Format top 5 suggestions
+# Build Telegram message with HTML formatting
+MESSAGE="🛡️ <b>Lynis Monthly Audit</b>%0A%0A"
+MESSAGE+="<b>Server:</b> $(hostname)%0A"
+MESSAGE+="<b>Hardening Score:</b> <code>${HARDENING_INDEX}/100</code>%0A"
+MESSAGE+="<b>Total suggestions:</b> ${SUGGESTION_COUNT}%0A%0A"
+MESSAGE+="<b>Top 5 suggestions:</b>%0A"
+
+# Format top 5 suggestions (escaped for HTML)
 while IFS= read -r suggestion; do
-    MESSAGE+="• ${suggestion}%0A"
-done <<< "$SUGGESTIONS"
+    if [ -n "$suggestion" ]; then
+        ESCAPED=$(escape_html "$suggestion")
+        MESSAGE+="• ${ESCAPED}%0A"
+    fi
+done <<< "$SUGGESTIONS_CLEAN"
 
-MESSAGE+=%0A
-MESSAGE+="📄 *Full recommendations report:*%0A"
-MESSAGE+="\`${RECOMMENDATIONS_FILE}\`%0A%0A"
-MESSAGE+="*View all recommendations:*%0A"
-MESSAGE+="\`cat ${RECOMMENDATIONS_FILE}\`%0A%0A"
-MESSAGE+="*Other reports:*%0A"
-MESSAGE+="Data: \`${REPORT_FILE}\`%0A"
-MESSAGE+="Log: \`${REPORT_LOG}\`%0A"
+MESSAGE+="%0A📄 <b>Full recommendations:</b>%0A"
+MESSAGE+="<code>${RECOMMENDATIONS_FILE}</code>%0A%0A"
+MESSAGE+="<b>View commands:</b>%0A"
+MESSAGE+="<code>cat ${RECOMMENDATIONS_FILE}</code>%0A"
+MESSAGE+="<code>lynis show details TEST-ID</code>"
 
 curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
     -d chat_id="${TELEGRAM_CHAT_ID}" \
     -d text="${MESSAGE}" \
-    -d parse_mode="Markdown" >/dev/null 2>&1
+    -d parse_mode="HTML" >/dev/null 2>&1
 
 # Clean up old recommendation files (keep last 12 months)
 find "$RECOMMENDATIONS_DIR" -name "lynis-recommendations-*.log" -type f -mtime +365 -delete 2>/dev/null || true
