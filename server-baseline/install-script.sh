@@ -27,7 +27,19 @@ SECTION_SELECT=false  # Set to true when --section is used
 SELECTED_SECTIONS=()  # Array to store selected section IDs
 
 # Get the actual user (the one who ran sudo)
-ACTUAL_USER="${SUDO_USER:-${USER:-$(whoami)}}"
+# If running as root directly (not via sudo), find the first regular user
+ACTUAL_USER="${SUDO_USER:-}"
+
+if [ -z "$ACTUAL_USER" ] || [ "$ACTUAL_USER" = "root" ]; then
+    # Not running via sudo, or SUDO_USER is root
+    # Find the first regular user (UID >= 1000, has a home in /home/)
+    ACTUAL_USER=$(awk -F: '$3 >= 1000 && $6 ~ /^\/home\// {print $1; exit}' /etc/passwd)
+
+    if [ -z "$ACTUAL_USER" ]; then
+        # Fallback: use current user
+        ACTUAL_USER="${USER:-$(whoami)}"
+    fi
+fi
 
 # Get the user's home directory
 # Try multiple methods for compatibility across Ubuntu, Debian, and Raspberry Pi
@@ -47,13 +59,23 @@ if [ -n "$ACTUAL_USER" ] && [ "$ACTUAL_USER" != "root" ]; then
         USER_HOME=$(eval echo ~"$ACTUAL_USER")
     fi
 else
-    USER_HOME=$(eval echo ~"$ACTUAL_USER")
+    # Running as root with no regular user found - use /home/docker as fallback
+    ACTUAL_USER="root"
+    USER_HOME="/root"
+fi
+
+# Final check: if USER_HOME is still /root but we have a regular user, fix it
+if [ "$USER_HOME" = "/root" ] && [ "$ACTUAL_USER" != "root" ]; then
+    USER_HOME="/home/$ACTUAL_USER"
 fi
 
 # Verify we got a valid home directory
 if [ -z "${USER_HOME:-}" ] || [ "$USER_HOME" = "/" ]; then
-    USER_HOME=$(eval echo ~"$ACTUAL_USER")
+    USER_HOME="/home/$ACTUAL_USER"
 fi
+
+# Log the detected user for transparency
+echo "Detected user: $ACTUAL_USER (home: $USER_HOME)"
 
 # Get server IP address (needed for multiple sections below)
 SERVER_IP=$(ip -4 addr show scope global | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)
@@ -1648,13 +1670,18 @@ EOF
                 log_info "Added UMASK 027"
             fi
 
-            # Apply password aging to existing user accounts (except system accounts)
+            # Apply password aging to existing user accounts (except system accounts and root)
             log_info "Applying password aging to existing user accounts..."
             AGING_COUNT=0
             sudo awk -F: '($2!="!" && $2!="*" && $3>=1000){print $1}' /etc/shadow | while read u; do
                 sudo chage -M 365 -m 7 -W 30 "$u" 2>/dev/null && AGING_COUNT=$((AGING_COUNT + 1))
             done
             log_info "Password aging applied to user accounts (365 days max age, 7 days min age, 30 days warning)"
+
+            # Explicitly disable password aging for root (root should use SSH keys, not passwords)
+            log_info "Disabling password aging for root account..."
+            sudo chage -M -1 -m 0 -W 7 root 2>/dev/null || true
+            log_info "Root account excluded from password aging"
 
         else
             log_warning "/etc/login.defs not found, skipping login.defs configuration"
@@ -3519,16 +3546,46 @@ EOF
         log_info "SSH socket configured for ports 22 and 888"
 
         # Reload systemd configuration and restart SSH socket
+        log_info "Reloading systemd daemon..."
         sudo systemctl daemon-reload || log_warning "Failed to reload systemd daemon"
-        sudo systemctl restart ssh.socket || log_warning "Failed to restart ssh.socket"
-        sudo systemctl restart ssh || sudo systemctl restart sshd || handle_error "Failed to restart SSH service"
 
-        # Verify SSH is listening on both ports
-        sleep 2
-        if ss -tlnp 2>/dev/null | grep -q ":888.*sshd" && ss -tlnp 2>/dev/null | grep -q ":22.*sshd"; then
-            log_info "Verified: SSH is listening on both port 22 and 888"
-        else
-            log_warning "Warning: Could not verify SSH is listening on both ports. Check with: sudo ss -tlnp | grep sshd"
+        # Stop and start ssh.socket to ensure clean state
+        log_info "Restarting SSH socket and service..."
+        sudo systemctl stop ssh.socket 2>/dev/null || true
+        sudo systemctl stop ssh 2>/dev/null || true
+        sleep 1
+        sudo systemctl start ssh.socket || log_warning "Failed to start ssh.socket"
+        sudo systemctl start ssh || sudo systemctl start sshd || handle_error "Failed to start SSH service"
+
+        # Wait for SSH to fully start
+        sleep 3
+
+        # Verify SSH is listening on both ports with retry
+        log_info "Verifying SSH is listening on ports 22 and 888..."
+        RETRY_COUNT=0
+        MAX_RETRIES=3
+        SSH_VERIFIED=false
+
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SSH_VERIFIED" = false ]; do
+            if ss -tlnp 2>/dev/null | grep -q ":888" && ss -tlnp 2>/dev/null | grep -q ":22"; then
+                log_info "Verified: SSH is listening on both port 22 and 888"
+                SSH_VERIFIED=true
+            else
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                    log_warning "SSH not yet listening on both ports, retrying ($RETRY_COUNT/$MAX_RETRIES)..."
+                    sudo systemctl restart ssh.socket 2>/dev/null || true
+                    sudo systemctl restart ssh 2>/dev/null || true
+                    sleep 3
+                fi
+            fi
+        done
+
+        if [ "$SSH_VERIFIED" = false ]; then
+            log_warning "SSH verification failed after $MAX_RETRIES attempts"
+            log_warning "Current SSH listening status:"
+            ss -tlnp 2>/dev/null | grep -E "(ssh|:22|:888)" || echo "  No SSH ports found"
+            log_warning "Manual fix: sudo systemctl daemon-reload && sudo systemctl restart ssh.socket && sudo systemctl restart ssh"
         fi
     else
         # Fallback for systems without socket activation (older systems)
@@ -3868,31 +3925,13 @@ EOF
             fi
         fi
 
-        # Containerd service hardening
+        # Containerd service hardening - DISABLED
+        # NOTE: Containerd hardening causes issues with namespace/mount setup
+        # Error: "Failed to set up mount namespacing: /run/containerd: No such file or directory"
+        # Containerd needs extensive system access to manage containers, hardening breaks it
         if systemctl list-unit-files | grep -q "containerd.service"; then
-            read -p "Harden Containerd service? (Y/n): " harden_containerd
-            harden_containerd=${harden_containerd:-y}
-            if [[ $harden_containerd =~ ^[Yy]$ ]]; then
-                log_info "Hardening Containerd service..."
-                sudo mkdir -p /etc/systemd/system/containerd.service.d
-
-                cat <<'EOF' | sudo tee /etc/systemd/system/containerd.service.d/hardening.conf >/dev/null
-[Service]
-# Systemd hardening for Containerd
-ProtectSystem=strict
-ReadWritePaths=/var/lib/containerd /run/containerd /var/log
-ProtectKernelTunables=yes
-ProtectKernelLogs=yes
-SystemCallFilter=@system-service
-SystemCallArchitectures=native
-LockPersonality=yes
-ProtectClock=yes
-EOF
-
-                log_info "✓ Containerd service hardened"
-            else
-                log_info "⊘ Containerd hardening skipped"
-            fi
+            log_info "⊘ Containerd hardening skipped (incompatible with container runtime)"
+            log_info "  Containerd requires extensive system access and cannot be hardened safely"
         fi
 
         # Networkd-dispatcher service hardening
@@ -5392,15 +5431,49 @@ Directory: $USER_HOME/docker/cloudflare/" \
         echo "  1. Go to https://one.dash.cloudflare.com/"
         echo "  2. Navigate to Networks > Tunnels"
         echo "  3. Create a new tunnel or select existing one"
-        echo "  4. Copy the tunnel token"
+        echo "  4. Copy the tunnel token (starts with 'ey...')"
         echo ""
-        read -s -p "Enter your Cloudflare Tunnel token (or press 'n' to skip): " cf_token
+        echo "Note: Token will be visible when you paste it"
         echo ""
+        read -p "Enter your Cloudflare Tunnel token (or 'n' to skip): " cf_token
 
         if [[ $cf_token != "n" ]] && [[ $cf_token != "N" ]] && [[ ! -z "$cf_token" ]]; then
-            # Create .env file with token (as the actual user)
-            sudo -u "$ACTUAL_USER" bash -c "echo 'CF_TOKEN=$cf_token' > '$USER_HOME/docker/cloudflare/.env'"
-            sudo -u "$ACTUAL_USER" chmod 600 "$USER_HOME/docker/cloudflare/.env"
+            # Validate token format (should start with 'ey' - JWT format)
+            if [[ ! "$cf_token" =~ ^ey ]]; then
+                log_warning "Token doesn't appear to be in expected format (should start with 'ey')"
+                read -p "Continue anyway? (y/N): " continue_anyway
+                if [[ ! $continue_anyway =~ ^[Yy]$ ]]; then
+                    log_warning "Cloudflare Tunnel setup cancelled"
+                    CF_CONFIGURED=false
+                else
+                    log_info "Continuing with provided token..."
+                fi
+            fi
+
+            if [[ $cf_token =~ ^ey ]] || [[ $continue_anyway =~ ^[Yy]$ ]]; then
+                # Show token preview for verification
+                TOKEN_PREVIEW="${cf_token:0:20}...${cf_token: -10}"
+                echo ""
+                echo "Token preview: $TOKEN_PREVIEW"
+                read -p "Is this correct? (Y/n): " confirm_token
+                confirm_token=${confirm_token:-y}
+
+                if [[ ! $confirm_token =~ ^[Yy]$ ]]; then
+                    log_warning "Token not confirmed, skipping Cloudflare Tunnel setup"
+                    CF_CONFIGURED=false
+                else
+                    # Create .env file with token (as the actual user)
+                    sudo -u "$ACTUAL_USER" bash -c "echo 'CF_TOKEN=$cf_token' > '$USER_HOME/docker/cloudflare/.env'"
+                    sudo -u "$ACTUAL_USER" chmod 600 "$USER_HOME/docker/cloudflare/.env"
+                fi
+            fi
+        else
+            log_warning "Cloudflare Tunnel setup skipped"
+            CF_CONFIGURED=false
+        fi
+
+        # Only create docker-compose if token was confirmed
+        if [[ -f "$USER_HOME/docker/cloudflare/.env" ]]; then
 
             # Create docker-compose.yaml for Cloudflare (as the actual user)
             sudo -u "$ACTUAL_USER" cat <<'EOF' > "$USER_HOME/docker/cloudflare/docker-compose.yaml"
@@ -5418,9 +5491,6 @@ EOF
             sudo chown -R "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker/cloudflare"
             log_info "Cloudflare Tunnel configuration created (token stored securely in .env)"
             CF_CONFIGURED=true
-        else
-            log_warning "Cloudflare Tunnel setup skipped"
-            CF_CONFIGURED=false
         fi
     fi
 else
@@ -5612,12 +5682,59 @@ Access: http://$SERVER_IP:19999 (after deployment)" \
     TELEGRAM_CHAT_ID=""
 
     if [[ $setup_telegram == "y" ]] || [[ $setup_telegram == "Y" ]]; then
+        echo ""
+        echo "Note: Tokens will be visible when you type/paste them"
+        echo ""
         read -p "Enter your Telegram Bot Token: " TELEGRAM_BOT_TOKEN
-        read -p "Enter your Telegram Chat ID: " TELEGRAM_CHAT_ID
+
+        # Validate bot token format (should be like: 123456789:ABCdef...)
+        if [[ ! "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+            log_warning "Bot token doesn't appear to be in expected format (e.g., 123456789:ABCdefGHI...)"
+            read -p "Continue anyway? (y/N): " continue_token
+            if [[ ! $continue_token =~ ^[Yy]$ ]]; then
+                log_warning "Telegram configuration cancelled"
+                TELEGRAM_CONFIGURED=false
+                TELEGRAM_BOT_TOKEN=""
+                TELEGRAM_CHAT_ID=""
+            fi
+        fi
+
+        if [[ ! -z "$TELEGRAM_BOT_TOKEN" ]]; then
+            read -p "Enter your Telegram Chat ID: " TELEGRAM_CHAT_ID
+
+            # Validate chat ID format (should be numeric, can be negative for groups)
+            if [[ ! "$TELEGRAM_CHAT_ID" =~ ^-?[0-9]+$ ]]; then
+                log_warning "Chat ID doesn't appear to be numeric"
+                read -p "Continue anyway? (y/N): " continue_chatid
+                if [[ ! $continue_chatid =~ ^[Yy]$ ]]; then
+                    log_warning "Telegram configuration cancelled"
+                    TELEGRAM_CONFIGURED=false
+                    TELEGRAM_BOT_TOKEN=""
+                    TELEGRAM_CHAT_ID=""
+                fi
+            fi
+        fi
 
         if [[ ! -z "$TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$TELEGRAM_CHAT_ID" ]]; then
-            log_info "Telegram alerts will be configured"
-            TELEGRAM_CONFIGURED=true
+            # Show preview for confirmation
+            TOKEN_PREVIEW="${TELEGRAM_BOT_TOKEN:0:15}...${TELEGRAM_BOT_TOKEN: -5}"
+            echo ""
+            echo "Configuration preview:"
+            echo "  Bot Token: $TOKEN_PREVIEW"
+            echo "  Chat ID:   $TELEGRAM_CHAT_ID"
+            echo ""
+            read -p "Is this correct? (Y/n): " confirm_telegram
+            confirm_telegram=${confirm_telegram:-y}
+
+            if [[ $confirm_telegram =~ ^[Yy]$ ]]; then
+                log_info "Telegram alerts will be configured"
+                TELEGRAM_CONFIGURED=true
+            else
+                log_warning "Telegram configuration not confirmed"
+                TELEGRAM_CONFIGURED=false
+                TELEGRAM_BOT_TOKEN=""
+                TELEGRAM_CHAT_ID=""
+            fi
         else
             log_warning "Telegram configuration skipped - missing token or chat ID"
             TELEGRAM_CONFIGURED=false
@@ -5666,21 +5783,31 @@ EOF
         log_info "Netdata health alert configuration created at ~/docker/netdata/config/health_alarm_notify.conf"
     fi
 
-    # Create .env file with hostname
-    sudo -u "$ACTUAL_USER" cat <<EOF > "$USER_HOME/docker/netdata/.env"
+    # Create .env file with hostname and Telegram config (secrets stored here, not in docker-compose.yaml)
+    if [ "$TELEGRAM_CONFIGURED" = true ]; then
+        sudo -u "$ACTUAL_USER" cat <<EOF > "$USER_HOME/docker/netdata/.env"
+NETDATA_HOSTNAME=$NETDATA_HOSTNAME
+TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID
+EOF
+        sudo -u "$ACTUAL_USER" chmod 600 "$USER_HOME/docker/netdata/.env"
+        log_info "Telegram credentials stored securely in .env file (chmod 600)"
+    else
+        sudo -u "$ACTUAL_USER" cat <<EOF > "$USER_HOME/docker/netdata/.env"
 NETDATA_HOSTNAME=$NETDATA_HOSTNAME
 EOF
+    fi
 
     # Create docker-compose.yaml for Netdata
     if [ "$TELEGRAM_CONFIGURED" = true ]; then
-        # With Telegram configuration (as the actual user)
-        sudo -u "$ACTUAL_USER" cat <<EOF > "$USER_HOME/docker/netdata/docker-compose.yaml"
+        # With Telegram configuration - credentials loaded from .env file
+        sudo -u "$ACTUAL_USER" cat <<'EOF' > "$USER_HOME/docker/netdata/docker-compose.yaml"
 services:
   netdata:
     # NOTE: Using :latest tag. For production, consider pinning to a specific version (e.g., netdata/netdata:v1.44.1)
     image: netdata/netdata:latest
     container_name: netdata
-    hostname: \${NETDATA_HOSTNAME:-netdata}
+    hostname: ${NETDATA_HOSTNAME:-netdata}
     ports:
       - "19999:19999"
     restart: always
@@ -5703,12 +5830,12 @@ services:
       # Systemd journal logs (for system log monitoring in Netdata)
       - /var/log/journal:/var/log/journal:ro
       - /run/log/journal:/run/log/journal:ro
+    env_file:
+      - .env
     environment:
       - NETDATA_CLAIM_TOKEN=
       - NETDATA_CLAIM_ROOMS=
       - SEND_TELEGRAM=YES
-      - TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
-      - DEFAULT_RECIPIENT_TELEGRAM=$TELEGRAM_CHAT_ID
 
 volumes:
   netdatalib:
