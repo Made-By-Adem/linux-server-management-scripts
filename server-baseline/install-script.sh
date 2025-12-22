@@ -273,7 +273,7 @@ check_component_status() {
     esac
 
     echo "not-found"
-    return 1
+    return 0  # Always return 0 to prevent set -e exit; caller checks output string
 }
 
 # Function to show section selection menu
