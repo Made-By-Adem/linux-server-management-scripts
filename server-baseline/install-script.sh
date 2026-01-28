@@ -3585,11 +3585,21 @@ EOF
             log_warning "SSH verification failed after $MAX_RETRIES attempts"
             log_warning "Current SSH listening status:"
             ss -tlnp 2>/dev/null | grep -E "(ssh|:22|:888)" || echo "  No SSH ports found"
-            log_warning "Manual fix: sudo systemctl daemon-reload && sudo systemctl restart ssh.socket && sudo systemctl restart ssh"
+            log_warning "Attempting full daemon-reload and restart..."
+            sudo systemctl daemon-reload
+            sudo systemctl restart ssh.socket 2>/dev/null || true
+            sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null || true
+            sleep 3
+            if ss -tlnp 2>/dev/null | grep -q ":888"; then
+                log_info "SSH now listening on port 888 after full restart"
+            else
+                log_warning "SSH still not on port 888. Manual fix: sudo systemctl daemon-reload && sudo systemctl restart ssh.socket && sudo systemctl restart ssh"
+            fi
         fi
     else
         # Fallback for systems without socket activation (older systems)
         log_info "No systemd socket activation detected, restarting SSH service..."
+        sudo systemctl daemon-reload
         sudo systemctl restart ssh || sudo systemctl restart sshd || handle_error "Failed to restart SSH service"
     fi
 
