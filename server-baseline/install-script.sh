@@ -3537,14 +3537,27 @@ else
         sudo mkdir -p /etc/systemd/system/ssh.socket.d
 
         # Create override configuration for SSH socket to listen on both ports
-        cat <<EOF | sudo tee /etc/systemd/system/ssh.socket.d/ports.conf
+        # Must explicitly bind to 0.0.0.0 — bare port numbers default to [::] (IPv6)
+        # which fails when IPv6 is disabled at the system level
+        if [ "$IPV6_DISABLED" = true ]; then
+            cat <<EOF | sudo tee /etc/systemd/system/ssh.socket.d/ports.conf
 [Socket]
 ListenStream=
-ListenStream=22
-ListenStream=888
+ListenStream=0.0.0.0:22
+ListenStream=0.0.0.0:888
 EOF
-
-        log_info "SSH socket configured for ports 22 and 888"
+            log_info "SSH socket configured for ports 22 and 888 (IPv4 only)"
+        else
+            cat <<EOF | sudo tee /etc/systemd/system/ssh.socket.d/ports.conf
+[Socket]
+ListenStream=
+ListenStream=0.0.0.0:22
+ListenStream=0.0.0.0:888
+ListenStream=[::]:22
+ListenStream=[::]:888
+EOF
+            log_info "SSH socket configured for ports 22 and 888 (IPv4 + IPv6)"
+        fi
 
         # Reload systemd configuration and restart SSH socket
         log_info "Reloading systemd daemon..."
