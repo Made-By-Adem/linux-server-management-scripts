@@ -352,7 +352,17 @@ get_container_info() {
 find_compose_dir() {
     local container=$1
 
-    # Search in standard docker directories
+    # Method 1: Docker Compose labels (most reliable)
+    local project_dir=$(docker inspect --format='{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$container" 2>/dev/null)
+    if [ -n "$project_dir" ] && [ "$project_dir" != "<no value>" ] && [ -d "$project_dir" ]; then
+        echo "$project_dir"
+        return 0
+    fi
+
+    # Get the service name from Docker labels for smarter matching
+    local service_name=$(docker inspect --format='{{index .Config.Labels "com.docker.compose.service"}}' "$container" 2>/dev/null)
+
+    # Method 2: Search in standard docker directories
     local common_dirs=(
         "$HOME/docker"
         "/home/*/docker"
@@ -363,22 +373,25 @@ find_compose_dir() {
     for base_dir in "${common_dirs[@]}"; do
         for dir in $base_dir/*/; do
             if [ -f "$dir/docker-compose.yml" ] || [ -f "$dir/docker-compose.yaml" ]; then
-                # Check if this compose file contains this container
-                if grep -q "$container" "$dir/docker-compose.yml" 2>/dev/null || \
-                   grep -q "$container" "$dir/docker-compose.yaml" 2>/dev/null; then
+                local compose_file="$dir/docker-compose.yml"
+                [ ! -f "$compose_file" ] && compose_file="$dir/docker-compose.yaml"
+
+                # Check for container name, service name, or image name
+                if grep -q "$container" "$compose_file" 2>/dev/null; then
                     echo "$dir"
                     return 0
+                fi
+
+                # Also try matching on the service name from Docker labels
+                if [ -n "$service_name" ] && [ "$service_name" != "<no value>" ]; then
+                    if grep -qE "^\s+${service_name}:" "$compose_file" 2>/dev/null; then
+                        echo "$dir"
+                        return 0
+                    fi
                 fi
             fi
         done
     done
-
-    # Try via container labels
-    local project_dir=$(docker inspect --format='{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$container" 2>/dev/null)
-    if [ -n "$project_dir" ] && [ "$project_dir" != "<no value>" ]; then
-        echo "$project_dir"
-        return 0
-    fi
 
     return 1
 }

@@ -25,6 +25,7 @@ MODE=""  # Will be set to: fresh-install, interactive, or dry-run
 DRY_RUN=false
 SECTION_SELECT=false  # Set to true when --section is used
 SELECTED_SECTIONS=()  # Array to store selected section IDs
+CLOUDFLARE_ONLY=false  # When true, all Docker services bind to 127.0.0.1 and are only accessible via Cloudflare Tunnel
 
 # Get the actual user (the one who ran sudo)
 # If running as root directly (not via sudo), find the first regular user
@@ -5520,6 +5521,7 @@ services:
     command: tunnel --no-autoupdate run --token ${CF_TOKEN}
     env_file:
       - .env
+    network_mode: host
     restart: unless-stopped
 EOF
 
@@ -5527,6 +5529,47 @@ EOF
             sudo chown -R "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker/cloudflare"
             log_info "Cloudflare Tunnel configuration created (token stored securely in .env)"
             CF_CONFIGURED=true
+
+            # Ask about Cloudflare-only mode
+            echo ""
+            echo "=========================================================================="
+            echo "CLOUDFLARE-ONLY MODE"
+            echo "=========================================================================="
+            echo ""
+            echo "With Cloudflare-only mode, ALL Docker services (Portainer, Netdata, etc.)"
+            echo "will only be accessible through Cloudflare Tunnel."
+            echo ""
+            echo "What this means:"
+            echo "  • Docker containers bind to 127.0.0.1 (localhost only)"
+            echo "  • No service ports are opened in UFW (9443, 19999, etc.)"
+            echo "  • HTTP/HTTPS ports (80/443) are also removed from UFW"
+            echo "  • Services are ONLY reachable via your Cloudflare domain"
+            echo "  • SSH remains open as emergency fallback"
+            echo ""
+            echo "  ✅ Maximum security: zero exposed service ports"
+            echo "  ⚠️  Requires Cloudflare Tunnel to be running for access"
+            echo ""
+            read -p "Enable Cloudflare-only mode? (Y/n): " cf_only_choice
+            cf_only_choice=${cf_only_choice:-y}
+
+            if [[ $cf_only_choice =~ ^[Yy]$ ]]; then
+                CLOUDFLARE_ONLY=true
+                log_info "Cloudflare-only mode ENABLED - services will only be accessible via Cloudflare Tunnel"
+
+                # Remove HTTP/HTTPS UFW rules if they were already added in the UFW section
+                if sudo ufw status | grep -q "80/tcp"; then
+                    sudo ufw delete allow 80/tcp 2>/dev/null || true
+                    log_info "Removed UFW rule for port 80/tcp (HTTP) - not needed in Cloudflare-only mode"
+                fi
+                if sudo ufw status | grep -q "443/tcp"; then
+                    sudo ufw delete allow 443/tcp 2>/dev/null || true
+                    log_info "Removed UFW rule for port 443/tcp (HTTPS) - not needed in Cloudflare-only mode"
+                fi
+                sudo ufw reload 2>/dev/null || true
+            else
+                CLOUDFLARE_ONLY=false
+                log_info "Cloudflare-only mode disabled - services will be accessible directly via IP"
+            fi
         fi
     fi
 else
@@ -5577,7 +5620,28 @@ Access: https://$SERVER_IP:9443 (after deployment)" \
         fi
 
         # Create docker-compose.yaml for Portainer (as the actual user)
-        sudo -u "$ACTUAL_USER" cat <<'EOF' > "$USER_HOME/docker/portainer/docker-compose.yaml"
+        if [ "$CLOUDFLARE_ONLY" = true ]; then
+            # Cloudflare-only mode: bind to localhost only
+            sudo -u "$ACTUAL_USER" cat <<'EOF' > "$USER_HOME/docker/portainer/docker-compose.yaml"
+services:
+  portainer:
+    # NOTE: Using :lts tag. For production, consider pinning to a specific version (e.g., portainer/portainer-ce:2.19.4)
+    image: portainer/portainer-ce:lts
+    container_name: portainer
+    ports:
+      - "127.0.0.1:9443:9443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    restart: always
+
+volumes:
+  portainer_data:
+    driver: local
+EOF
+            log_info "Portainer bound to 127.0.0.1 (Cloudflare-only mode)"
+        else
+            sudo -u "$ACTUAL_USER" cat <<'EOF' > "$USER_HOME/docker/portainer/docker-compose.yaml"
 services:
   portainer:
     # NOTE: Using :lts tag. For production, consider pinning to a specific version (e.g., portainer/portainer-ce:2.19.4)
@@ -5595,6 +5659,7 @@ volumes:
   portainer_data:
     driver: local
 EOF
+        fi
 
         # Ensure ownership is correct
         sudo chown -R "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker/portainer"
@@ -5604,24 +5669,29 @@ EOF
         # PORTAINER FIREWALL RULES
         ###############################################################################
 
-        log_info "Adding Portainer ports to firewall..."
-
-        # Ask about Portainer Agent port (optional)
-        echo ""
-        read -p "Do you want to enable Portainer Agent port 8000? (only needed for remote management) (y/n): " enable_agent
         PORTAINER_AGENT_ENABLED=false
 
-        if [[ $enable_agent == "y" ]] || [[ $enable_agent == "Y" ]]; then
-            sudo ufw allow 8000/tcp comment 'Portainer Agent' || log_warning "Failed to add Portainer port 8000"
-            PORTAINER_AGENT_ENABLED=true
-            log_info "Portainer Agent port 8000 enabled"
+        if [ "$CLOUDFLARE_ONLY" = true ]; then
+            log_info "Cloudflare-only mode: skipping Portainer UFW rules (services bound to localhost)"
+        else
+            log_info "Adding Portainer ports to firewall..."
+
+            # Ask about Portainer Agent port (optional)
+            echo ""
+            read -p "Do you want to enable Portainer Agent port 8000? (only needed for remote management) (y/n): " enable_agent
+
+            if [[ $enable_agent == "y" ]] || [[ $enable_agent == "Y" ]]; then
+                sudo ufw allow 8000/tcp comment 'Portainer Agent' || log_warning "Failed to add Portainer port 8000"
+                PORTAINER_AGENT_ENABLED=true
+                log_info "Portainer Agent port 8000 enabled"
+            fi
+
+            # Always add Portainer HTTPS port
+            sudo ufw allow 9443/tcp comment 'Portainer HTTPS' || log_warning "Failed to add Portainer port 9443"
+            sudo ufw reload || handle_error "Failed to reload UFW"
+
+            log_info "Portainer HTTPS port 9443 added to firewall"
         fi
-
-        # Always add Portainer HTTPS port
-        sudo ufw allow 9443/tcp comment 'Portainer HTTPS' || log_warning "Failed to add Portainer port 9443"
-        sudo ufw reload || handle_error "Failed to reload UFW"
-
-        log_info "Portainer HTTPS port 9443 added to firewall"
     fi
 else
     log_info "Portainer setup skipped"
@@ -5922,6 +5992,12 @@ volumes:
 EOF
     fi
 
+    # Cloudflare-only mode: bind Netdata to localhost only
+    if [ "$CLOUDFLARE_ONLY" = true ]; then
+        sed -i 's/"19999:19999"/"127.0.0.1:19999:19999"/' "$USER_HOME/docker/netdata/docker-compose.yaml"
+        log_info "Netdata bound to 127.0.0.1 (Cloudflare-only mode)"
+    fi
+
     # Create systemd-journal configuration for Netdata
     log_info "Configuring Netdata systemd-journal plugin..."
     sudo -u "$ACTUAL_USER" mkdir -p "$USER_HOME/docker/netdata/config/go.d"
@@ -5937,9 +6013,13 @@ EOF
     # Ensure ownership is correct
     sudo chown -R "$ACTUAL_USER:$ACTUAL_USER" "$USER_HOME/docker/netdata"
 
-    # Add Netdata port to firewall
-    sudo ufw allow 19999/tcp comment 'Netdata Monitoring' || log_warning "Failed to add Netdata port"
-    sudo ufw reload || handle_error "Failed to reload UFW"
+    # Add Netdata port to firewall (skip in Cloudflare-only mode)
+    if [ "$CLOUDFLARE_ONLY" = true ]; then
+        log_info "Cloudflare-only mode: skipping Netdata UFW rules (services bound to localhost)"
+    else
+        sudo ufw allow 19999/tcp comment 'Netdata Monitoring' || log_warning "Failed to add Netdata port"
+        sudo ufw reload || handle_error "Failed to reload UFW"
+    fi
 
     log_info "Netdata configuration created"
     NETDATA_CONFIGURED=true
@@ -5950,24 +6030,43 @@ EOF
     echo "NETDATA CONFIGURATION COMPLETE"
     echo "=========================================================================="
     echo ""
-    echo "Netdata will be accessible at:"
-    echo ""
-    echo "  🌐 Dashboard: http://$SERVER_IP:19999"
-    echo ""
-    echo "To configure Netdata in Cloudflare Tunnel:"
-    echo ""
-    echo "  1. Go to your Cloudflare Zero Trust Dashboard"
-    echo "  2. Navigate to: Networks > Tunnels > [Your Tunnel] > Public Hostname"
-    echo "  3. Add a new public hostname with these settings:"
-    echo ""
-    echo "     Subdomain:    netdata (or monitoring, stats, etc.)"
-    echo "     Domain:       [your-domain.com]"
-    echo "     Service Type: HTTP"
-    echo "     URL:          http://$SERVER_IP:19999"
-    echo ""
-    echo "  4. After saving, access Netdata via: https://netdata.your-domain.com"
-    echo ""
-    echo "  💡 Tip: You can add access control in Cloudflare to protect the dashboard"
+    if [ "$CLOUDFLARE_ONLY" = true ]; then
+        echo "Netdata is configured in Cloudflare-only mode (bound to localhost)."
+        echo ""
+        echo "To access Netdata, configure a public hostname in Cloudflare Tunnel:"
+        echo ""
+        echo "  1. Go to your Cloudflare Zero Trust Dashboard"
+        echo "  2. Navigate to: Networks > Tunnels > [Your Tunnel] > Public Hostname"
+        echo "  3. Add a new public hostname with these settings:"
+        echo ""
+        echo "     Subdomain:    netdata (or monitoring, stats, etc.)"
+        echo "     Domain:       [your-domain.com]"
+        echo "     Service Type: HTTP"
+        echo "     URL:          http://localhost:19999"
+        echo ""
+        echo "  4. After saving, access Netdata via: https://netdata.your-domain.com"
+        echo ""
+        echo "  ⚠️  Netdata is NOT accessible via http://$SERVER_IP:19999 (Cloudflare-only mode)"
+    else
+        echo "Netdata will be accessible at:"
+        echo ""
+        echo "  🌐 Dashboard: http://$SERVER_IP:19999"
+        echo ""
+        echo "To configure Netdata in Cloudflare Tunnel:"
+        echo ""
+        echo "  1. Go to your Cloudflare Zero Trust Dashboard"
+        echo "  2. Navigate to: Networks > Tunnels > [Your Tunnel] > Public Hostname"
+        echo "  3. Add a new public hostname with these settings:"
+        echo ""
+        echo "     Subdomain:    netdata (or monitoring, stats, etc.)"
+        echo "     Domain:       [your-domain.com]"
+        echo "     Service Type: HTTP"
+        echo "     URL:          http://$SERVER_IP:19999"
+        echo ""
+        echo "  4. After saving, access Netdata via: https://netdata.your-domain.com"
+        echo ""
+        echo "  💡 Tip: You can add access control in Cloudflare to protect the dashboard"
+    fi
     echo ""
     echo "=========================================================================="
     echo ""
@@ -6066,25 +6165,47 @@ if [ "$PORTAINER_STARTED" = true ]; then
     echo "PORTAINER ACCESS INFORMATION"
     echo "=========================================================================="
     echo ""
-    echo "Portainer is now running and accessible at:"
-    echo ""
-    echo "  🌐 HTTPS: https://$SERVER_IP:9443"
-    echo ""
-    echo "To configure Portainer in Cloudflare Tunnel:"
-    echo ""
-    echo "  1. Go to your Cloudflare Zero Trust Dashboard"
-    echo "  2. Navigate to: Networks > Tunnels > [Your Tunnel] > Public Hostname"
-    echo "  3. Add a new public hostname with these settings:"
-    echo ""
-    echo "     Subdomain:    portainer (or your choice)"
-    echo "     Domain:       [your-domain.com]"
-    echo "     Service Type: HTTPS"
-    echo "     URL:          https://$SERVER_IP:9443"
-    echo ""
-    echo "     ⚠️  Important: Enable these settings:"
-    echo "         - No TLS Verify: ON (since Portainer uses self-signed cert)"
-    echo ""
-    echo "  4. After saving, access Portainer via: https://portainer.your-domain.com"
+    if [ "$CLOUDFLARE_ONLY" = true ]; then
+        echo "Portainer is running in Cloudflare-only mode (bound to localhost)."
+        echo ""
+        echo "To access Portainer, configure a public hostname in Cloudflare Tunnel:"
+        echo ""
+        echo "  1. Go to your Cloudflare Zero Trust Dashboard"
+        echo "  2. Navigate to: Networks > Tunnels > [Your Tunnel] > Public Hostname"
+        echo "  3. Add a new public hostname with these settings:"
+        echo ""
+        echo "     Subdomain:    portainer (or your choice)"
+        echo "     Domain:       [your-domain.com]"
+        echo "     Service Type: HTTPS"
+        echo "     URL:          https://localhost:9443"
+        echo ""
+        echo "     ⚠️  Important: Enable these settings:"
+        echo "         - No TLS Verify: ON (since Portainer uses self-signed cert)"
+        echo ""
+        echo "  4. After saving, access Portainer via: https://portainer.your-domain.com"
+        echo ""
+        echo "  ⚠️  Portainer is NOT accessible via https://$SERVER_IP:9443 (Cloudflare-only mode)"
+    else
+        echo "Portainer is now running and accessible at:"
+        echo ""
+        echo "  🌐 HTTPS: https://$SERVER_IP:9443"
+        echo ""
+        echo "To configure Portainer in Cloudflare Tunnel:"
+        echo ""
+        echo "  1. Go to your Cloudflare Zero Trust Dashboard"
+        echo "  2. Navigate to: Networks > Tunnels > [Your Tunnel] > Public Hostname"
+        echo "  3. Add a new public hostname with these settings:"
+        echo ""
+        echo "     Subdomain:    portainer (or your choice)"
+        echo "     Domain:       [your-domain.com]"
+        echo "     Service Type: HTTPS"
+        echo "     URL:          https://$SERVER_IP:9443"
+        echo ""
+        echo "     ⚠️  Important: Enable these settings:"
+        echo "         - No TLS Verify: ON (since Portainer uses self-signed cert)"
+        echo ""
+        echo "  4. After saving, access Portainer via: https://portainer.your-domain.com"
+    fi
     echo ""
     echo "=========================================================================="
     echo ""
@@ -6152,6 +6273,11 @@ echo "    ⚠️  REMEMBER: Test port 888 and manually disable port 22!"
 else
 echo "  - SSH: Not hardened (skipped)"
 fi
+if [ "$CLOUDFLARE_ONLY" = true ]; then
+UFW_PORTS="22, 888 (SSH only)"
+echo "  - Firewall: UFW enabled (ports $UFW_PORTS) - Cloudflare-only mode"
+echo "  - Cloudflare-only: All services bound to 127.0.0.1 (localhost)"
+else
 UFW_PORTS="22, 80, 443, 888, 9443"
 if [ "$PORTAINER_AGENT_ENABLED" = true ]; then
 UFW_PORTS="$UFW_PORTS, 8000"
@@ -6160,6 +6286,7 @@ if [ "$NETDATA_CONFIGURED" = true ]; then
 UFW_PORTS="$UFW_PORTS, 19999"
 fi
 echo "  - Firewall: UFW enabled (ports $UFW_PORTS)"
+fi
 echo "  - Fail2ban: Enabled for SSH (monitoring ports 22 and 888)"
 echo "  - Automatic updates: Enabled"
 echo "  - Kernel hardening: Applied"
@@ -6168,7 +6295,11 @@ echo "Monitoring tools installed:"
 echo "  - htop, atop, iotop, nethogs"
 echo "  - smartmontools, nvme-cli (disk health)"
 if [ "$NETDATA_CONFIGURED" = true ]; then
+if [ "$CLOUDFLARE_ONLY" = true ]; then
+echo "  - Netdata Docker container (via Cloudflare Tunnel - localhost:19999)"
+else
 echo "  - Netdata Docker container (http://$SERVER_IP:19999)"
+fi
 if [ "$TELEGRAM_CONFIGURED" = true ]; then
 echo "    ✅ Telegram alerts configured"
 fi
@@ -6186,12 +6317,23 @@ echo ""
 echo "Docker services configured:"
 if [ "$CF_CONFIGURED" = true ]; then
 echo "  ✅ Cloudflare Tunnel (~/docker/cloudflare)"
+if [ "$CLOUDFLARE_ONLY" = true ]; then
+echo "     🔒 Cloudflare-only mode: all services routed through tunnel"
+fi
 else
 echo "  ⏭️  Cloudflare Tunnel (skipped)"
 fi
+if [ "$CLOUDFLARE_ONLY" = true ]; then
+echo "  ✅ Portainer (~/docker/portainer) - localhost:9443 via Cloudflare"
+else
 echo "  ✅ Portainer (~/docker/portainer)"
+fi
 if [ "$NETDATA_CONFIGURED" = true ]; then
+if [ "$CLOUDFLARE_ONLY" = true ]; then
+echo "  ✅ Netdata (~/docker/netdata) - localhost:19999 via Cloudflare"
+else
 echo "  ✅ Netdata (~/docker/netdata)"
+fi
 fi
 echo ""
 echo "Container status:"
@@ -6230,11 +6372,19 @@ echo "  4. User '$ACTUAL_USER' has been added to docker group"
 echo "  5. Log out and back in for docker group to take effect"
 echo ""
 echo "Quick access URLs:"
+if [ "$CLOUDFLARE_ONLY" = true ]; then
+echo "  ⚠️  Cloudflare-only mode: configure public hostnames in Cloudflare Dashboard"
+echo "  - Portainer: https://portainer.your-domain.com (configure in Cloudflare → localhost:9443)"
+if [ "$NETDATA_CONFIGURED" = true ]; then
+echo "  - Netdata:   https://netdata.your-domain.com (configure in Cloudflare → localhost:19999)"
+fi
+else
 if [ "$PORTAINER_STARTED" = true ]; then
 echo "  - Portainer: https://$SERVER_IP:9443"
 fi
 if [ "$NETDATA_STARTED" = true ]; then
 echo "  - Netdata: http://$SERVER_IP:19999"
+fi
 fi
 echo ""
 echo "Error log saved to: $ERROR_LOG"
