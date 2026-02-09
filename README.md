@@ -68,6 +68,26 @@ A smart script for updating Docker containers managed by Docker Compose. Support
 
 ---
 
+### 3. [Remote Folder Backup](backup-script/)
+**Purpose:** Pull folders from a remote server via rsync
+
+A backup script that syncs specified folders from a remote server to the local machine over a single SSH connection. Configurable via a simple `.env` file.
+
+**Key Features:**
+- Configurable folder list via `.env`
+- Single SSH connection (multiplexing)
+- Rsync with `--delete` for exact mirrors
+- Automatic backup directory naming (`backup-<hostname>`)
+
+**Use Cases:**
+- Scheduled remote server backups
+- Pulling Docker volumes and configs from production
+- Disaster recovery preparation
+
+[→ Full Documentation](backup-script/README.md)
+
+---
+
 ## 🚀 Quick Start
 
 ### Server Baseline Setup
@@ -96,6 +116,14 @@ sudo bash update-containers.sh --unattended
 
 # With system updates
 sudo bash update-containers.sh --unattended --update-system
+```
+
+### Remote Folder Backup
+
+```bash
+# Configure .env first, then run:
+cd backup-script
+sudo bash backup.sh
 ```
 
 ---
@@ -132,6 +160,9 @@ chmod +x server-baseline/install-script.sh
 
 # Container updates
 chmod +x update-containers/update-containers.sh
+
+# Folder backup
+chmod +x backup-script/backup.sh
 ```
 
 ### Optional: Install System-Wide
@@ -145,9 +176,14 @@ sudo chmod +x /usr/local/bin/server-setup
 sudo cp update-containers/update-containers.sh /usr/local/bin/update-containers
 sudo chmod +x /usr/local/bin/update-containers
 
+# Folder backup
+sudo cp backup-script/backup.sh /usr/local/bin/backup-folders
+sudo chmod +x /usr/local/bin/backup-folders
+
 # Now you can run from anywhere:
 sudo server-setup --help
 sudo update-containers --help
+sudo backup-folders
 ```
 
 ---
