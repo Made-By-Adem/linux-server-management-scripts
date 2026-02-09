@@ -6,3 +6,4 @@
 
 # Force Unix line endings for other config files
 *.service text eol=lf
+*.env text eol=lf

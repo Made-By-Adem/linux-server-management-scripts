@@ -123,7 +123,10 @@ sudo bash update-containers.sh --unattended --update-system
 ```bash
 # Configure .env first, then run:
 cd backup-script
-sudo bash backup.sh
+bash backup.sh
+
+# Or if installed system-wide:
+backup-folders
 ```
 
 ---
@@ -176,14 +179,13 @@ sudo chmod +x /usr/local/bin/server-setup
 sudo cp update-containers/update-containers.sh /usr/local/bin/update-containers
 sudo chmod +x /usr/local/bin/update-containers
 
-# Folder backup
-sudo cp backup-script/backup.sh /usr/local/bin/backup-folders
-sudo chmod +x /usr/local/bin/backup-folders
+# Folder backup (symlink so it finds .env)
+sudo ln -sf $(pwd)/backup-script/backup.sh /usr/local/bin/backup-folders
 
 # Now you can run from anywhere:
 sudo server-setup --help
 sudo update-containers --help
-sudo backup-folders
+backup-folders
 ```
 
 ---
