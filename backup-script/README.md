@@ -75,17 +75,25 @@ ssh -i ~/.ssh/id_ed25519 -p 22 admin@192.168.1.100 "echo 'Connection OK'"
 
 Replace `admin`, `192.168.1.100` and port `22` with your actual values.
 
-### 5. Configure `.env`
+### 5. Create a config file per server
 
-Open `.env` and adjust the values:
+Copy the example and name it `.env.<server>`:
+
+```bash
+cp .env.example .env.oc2
+cp .env.example .env.ac1
+cp .env.example .env.ac2
+```
+
+Edit each file with the server-specific settings:
 
 ```env
-REMOTE_HOST="192.168.1.100"
-REMOTE_NAME="fireman"
+REMOTE_HOST="10.10.10.20"
+REMOTE_NAME="oc2"
 REMOTE_USER="admin"
 SSH_PORT="22"
-SSH_KEY="/home/your-user/.ssh/id_ed25519"
-BACKUP_DEST="/home/your-user/backups"
+SSH_KEY="/home/adem/.ssh/id_ed25519_oc2"
+BACKUP_DEST="/home/adem/backups"
 
 TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
 TELEGRAM_CHAT_ID="123456789"
@@ -98,13 +106,15 @@ BACKUP_FOLDERS=(
 )
 ```
 
+You can also use a single `.env` (without server name) as default config.
+
 | Variable | Description |
 |----------|-------------|
 | `REMOTE_HOST` | IP or hostname of the source server |
-| `REMOTE_NAME` | Friendly name for the backup folder, e.g. `fireman` → `backup-fireman/` (default: `REMOTE_HOST`) |
+| `REMOTE_NAME` | Friendly name for the backup folder, e.g. `oc2` → `backup-oc2/` (default: `REMOTE_HOST`) |
 | `REMOTE_USER` | SSH username on the source server (must match the user that has the key in `authorized_keys`) |
 | `SSH_PORT` | SSH port (default: `22`) |
-| `SSH_KEY` | Absolute path to the private SSH key on this (backup) server. Use a full path (e.g. `/home/adem/.ssh/id_ed25519`), not `$HOME` or `~` |
+| `SSH_KEY` | Absolute path to the private SSH key on this (backup) server. Use a full path, not `$HOME` or `~` |
 | `BACKUP_DEST` | Local directory to store backups (default: next to script) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (optional — leave empty to disable notifications) |
 | `TELEGRAM_CHAT_ID` | Telegram chat ID to send notifications to |
@@ -114,10 +124,17 @@ BACKUP_FOLDERS=(
 
 ```bash
 chmod +x backup.sh
+
+# Backup a specific server
+./backup.sh oc2        # uses .env.oc2
+./backup.sh ac1        # uses .env.ac1
+./backup.sh ac2        # uses .env.ac2
+
+# Or use default .env
 ./backup.sh
 ```
 
-The backup is stored in `backup-<REMOTE_HOST>/` in the configured `BACKUP_DEST` directory (or next to the script if not set).
+The backup is stored in `backup-<REMOTE_NAME>/` in the configured `BACKUP_DEST` directory (or next to the script if not set).
 
 ### 7. Optional: Install system-wide as `backup-folders` command
 
@@ -130,7 +147,9 @@ sudo ln -sf $(pwd)/backup-script/backup.sh /usr/local/bin/backup-folders
 Then run it from anywhere (no sudo needed):
 
 ```bash
-backup-folders
+backup-folders oc2
+backup-folders ac1
+backup-folders ac2
 ```
 
 ## Crontab Setup
@@ -141,23 +160,25 @@ Open the crontab:
 crontab -e
 ```
 
-Add a schedule, for example daily at 03:00:
+Add a schedule for each server, for example daily at 03:00:
 
 ```cron
-0 3 * * * /path/to/backup-script/backup.sh >> /var/log/backup.log 2>&1
+0 3 * * * /path/to/backup-script/backup.sh oc2 >> /var/log/backup.log 2>&1
+10 3 * * * /path/to/backup-script/backup.sh ac1 >> /var/log/backup.log 2>&1
+20 3 * * * /path/to/backup-script/backup.sh ac2 >> /var/log/backup.log 2>&1
 ```
 
-Other examples:
+Other schedule examples:
 
 ```cron
 # Every hour
-0 * * * * /path/to/backup-script/backup.sh >> /var/log/backup.log 2>&1
+0 * * * * /path/to/backup-script/backup.sh oc2 >> /var/log/backup.log 2>&1
 
 # Every Sunday at 02:00
-0 2 * * 0 /path/to/backup-script/backup.sh >> /var/log/backup.log 2>&1
+0 2 * * 0 /path/to/backup-script/backup.sh oc2 >> /var/log/backup.log 2>&1
 
 # Every 6 hours
-0 */6 * * * /path/to/backup-script/backup.sh >> /var/log/backup.log 2>&1
+0 */6 * * * /path/to/backup-script/backup.sh oc2 >> /var/log/backup.log 2>&1
 ```
 
 > Replace `/path/to/` with the actual path to the `backup-script` directory.

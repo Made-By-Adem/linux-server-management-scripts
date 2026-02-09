@@ -3,15 +3,32 @@ set -euo pipefail
 
 # =============================================================================
 # Remote Backup Script - Pull folders from a remote server via rsync
-# Usage: backup-folders | ./backup.sh
+# Usage: backup-folders [server]    e.g. backup-folders oc2
+#        backup-folders             (uses default .env)
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-ENV_FILE="${SCRIPT_DIR}/.env"
+
+# --- Determine config file ---
+if [[ -n "${1:-}" ]]; then
+    ENV_FILE="${SCRIPT_DIR}/.env.${1}"
+else
+    ENV_FILE="${SCRIPT_DIR}/.env"
+fi
 
 # --- Load .env ---
 if [[ ! -f "$ENV_FILE" ]]; then
-    echo "[ERROR] .env file not found at: $ENV_FILE"
+    echo "[ERROR] Config file not found: $ENV_FILE"
+    if [[ -n "${1:-}" ]]; then
+        echo "        Create it with: cp .env .env.${1}"
+    fi
+    # List available configs
+    CONFIGS=$(ls "${SCRIPT_DIR}"/.env* 2>/dev/null | xargs -I{} basename {})
+    if [[ -n "$CONFIGS" ]]; then
+        echo ""
+        echo "Available configs:"
+        echo "$CONFIGS"
+    fi
     exit 1
 fi
 source "$ENV_FILE"
