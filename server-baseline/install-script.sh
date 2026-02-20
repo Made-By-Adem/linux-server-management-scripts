@@ -5930,6 +5930,7 @@ services:
     ports:
       - "19999:19999"
     restart: always
+    init: true
     cap_add:
       - SYS_PTRACE
     security_opt:
@@ -5976,6 +5977,7 @@ services:
     ports:
       - "19999:19999"
     restart: always
+    init: true
     cap_add:
       - SYS_PTRACE
     security_opt:
