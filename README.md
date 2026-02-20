@@ -7,6 +7,7 @@ A collection of professional bash scripts for Ubuntu/Debian server management, a
 This repository contains two main toolsets:
 
 ### 1. [Server Baseline Setup](server-baseline/)
+
 **Purpose:** Fresh server installation and hardening automation
 
 A comprehensive script for setting up and securing new Ubuntu/Debian servers (including Raspberry Pi). Features interactive mode for existing servers and fresh-install mode for new deployments.
@@ -34,6 +35,7 @@ A comprehensive script for setting up and securing new Ubuntu/Debian servers (in
 - Dry-run mode for testing
 
 **Use Cases:**
+
 - Setting up new servers from scratch
 - Hardening existing servers
 - Standardizing server configurations
@@ -44,11 +46,13 @@ A comprehensive script for setting up and securing new Ubuntu/Debian servers (in
 ---
 
 ### 2. [Docker Container Updates](update-containers/)
+
 **Purpose:** Safe and automated Docker container updates
 
 A smart script for updating Docker containers managed by Docker Compose. Supports both manual (interactive) and automated (unattended) workflows.
 
 **Key Features:**
+
 - Interactive container selection
 - Automatic updates for all containers
 - System package updates (apt)
@@ -59,6 +63,7 @@ A smart script for updating Docker containers managed by Docker Compose. Support
 - Visual progress indicators
 
 **Use Cases:**
+
 - Regular container maintenance
 - Security updates automation
 - Selective container updates
@@ -69,17 +74,20 @@ A smart script for updating Docker containers managed by Docker Compose. Support
 ---
 
 ### 3. [Remote Folder Backup](backup-script/)
+
 **Purpose:** Pull folders from a remote server via rsync
 
 A backup script that syncs specified folders from a remote server to the local machine over a single SSH connection. Configurable via a simple `.env` file.
 
 **Key Features:**
+
 - Configurable folder list via `.env`
 - Single SSH connection (multiplexing)
 - Rsync with `--delete` for exact mirrors
 - Automatic backup directory naming (`backup-<hostname>`)
 
 **Use Cases:**
+
 - Scheduled remote server backups
 - Pulling Docker volumes and configs from production
 - Disaster recovery preparation
@@ -134,11 +142,13 @@ backup-folders
 ## 📋 Requirements
 
 ### System Requirements
+
 - **OS:** Ubuntu 20.04+ or Debian 11+ (including Raspberry Pi OS)
 - **Privileges:** Root/sudo access required
 - **Shell:** Bash 4.0+
 
 ### For Container Updates
+
 - Docker Engine installed
 - Docker Compose V2 (plugin)
 - Containers managed via `docker-compose.yml` files
@@ -238,18 +248,18 @@ sudo bash update-containers.sh --interactive
 
 ## 🔍 Features Comparison
 
-| Feature | Server Baseline | Container Updates |
-|---------|----------------|-------------------|
-| Fresh installation | ✅ | ❌ |
-| Interactive mode | ✅ | ✅ |
-| Unattended mode | ❌ | ✅ |
-| Dry-run mode | ✅ | ✅ |
-| Resume capability | ✅ | ❌ |
-| System updates | ✅ | ✅ |
-| Docker installation | ✅ | ❌ (requires existing) |
-| Container management | ❌ | ✅ |
-| Security hardening | ✅ | ❌ |
-| Logging | ✅ | ✅ |
+| Feature              | Server Baseline | Container Updates      |
+| -------------------- | --------------- | ---------------------- |
+| Fresh installation   | ✅              | ❌                     |
+| Interactive mode     | ✅              | ✅                     |
+| Unattended mode      | ❌              | ✅                     |
+| Dry-run mode         | ✅              | ✅                     |
+| Resume capability    | ✅              | ❌                     |
+| System updates       | ✅              | ✅                     |
+| Docker installation  | ✅              | ❌ (requires existing) |
+| Container management | ❌              | ✅                     |
+| Security hardening   | ✅              | ❌                     |
+| Logging              | ✅              | ✅                     |
 
 ---
 
@@ -265,6 +275,7 @@ Both scripts follow security best practices:
 - **Error handling:** Graceful failure with rollback support
 
 ### Security Features (Server Baseline)
+
 - SSH hardening (disable root login, password auth)
 - UFW firewall configuration
 - Fail2ban intrusion prevention
@@ -272,6 +283,7 @@ Both scripts follow security best practices:
 - HTTPS-only package downloads
 
 ### Security Features (Container Updates)
+
 - Only updates running containers
 - Preserves stopped container state
 - Rollback on failure
@@ -285,11 +297,13 @@ Both scripts follow security best practices:
 Both scripts provide detailed logging:
 
 ### Server Baseline
+
 - **Location:** `/var/log/server_install_[timestamp].log`
 - **State file:** `/var/lib/server-setup/installation.state`
 - **Backups:** `/var/backups/server-setup-backup-[timestamp]/`
 
 ### Container Updates
+
 - **Location:** `/var/log/docker-updates/update_[timestamp].log`
 - **Dry-run reports:** `/tmp/docker-update-dryrun-[timestamp].txt`
 
@@ -300,6 +314,7 @@ Both scripts provide detailed logging:
 ### Common Issues
 
 **"unable to execute ./script.sh: No such file or directory"**
+
 ```bash
 # This error occurs when scripts have Windows line endings (CRLF)
 # Fix with sed:
@@ -311,12 +326,14 @@ dos2unix ./script.sh
 ```
 
 **Script requires sudo**
+
 ```bash
 # Always run with sudo
 sudo bash script.sh --mode
 ```
 
 **Docker not found (Container Updates)**
+
 ```bash
 # Install Docker first using server baseline
 cd server-baseline
@@ -325,6 +342,7 @@ sudo bash install-script.sh --interactive
 ```
 
 **Permission denied errors**
+
 ```bash
 # Ensure scripts are executable
 chmod +x server-baseline/install-script.sh
@@ -332,6 +350,7 @@ chmod +x update-containers/update-containers.sh
 ```
 
 **Container not found error**
+
 ```bash
 # Container must be managed by docker-compose
 # Ensure docker-compose.yml exists in standard locations:
@@ -341,38 +360,19 @@ chmod +x update-containers/update-containers.sh
 ```
 
 For more specific troubleshooting, see individual README files:
+
 - [Server Baseline Troubleshooting](server-baseline/README.md#troubleshooting)
 - [Container Updates Troubleshooting](update-containers/README.md#troubleshooting)
 
 ---
 
-## 🤝 Contributing
-
-Contributions are welcome! Here's how:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Make your changes
-4. Test thoroughly (use `--dry-run` mode)
-5. Commit with clear messages (`git commit -m 'Add AmazingFeature'`)
-6. Push to your branch (`git push origin feature/AmazingFeature`)
-7. Open a Pull Request
-
-### Contribution Guidelines
-- Follow existing code style and patterns
-- Add comments for complex logic
-- Update documentation for new features
-- Test on Ubuntu/Debian before submitting
-- Include error handling
-- Use `set -e`, `set -u`, `set -o pipefail` for safety
-
----
 
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 **In short:**
+
 - ✅ Free to use, modify, and distribute
 - ✅ Use in commercial projects
 - ✅ Modify however you want
@@ -399,47 +399,24 @@ For enterprise or critical systems, consult a professional DevOps engineer.
 ## 📚 Additional Resources
 
 ### Documentation
-- [Server Baseline Setup - Full Guide](server-baseline/README.md)
+
+- [Server Baseline Setup](server-baseline/README.md)
+- [Backup script](backup-script/README.md)
 - [Docker Container Updates - Full Guide](update-containers/README.md)
 
 ### Useful Links
+
 - [Docker Documentation](https://docs.docker.com/)
 - [Docker Compose Documentation](https://docs.docker.com/compose/)
 - [Ubuntu Server Guide](https://ubuntu.com/server/docs)
-- [Debian Administrator's Handbook](https://www.debian.org/doc/manuals/debian-handbook/)
-
----
-
-## 💡 Support
-
-- **Issues:** [GitHub Issues](https://github.com/MadeByAdem/linux-server-management-scripts/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/MadeByAdem/linux-server-management-scripts/discussions)
-- **Documentation:** Individual README files in each directory
-
----
-
-## 🎯 Roadmap
-
-### Planned Features
-- [ ] Support for other init systems (systemd, OpenRC)
-- [ ] RPM-based distro support (CentOS, RHEL, Fedora)
-- [ ] Container backup before updates
-- [ ] Email notifications for automated updates
-- [ ] Web dashboard for management
-- [ ] Multi-server orchestration
-
-### Under Consideration
-- Docker Swarm/Kubernetes support
-- Automated SSL certificate management
-- Database backup integration
-- Monitoring and alerting
-- Configuration management (Ansible integration)
+- [Debian Administrator&#39;s Handbook](https://www.debian.org/doc/manuals/debian-handbook/)
 
 ---
 
 ## 🌟 Acknowledgments
 
 Built with focus on:
+
 - **Safety:** Extensive error handling and validation
 - **Usability:** Clear output with colors and symbols
 - **Reliability:** Tested on Ubuntu 20.04+, Debian 11+, Raspberry Pi OS

@@ -27,12 +27,12 @@ A comprehensive, user-friendly installation script for Ubuntu/Debian servers tha
 
 ## 🚀 Quickstart - Choose Your Scenario
 
-| Scenario | Best Mode | Estimated Time |
-|----------|-----------|----------------|
-| [New Ubuntu Server](#scenario-1-new-ubuntu-server) | `--fresh-install` | 15-30 min |
-| [Existing Ubuntu Server](#scenario-2-existing-ubuntu-server-in-use) | `--interactive` | 20-40 min |
-| [New Raspberry Pi](#scenario-3-new-raspberry-pi) | `--fresh-install` | 20-45 min |
-| [Existing Raspberry Pi](#scenario-4-existing-raspberry-pi-in-use) | `--section` | 15-30 min |
+| Scenario                                                         | Best Mode           | Estimated Time |
+| ---------------------------------------------------------------- | ------------------- | -------------- |
+| [New Ubuntu Server](#scenario-1-new-ubuntu-server)                  | `--fresh-install` | 15-30 min      |
+| [Existing Ubuntu Server](#scenario-2-existing-ubuntu-server-in-use) | `--interactive`   | 20-40 min      |
+| [New Raspberry Pi](#scenario-3-new-raspberry-pi)                    | `--fresh-install` | 20-45 min      |
+| [Existing Raspberry Pi](#scenario-4-existing-raspberry-pi-in-use)   | `--section`       | 15-30 min      |
 
 ---
 
@@ -41,6 +41,7 @@ A comprehensive, user-friendly installation script for Ubuntu/Debian servers tha
 **Situation:** Fresh Ubuntu VPS or dedicated server, no services installed yet.
 
 #### Prerequisites
+
 ```bash
 # On your LOCAL machine - set up SSH key access first
 ssh-keygen -t ed25519 -C "your@email.com"  # Skip if you already have a key
@@ -48,6 +49,7 @@ ssh-copy-id user@your-server-ip
 ```
 
 #### Step-by-Step
+
 ```bash
 # 1. Connect to your server
 ssh user@your-server-ip
@@ -69,11 +71,12 @@ sudo systemctl restart ssh
 ```
 
 #### Warnings for This Scenario
-| Warning | Details |
-|---------|---------|
-| ⚠️ SSH Keys Required | Script disables password login - ensure your key works first |
-| ⚠️ Keep Terminal Open | Don't close your SSH session until you've tested port 888 |
-| ⚠️ Reboot Needed | Some kernel changes require a reboot to take effect |
+
+| Warning                 | Details                                                      |
+| ----------------------- | ------------------------------------------------------------ |
+| ⚠️ SSH Keys Required  | Script disables password login - ensure your key works first |
+| ⚠️ Keep Terminal Open | Don't close your SSH session until you've tested port 888    |
+| ⚠️ Reboot Needed      | Some kernel changes require a reboot to take effect          |
 
 ---
 
@@ -82,12 +85,14 @@ sudo systemctl restart ssh
 **Situation:** Ubuntu server already running services (web server, databases, applications), but NO Docker containers.
 
 #### Prerequisites
+
 ```bash
 # Ensure you have SSH key access (password will be disabled)
 ssh-copy-id user@your-server-ip  # Skip if already done
 ```
 
 #### Step-by-Step
+
 ```bash
 # 1. Connect to your server
 ssh user@your-server-ip
@@ -112,14 +117,16 @@ ssh -p 888 user@your-server-ip
 ```
 
 #### Warnings for This Scenario
-| Warning | Details |
-|---------|---------|
-| ⚠️ UFW Firewall | When asked, add any custom ports your services use (e.g., 3000, 8080) |
-| ⚠️ Service Restarts | System updates may restart some services automatically |
-| ⚠️ SSH Keys Required | Ensure your key works before SSH hardening section |
-| ⚠️ Backup Created | Automatic backup at `/var/backups/server-setup-backup-*/` |
+
+| Warning                | Details                                                               |
+| ---------------------- | --------------------------------------------------------------------- |
+| ⚠️ UFW Firewall      | When asked, add any custom ports your services use (e.g., 3000, 8080) |
+| ⚠️ Service Restarts  | System updates may restart some services automatically                |
+| ⚠️ SSH Keys Required | Ensure your key works before SSH hardening section                    |
+| ⚠️ Backup Created    | Automatic backup at `/var/backups/server-setup-backup-*/`           |
 
 #### Services to Check After Installation
+
 ```bash
 # Verify your services are still running
 systemctl status nginx        # or apache2
@@ -134,6 +141,7 @@ systemctl status your-app
 **Situation:** Fresh Raspberry Pi OS installation, no services configured yet.
 
 #### Prerequisites
+
 ```bash
 # On your LOCAL machine - set up SSH key access
 ssh-keygen -t ed25519 -C "your@email.com"  # Skip if you already have a key
@@ -141,6 +149,7 @@ ssh-copy-id pi@raspberrypi.local           # or use IP address
 ```
 
 #### Step-by-Step
+
 ```bash
 # 1. Connect to your Pi
 ssh pi@raspberrypi.local
@@ -165,13 +174,14 @@ sudo reboot
 ```
 
 #### Warnings for This Scenario
-| Warning | Details |
-|---------|---------|
-| ⚠️ SSH Keys Required | Script disables password login |
-| ⚠️ USB Storage | Answer 'n' to USB blacklist - Pi may use USB storage |
-| 🚫 **AIDE Monitoring** | **NEVER install on Raspberry Pi** - see warning below |
-| ⚠️ Swap Size | Auto-configured for Pi's limited RAM |
-| ⚠️ Slower Installation | Pi is slower than VPS - be patient |
+
+| Warning                     | Details                                                     |
+| --------------------------- | ----------------------------------------------------------- |
+| ⚠️ SSH Keys Required      | Script disables password login                              |
+| ⚠️ USB Storage            | Answer 'n' to USB blacklist - Pi may use USB storage        |
+| 🚫**AIDE Monitoring** | **NEVER install on Raspberry Pi** - see warning below |
+| ⚠️ Swap Size              | Auto-configured for Pi's limited RAM                        |
+| ⚠️ Slower Installation    | Pi is slower than VPS - be patient                          |
 
 > ### 🚫 CRITICAL: AIDE on Raspberry Pi
 >
@@ -199,6 +209,7 @@ sudo reboot
 **Situation:** Raspberry Pi already running Docker containers, Home Assistant, Pi-hole, media servers, or other services that MUST NOT be interrupted.
 
 #### Prerequisites
+
 ```bash
 # Ensure SSH key access
 ssh-copy-id pi@raspberrypi.local  # Skip if already done
@@ -210,6 +221,7 @@ systemctl list-units --type=service --state=running
 ```
 
 #### Step-by-Step
+
 ```bash
 # 1. Connect to your Pi
 ssh pi@raspberrypi.local
@@ -246,15 +258,17 @@ sudo reboot
 ```
 
 #### Sections to AVOID
-| Section | Why Skip It |
-|---------|-------------|
-| **6 (docker)** | **WILL DESTROY ALL CONTAINERS AND DATA** |
-| **13 (ssh-hardening)** | Only if you're sure about SSH keys |
-| **14 (ufw-firewall)** | May block container ports - see below if needed |
-| **18 (systemd-hardening)** | Restarts Docker = brief container downtime |
-| **20-22 (containers)** | Only if you want these specific tools |
+
+| Section                          | Why Skip It                                     |
+| -------------------------------- | ----------------------------------------------- |
+| **6 (docker)**             | **WILL DESTROY ALL CONTAINERS AND DATA**  |
+| **13 (ssh-hardening)**     | Only if you're sure about SSH keys              |
+| **14 (ufw-firewall)**      | May block container ports - see below if needed |
+| **18 (systemd-hardening)** | Restarts Docker = brief container downtime      |
+| **20-22 (containers)**     | Only if you want these specific tools           |
 
 #### If You Want Firewall (Section 14)
+
 ```bash
 # If you choose to run UFW, do this AFTER:
 
@@ -274,6 +288,7 @@ docker ps
 ```
 
 #### If You Want SSH Hardening (Section 13)
+
 ```bash
 # BEFORE running section 13:
 
@@ -291,15 +306,17 @@ ssh -p 888 pi@raspberrypi.local
 ```
 
 #### Warnings for This Scenario
-| Warning | Details |
-|---------|---------|
-| 🚫 **NEVER Section 6** | Docker reinstall destroys ALL containers and volumes |
-| ⚠️ Container Ports | If using UFW, manually add all container ports |
-| ⚠️ Brief Restarts | Section 18 causes ~10 second container restart |
-| ⚠️ Test SSH First | Before section 13, verify your key works |
-| ✅ Backup Auto-Created | Rollback available at `/var/backups/server-setup-backup-*/` |
+
+| Warning                     | Details                                                       |
+| --------------------------- | ------------------------------------------------------------- |
+| 🚫**NEVER Section 6** | Docker reinstall destroys ALL containers and volumes          |
+| ⚠️ Container Ports        | If using UFW, manually add all container ports                |
+| ⚠️ Brief Restarts         | Section 18 causes ~10 second container restart                |
+| ⚠️ Test SSH First         | Before section 13, verify your key works                      |
+| ✅ Backup Auto-Created      | Rollback available at `/var/backups/server-setup-backup-*/` |
 
 #### Verify After Installation
+
 ```bash
 # Check all containers are still running
 docker ps
@@ -318,6 +335,7 @@ systemctl status docker
 **⚠️ IMPORTANT:** This script contains **no hardcoded credentials or private endpoints**. All tokens and sensitive configuration are provided interactively by you during setup.
 
 **🆕 NEW:** The script now supports three modes:
+
 - `--fresh-install`: Minimal prompts for fresh servers (original behavior)
 - `--interactive`: Safe mode for existing servers - asks permission for each component
 - `--dry-run`: Preview mode - shows what would be done without making changes
@@ -387,31 +405,31 @@ When running this script on a server with existing services (Docker containers, 
 
 ### Section Reference
 
-| # | Section | Risk Level | Safe for Running Services? | Notes |
-|---|---------|------------|---------------------------|-------|
-| 1 | system-update | Low | Yes | May restart some services automatically after updates |
-| 2 | hostname | Low | Yes | Only changes hostname, no service impact |
-| 3 | timezone | Low | Yes | Only affects log timestamps |
-| 4 | swap | Low | Yes | Only if no swap exists; won't modify existing swap |
-| 5 | dev-environment | Low | Yes | Installs Python, Node.js, Git - additive only |
-| 6 | docker | **HIGH** | **NO** | **Will STOP and REMOVE all containers!** Skip if you have running containers |
-| 7 | security-repository | Low | Yes | Only adds apt repositories |
-| 8 | password-hardening | Low | Yes | Only affects new password changes |
-| 9 | deprecated-cleanup | Low | Yes | Only removes unused legacy packages |
-| 10 | kernel-hardening | Medium | Yes | Requires reboot for full effect |
-| 11 | core-dump-disable | Low | Yes | No service impact |
-| 12 | umask-hardening | Low | Yes | Only affects new files |
-| 13 | ssh-hardening | **MEDIUM** | Yes* | *Ensure you have SSH keys configured first! Changes port to 888 |
-| 14 | ufw-firewall | **HIGH** | **Caution** | Choose "MERGE" mode to preserve existing rules. Add container ports! |
-| 15 | fail2ban | Low | Yes | Additive security, won't block existing connections |
-| 16 | lynis | Low | Yes | Security scanner only, no changes |
-| 17 | rkhunter | Low | Yes | Rootkit scanner only, no changes |
-| 18 | systemd-hardening | Medium | Yes* | *May restart Docker, SSH, Fail2ban services |
-| 19 | audit-logging | Low | Yes | Additive logging only |
-| 20 | netdata | Low | Yes | New container, won't affect existing ones |
-| 21 | portainer | Low | Yes | New container, won't affect existing ones |
-| 22 | cloudflare-tunnel | Low | Yes | New container, won't affect existing ones |
-| 23 | telegram | Low | Yes | Configuration only |
+| #  | Section             | Risk Level       | Safe for Running Services? | Notes                                                                              |
+| -- | ------------------- | ---------------- | -------------------------- | ---------------------------------------------------------------------------------- |
+| 1  | system-update       | Low              | Yes                        | May restart some services automatically after updates                              |
+| 2  | hostname            | Low              | Yes                        | Only changes hostname, no service impact                                           |
+| 3  | timezone            | Low              | Yes                        | Only affects log timestamps                                                        |
+| 4  | swap                | Low              | Yes                        | Only if no swap exists; won't modify existing swap                                 |
+| 5  | dev-environment     | Low              | Yes                        | Installs Python, Node.js, Git - additive only                                      |
+| 6  | docker              | **HIGH**   | **NO**               | **Will STOP and REMOVE all containers!** Skip if you have running containers |
+| 7  | security-repository | Low              | Yes                        | Only adds apt repositories                                                         |
+| 8  | password-hardening  | Low              | Yes                        | Only affects new password changes                                                  |
+| 9  | deprecated-cleanup  | Low              | Yes                        | Only removes unused legacy packages                                                |
+| 10 | kernel-hardening    | Medium           | Yes                        | Requires reboot for full effect                                                    |
+| 11 | core-dump-disable   | Low              | Yes                        | No service impact                                                                  |
+| 12 | umask-hardening     | Low              | Yes                        | Only affects new files                                                             |
+| 13 | ssh-hardening       | **MEDIUM** | Yes*                       | *Ensure you have SSH keys configured first! Changes port to 888                    |
+| 14 | ufw-firewall        | **HIGH**   | **Caution**          | Choose "MERGE" mode to preserve existing rules. Add container ports!               |
+| 15 | fail2ban            | Low              | Yes                        | Additive security, won't block existing connections                                |
+| 16 | lynis               | Low              | Yes                        | Security scanner only, no changes                                                  |
+| 17 | rkhunter            | Low              | Yes                        | Rootkit scanner only, no changes                                                   |
+| 18 | systemd-hardening   | Medium           | Yes*                       | *May restart Docker, SSH, Fail2ban services                                        |
+| 19 | audit-logging       | Low              | Yes                        | Additive logging only                                                              |
+| 20 | netdata             | Low              | Yes                        | New container, won't affect existing ones                                          |
+| 21 | portainer           | Low              | Yes                        | New container, won't affect existing ones                                          |
+| 22 | cloudflare-tunnel   | Low              | Yes                        | New container, won't affect existing ones                                          |
+| 23 | telegram            | Low              | Yes                        | Configuration only                                                                 |
 
 ### Recommended Sections for Existing Servers
 
@@ -439,12 +457,12 @@ sudo bash install-script.sh --section
 
 ### Sections to SKIP or Handle Carefully
 
-| Section | Action | Reason |
-|---------|--------|--------|
-| **6 (docker)** | **SKIP** | Will destroy all existing containers and data |
-| **13 (ssh-hardening)** | Careful | Only run if you have SSH keys. Keep old terminal open! |
-| **14 (ufw-firewall)** | Careful | Choose MERGE mode. Manually add ports your containers need |
-| **18 (systemd-hardening)** | Careful | Will restart Docker service (brief container restart) |
+| Section                          | Action         | Reason                                                     |
+| -------------------------------- | -------------- | ---------------------------------------------------------- |
+| **6 (docker)**             | **SKIP** | Will destroy all existing containers and data              |
+| **13 (ssh-hardening)**     | Careful        | Only run if you have SSH keys. Keep old terminal open!     |
+| **14 (ufw-firewall)**      | Careful        | Choose MERGE mode. Manually add ports your containers need |
+| **18 (systemd-hardening)** | Careful        | Will restart Docker service (brief container restart)      |
 
 ### UFW Firewall - Adding Container Ports
 
@@ -489,28 +507,33 @@ sudo ufw status numbered
 ### Essential Packages
 
 **Basic Tools:**
+
 - `curl` & `wget` - Download tools for files and scripts
 - `git` - Version control system for code
 - `net-tools` - Network configuration tools (ifconfig, netstat, etc.)
 
 **Monitoring Tools:**
+
 - `htop` - Interactive process viewer (better than top)
 - `atop` - Advanced system monitor with historical logging
 - `iotop` - Disk I/O monitoring per process
 - `nethogs` - Network traffic monitoring per process
 
 **Disk Health Tools:**
+
 - `smartmontools` - Disk health monitoring via S.M.A.R.T. data (detects failing drives early)
 - `nvme-cli` - NVMe SSD diagnostics and health monitoring (essential for NVMe drives including Raspberry Pi 5 with NVMe HAT)
 
 ### Development Environments
 
 **Python 3 (system repository version)**
+
 - Installation: Python 3.x with pip and venv (version depends on your Ubuntu/Debian release)
 - Why: Most popular programming language for automation, web development, data science
 - Usage: Run scripts, build web apps with Django/Flask
 
 **Node.js LTS (Long Term Support)**
+
 - Installation: Node.js with npm package manager
 - Why: JavaScript runtime for server-side applications
 - Usage: Build web apps with Express, React, Next.js, APIs
@@ -518,6 +541,7 @@ sudo ufw status numbered
 ### Docker Platform
 
 **Docker Engine & Docker Compose**
+
 - Installation: Docker CE, Docker CLI, Containerd, BuildX, Compose plugin
 - Why: Containers make it possible to isolate and easily deploy applications
 - Usage: Run apps in isolated environments, easy scaling
@@ -525,6 +549,7 @@ sudo ufw status numbered
 - **Note:** Container images use `:latest` or `:lts` tags by default. For production, consider pinning specific versions in docker-compose files
 
 **Benefits of Docker:**
+
 - Each application runs in its own container (no conflicts)
 - Easy app installation with one command
 - Simple backups
@@ -555,6 +580,7 @@ sudo ufw status numbered
 ### Security
 
 **Firewall (UFW - Uncomplicated Firewall)**
+
 - Default: All incoming connections blocked except:
   - Port 22 (SSH - temporary, for migration)
   - Port 888 (SSH - new secure port)
@@ -565,11 +591,13 @@ sudo ufw status numbered
 - Why: Prevents unwanted access to your server
 
 **Fail2ban**
+
 - Blocks IP addresses after too many failed login attempts
 - Default: 3 failed SSH attempts = 2 hour ban
 - Why: Protects against brute-force attacks
 
 **SSH Hardening**
+
 - Moves SSH from port 22 to 888 (fewer automated scans)
 - Disables password login (SSH keys only)
 - Disables root login with password
@@ -583,6 +611,7 @@ sudo ufw status numbered
 - Why: SSH is the gateway to your server, must be optimally secured
 
 **Kernel Hardening (Enhanced in current with Docker/Container Compatibility)**
+
 - **IP source routing disabled** on all interfaces (prevents spoofing attacks)
 - **Martian packet logging enabled** (logs suspicious network packets)
 - **Kernel debug keys disabled** (kernel.sysrq=0 for security)
@@ -622,6 +651,7 @@ sudo ufw status numbered
 - Why: Defense in depth, compliance requirements (Lynis AUTH-9286) - even though SSH keys are primary auth method
 
 **Advanced Package Security**
+
 - **apt-listchanges**: Review security changes before package upgrades
 - **debsums**: Verify integrity of installed packages with MD5 checksums
   - Monthly automated verification via cron job
@@ -635,12 +665,14 @@ sudo ufw status numbered
 - Why: Prevent compromised packages, maintain system integrity, reduce attack surface (Lynis DEB-0810)
 
 **Automatic Updates**
+
 - Initial full system upgrade during installation (`apt-get upgrade`)
 - Daily automatic security updates via `unattended-upgrades` after installation
 - Automatic download and installation of security patches
 - Why: Always stays up-to-date with latest security fixes
 
 **Audit Logging (auditd + acct)**
+
 - Monitors all changes to SSH configuration
 - Logs all root commands
 - Tracks who does what on the server
@@ -688,23 +720,25 @@ sudo ufw status numbered
 **Systemd Service Hardening (Maximum Compatibility):**
 
 - **SSH Service (VSCode/Lynis/Rkhunter Compatible):**
+
   - ❌ PrivateTmp: DISABLED to allow manual Lynis/Rkhunter execution via SSH
   - ❌ ProtectSystem=off: DISABLED because `apt install` requires write access to system directories (ProtectSystem=full is too restrictive)
   - ❌ ProtectHome: DISABLED for VSCode Remote SSH and Docker volume mount compatibility
   - ❌ NoNewPrivileges: DISABLED for VSCode server processes
   - ReadWritePaths: `/etc/ufw /tmp /var/tmp /etc/systemd/system /etc/docker`
-
 - **Docker Service:**
-  - NoNewPrivileges only (minimal hardening to maintain functionality)
 
+  - NoNewPrivileges only (minimal hardening to maintain functionality)
 - **Fail2ban Service (Full Hardening):**
+
   - PrivateTmp + ProtectSystem + ProtectHome + NoNewPrivileges
   - ReadWritePaths: `/var/run/fail2ban /var/lib/fail2ban /var/log /var/spool/postfix/maildrop /etc/ufw`
-
 - **Cron Service:**
+
   - PrivateTmp + ProtectSystem + NoNewPrivileges
 
 **Why PrivateTmp/ProtectHome/ProtectSystem are disabled for SSH:**
+
 - PrivateTmp blocks manual Lynis/Rkhunter scans (need access to system `/tmp`)
 - ProtectSystem=full is too restrictive for `apt install` operations via SSH
 - VSCode Remote SSH needs write access to `~/.vscode-server/`
@@ -712,6 +746,7 @@ sudo ufw status numbered
 - This configuration works out-of-the-box for development/staging servers
 
 **Security Note:** Even without PrivateTmp/ProtectHome/ProtectSystem/NoNewPrivileges on SSH, you still have:
+
 - ✅ SSH key authentication only (no passwords)
 - ✅ Port 888 instead of 22 (reduced bot attacks)
 - ✅ UFW firewall + Fail2ban protection
@@ -760,11 +795,13 @@ sudo ufw status numbered
 **Optional Security Scans:**
 
 **Rkhunter (Rootkit Hunter)**
+
 - Scans daily at 03:00 for rootkits, backdoors, and exploits
 - Sends Telegram alert on suspicious findings
 - Why: Detects malicious software trying to hide
 
 **Lynis (Security Auditing)**
+
 - Monthly comprehensive security audit (200+ checks)
 - Provides hardening score and improvement points
 - Sends monthly report via Telegram
@@ -773,6 +810,7 @@ sudo ufw status numbered
 ### Monitoring
 
 **Netdata (Optional)**
+
 - Real-time monitoring dashboard
 - Metrics: CPU, RAM, disk, network, containers
 - **Systemd journal log monitoring** - Full access to host system logs
@@ -784,6 +822,7 @@ sudo ufw status numbered
 ### Container Management
 
 **Portainer**
+
 - Graphical interface for Docker management
 - No Docker commands needed - everything via web interface
 - Start/stop containers, view logs, open shell
@@ -793,6 +832,7 @@ sudo ufw status numbered
 ### Cloudflare Tunnel (Optional)
 
 **Cloudflared**
+
 - Secure tunnel to your server without opening ports on your router
 - Access your server remotely via your own domain name
 - Free Cloudflare DNS + DDoS protection
@@ -808,12 +848,14 @@ sudo ufw status numbered
 Servers on the internet are **attacked within minutes** by automated bots. This script secures your server **before** it becomes vulnerable.
 
 **Without this script:**
+
 - Default SSH on port 22 = hundreds of brute-force attempts per day
 - No firewall = all ports open to everyone
 - Manual updates = missed security patches
 - No monitoring = only notice problems when it's too late
 
 **With this script:**
+
 - SSH on custom port with rate limiting
 - Firewall blocks everything except what's needed
 - Automatic security updates
@@ -822,6 +864,7 @@ Servers on the internet are **attacked within minutes** by automated bots. This 
 ### Developer Friendly
 
 Everything you need to start developing immediately:
+
 - **Python**: Scripts, automation, AI/ML, web apps
 - **Node.js**: JavaScript backends, APIs, real-time apps
 - **Docker**: Databases, services, everything in containers
@@ -830,6 +873,7 @@ Everything you need to start developing immediately:
 ### Production Ready
 
 Configurations are optimized for production use:
+
 - **Swap**: Smartly calculated based on available RAM
 - **Logging**: Automatic rotation, limited disk usage
 - **Docker**: Resource limits, automatic restart
@@ -842,12 +886,14 @@ Configurations are optimized for production use:
 ### Multi-layer Security Approach
 
 **1. Network Layer (Firewall)**
+
 - UFW with deny-by-default policy
 - Only essential ports open
 - Rate limiting on SSH
 - **IPv6 disabled by default** to reduce attack surface (can be re-enabled if needed)
 
 **2. Access Layer (SSH)**
+
 - Key-based authentication (no passwords)
 - Custom port (888 instead of 22)
 - Fail2ban against brute-force
@@ -855,17 +901,20 @@ Configurations are optimized for production use:
 - **IPv6 disabled for SSH** (AddressFamily inet) - can be adjusted if IPv6 is required
 
 **3. System Layer (Kernel)**
+
 - IP spoofing protection
 - SYN flood protection
 - TCP hardening
 - ICMP redirect blocking
 
 **4. Application Layer (Docker)**
+
 - Containers run isolated
 - Log rotation prevents disk full
 - Auto-restart on crashes
 
 **5. Monitoring Layer**
+
 - Real-time monitoring (Netdata)
 - Security scans (Rkhunter, Lynis)
 - Audit logging (auditd)
@@ -887,16 +936,19 @@ Configurations are optimized for production use:
 ### Server Requirements
 
 **Operating System:**
+
 - Ubuntu 20.04 LTS or newer
 - Debian 11 (Bullseye) or newer
 - Raspbian (Raspberry Pi OS)
 
 **Minimum Hardware:**
+
 - 1 GB RAM (2 GB recommended)
 - 10 GB free disk space (20 GB recommended)
 - Internet connection
 
 **Recommended Hardware:**
+
 - 2+ GB RAM for Docker workloads
 - 20+ GB disk space for containers and logs
 - SSD for better performance
@@ -911,6 +963,7 @@ Configurations are optimized for production use:
 ### Access Requirements
 
 **SSH Access:**
+
 - SSH key pair (VERY IMPORTANT - see warnings)
 - Root or sudo privileges
 - Terminal access (PuTTY on Windows, Terminal on Mac/Linux)
@@ -918,6 +971,7 @@ Configurations are optimized for production use:
 **How to Create an SSH Key:**
 
 **On Windows (PowerShell):**
+
 ```powershell
 ssh-keygen -t ed25519 -C "your@email.com"
 # Copy your key to the server:
@@ -925,6 +979,7 @@ type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh user@server "cat >> ~/.ssh/autho
 ```
 
 **On Mac/Linux:**
+
 ```bash
 ssh-keygen -t ed25519 -C "your@email.com"
 # Copy your key to the server:
@@ -935,16 +990,16 @@ ssh-copy-id user@server
 
 ## Supported Platforms
 
-| Platform | Version | Status | Notes |
-|----------|---------|--------|-------|
-| Ubuntu | 20.04 LTS | ✅ Fully supported | Recommended |
-| Ubuntu | 22.04 LTS | ✅ Fully supported | Recommended |
-| Ubuntu | 24.04 LTS | ✅ Fully supported | Latest |
-| Debian | 11 (Bullseye) | ✅ Fully supported | |
-| Debian | 12 (Bookworm) | ✅ Fully supported | |
-| Raspbian | 11+ | ✅ Fully supported | Raspberry Pi |
-| Ubuntu | < 20.04 | ⚠️ May not work | Not tested |
-| CentOS/RHEL | All | ❌ Not supported | Uses yum instead of apt |
+| Platform    | Version       | Status             | Notes                   |
+| ----------- | ------------- | ------------------ | ----------------------- |
+| Ubuntu      | 20.04 LTS     | ✅ Fully supported | Recommended             |
+| Ubuntu      | 22.04 LTS     | ✅ Fully supported | Recommended             |
+| Ubuntu      | 24.04 LTS     | ✅ Fully supported | Latest                  |
+| Debian      | 11 (Bullseye) | ✅ Fully supported |                         |
+| Debian      | 12 (Bookworm) | ✅ Fully supported |                         |
+| Raspbian    | 11+           | ✅ Fully supported | Raspberry Pi            |
+| Ubuntu      | < 20.04       | ⚠️ May not work  | Not tested              |
+| CentOS/RHEL | All           | ❌ Not supported   | Uses yum instead of apt |
 
 ---
 
@@ -957,16 +1012,19 @@ ssh-copy-id user@server
 This script modifies your SSH configuration. **If you do this wrong, you can lock yourself out of your server!**
 
 **Required BEFORE running the script:**
+
 1. Make sure you have an SSH key
 2. Test your SSH key: `ssh -i ~/.ssh/id_ed25519 user@server`
 3. Make sure your key is in `~/.ssh/authorized_keys` on the server
 
 **The script does the following:**
+
 1. Disables password login
 2. Moves SSH from port 22 to 888
 3. Temporarily keeps both ports active for safe migration
 
 **Safe workflow:**
+
 1. Script runs, SSH now listens on BOTH port 22 and 888
 2. Test new port: `ssh -p 888 user@server`
 3. If it works, manually close port 22:
@@ -976,6 +1034,7 @@ This script modifies your SSH configuration. **If you do this wrong, you can loc
    ```
 
 **If you lock yourself out:**
+
 - For VPS providers: Use rescue console / VNC
 - For physical server: Physical access needed
 - For cloud providers: Restore server snapshot
@@ -985,11 +1044,13 @@ This script modifies your SSH configuration. **If you do this wrong, you can loc
 The script configures UFW firewall. This can overwrite existing firewall rules.
 
 **If you already have a firewall:**
+
 - First make a backup of your rules
 - Note which ports you want to keep open
 - Add them during the script (interactive prompt) or manually afterwards
 
 **Open ports after installation:**
+
 ```bash
 sudo ufw allow 3000/tcp comment 'Custom app'
 sudo ufw reload
@@ -1000,11 +1061,13 @@ sudo ufw reload
 The script installs Docker and adds your user to the docker group.
 
 **Important implications:**
+
 - You must log out and log back in for docker without sudo
 - Docker containers run with root privileges
 - Containers can have access to your entire system if you give them wrong permissions
 
 **Security best practices:**
+
 - Only run trusted containers
 - Always use specific version tags (not `latest`)
 - Limit resources (CPU/memory) for containers
@@ -1012,12 +1075,14 @@ The script installs Docker and adds your user to the docker group.
 ### ⚠️ Production vs Development
 
 **This script is suitable for:**
+
 - Development servers
 - Personal projects
 - Small production environments (< 100 users)
 - Home servers
 
 **For large production environments you need extra:**
+
 - Load balancing
 - High availability setup
 - Dedicated database servers
@@ -1030,11 +1095,13 @@ The script installs Docker and adds your user to the docker group.
 Automatic security updates are convenient but can rarely cause problems.
 
 **Risks:**
+
 - Updates can restart services
 - Kernel updates require reboot
 - Breaking changes (very rare for security updates)
 
 **Mitigation:**
+
 - Script only installs security updates (not all updates)
 - Make regular backups
 - Monitor your server after updates
@@ -1046,12 +1113,14 @@ Automatic security updates are convenient but can rarely cause problems.
 ### Step 1: Download the Script
 
 **Option A: With Git (recommended)**
+
 ```bash
 git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
 cd linux-server-management-scripts/server-baseline
 ```
 
 **Option B: Direct Download**
+
 ```bash
 wget https://github.com/MadeByAdem/server_baseline/archive/main.zip
 unzip main.zip
@@ -1059,6 +1128,7 @@ cd server_baseline-main
 ```
 
 **Option C: Copy and Paste**
+
 ```bash
 # Create a file
 nano install-script.sh
@@ -1073,12 +1143,14 @@ chmod +x install-script.sh
 ### Step 2: Check Your SSH Key
 
 **Test if your key works:**
+
 ```bash
 ssh user@your-server-ip
 # If you can login WITHOUT a password, your key works!
 ```
 
 **If you need to enter a password, set up your key first:**
+
 ```bash
 # On your local computer:
 ssh-copy-id user@your-server-ip
@@ -1095,55 +1167,67 @@ sudo bash install-script.sh
 The script asks interactive questions. Here's an overview:
 
 **Previous installation found? (if applicable)**
+
 - Choice: Resume / Start fresh / Exit
 - Recommended: Resume (skips completed steps)
 
 **Extra firewall ports?**
+
 - Enter port number or 'n' to skip
 - Example: If your app runs on port 3000, enter '3000'
 
 **SSH hardening?**
+
 - Recommended: `y` (yes)
 - Only `n` if you know what you're doing
 
 **Disable IPv6?**
+
 - Recommended: `y` (yes) - Reduces attack surface
 - Choose `n` if your environment requires IPv6
 - This affects both SSH and firewall configuration
 
 **Trusted IP for SSH whitelist?**
+
 - Optional: Your home/office IP address
 - Benefit: No rate limiting for this IP
 - Find your IP: https://icanhazip.com
 
 **Install security scanning tools?**
+
 - Rkhunter: Recommended `y` for production servers
 - Lynis: Recommended `y` for all servers
 
 **Configure Telegram alerts?**
+
 - Optional but useful for monitoring
 - You need: Bot Token + Chat ID
 - Steps are explained in the script
 
 **Cloudflare Tunnel?**
+
 - Only `y` if you have a Cloudflare account and want a tunnel
 - You need: Tunnel Token
 - Otherwise: `n` to skip
 
 **Netdata monitoring?**
+
 - Recommended: `y` (very useful for monitoring)
 - Uses ~200MB RAM
 
 **Portainer Agent port?**
+
 - Only `y` if you want remote Portainer management
 - Most users: `n`
 
 **Start Docker containers?**
+
 - Cloudflare: `y` if you entered a token
 - Portainer: Recommended `y`
 - Netdata: Recommended `y`
 
 **Reboot after completion?**
+
 - Recommended: `y` to apply all changes
 
 ### Step 5: Test SSH on New Port
@@ -1151,11 +1235,13 @@ The script asks interactive questions. Here's an overview:
 **IMPORTANT: Do this BEFORE disconnecting!**
 
 **Open a NEW terminal (keep old one open!):**
+
 ```bash
 ssh -p 888 user@your-server-ip
 ```
 
 **If it works:**
+
 ```bash
 # In the new SSH session on port 888:
 sudo sed -i '/^Port 22$/d' /etc/ssh/sshd_config
@@ -1163,17 +1249,20 @@ sudo systemctl restart ssh
 ```
 
 **Test again:**
+
 ```bash
 ssh -p 888 user@your-server-ip
 # Should still work
 ```
 
 **From now on always use -p 888:**
+
 ```bash
 ssh -p 888 user@server
 ```
 
 **Tip: Create an SSH config for easy access:**
+
 ```bash
 # On your local computer:
 nano ~/.ssh/config
@@ -1210,6 +1299,7 @@ sudo bash install-script.sh
 **State is saved in:** `/var/lib/server-setup/installation.state`
 
 **Resume capability covers:**
+
 - System updates and package installation
 - Docker installation
 - SSH hardening configuration
@@ -1218,6 +1308,7 @@ sudo bash install-script.sh
 **Note:** Other sections (Fail2ban, security scans, containers) may re-execute if the script is interrupted during those phases. This is safe as they are idempotent where possible.
 
 **To start from scratch:**
+
 ```bash
 sudo rm -f /var/lib/server-setup/installation.state
 sudo bash install-script.sh
@@ -1226,6 +1317,7 @@ sudo bash install-script.sh
 ### Manual Installations After Script
 
 **Extra firewall ports:**
+
 ```bash
 # Add port
 sudo ufw allow 3000/tcp comment 'My App'
@@ -1236,6 +1328,7 @@ sudo ufw status verbose
 ```
 
 **Install security scanning tools later:**
+
 ```bash
 # Rkhunter
 sudo apt-get install -y rkhunter
@@ -1251,6 +1344,7 @@ sudo lynis audit system
 ```
 
 **Configure Cloudflare Tunnel later:**
+
 ```bash
 cd ~/docker/cloudflare
 nano .env
@@ -1265,16 +1359,19 @@ docker compose up -d
 ### First Steps
 
 **1. Restart the server (if not already done)**
+
 ```bash
 sudo reboot
 ```
 
 **2. Log back in with new SSH port**
+
 ```bash
 ssh -p 888 user@server
 ```
 
 **3. Check Docker**
+
 ```bash
 # Should work without sudo:
 docker ps
@@ -1283,17 +1380,20 @@ docker ps
 ```
 
 **4. Access Portainer**
+
 ```
 Open browser: https://your-server-ip:9443
 ```
 
 **First time:**
+
 - Create admin account
 - Choose password (min. 12 characters)
 - Select "Local" environment
 - Click "Connect"
 
 **5. Access Netdata (if installed)**
+
 ```
 Open browser: http://your-server-ip:19999
 ```
@@ -1301,6 +1401,7 @@ Open browser: http://your-server-ip:19999
 ### Check Server Status
 
 **Running containers:**
+
 ```bash
 docker ps
 
@@ -1309,11 +1410,13 @@ docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 ```
 
 **Firewall status:**
+
 ```bash
 sudo ufw status verbose
 ```
 
 **Fail2ban status:**
+
 ```bash
 # SSH jail status
 sudo fail2ban-client status sshd
@@ -1323,6 +1426,7 @@ sudo fail2ban-client status sshd | grep "Banned IP"
 ```
 
 **System resources:**
+
 ```bash
 # Interactive monitoring
 htop
@@ -1340,6 +1444,7 @@ sudo nethogs
 ```
 
 **View audit logs:**
+
 ```bash
 # SSH config changes
 sudo ausearch -k sshd_config_changes
@@ -1356,6 +1461,7 @@ sudo ausearch -k auth_log_changes
 **If you installed Cloudflare Tunnel:**
 
 **1. Go to Cloudflare Dashboard**
+
 ```
 https://one.dash.cloudflare.com/
 ```
@@ -1367,6 +1473,7 @@ https://one.dash.cloudflare.com/
 **4. Add Public Hostname**
 
 **For Portainer:**
+
 - Subdomain: `portainer`
 - Domain: `your-domain.com`
 - Service Type: `HTTPS`
@@ -1374,12 +1481,14 @@ https://one.dash.cloudflare.com/
 - No TLS Verify: `ON` (important!)
 
 **For Netdata:**
+
 - Subdomain: `netdata`
 - Domain: `your-domain.com`
 - Service Type: `HTTP`
 - URL: `http://your-server-ip:19999`
 
 **Now accessible via:**
+
 - Portainer: `https://portainer.your-domain.com`
 - Netdata: `https://netdata.your-domain.com`
 
@@ -1387,6 +1496,7 @@ https://one.dash.cloudflare.com/
 
 **1. Re-enable IPv6 if needed**
 If your environment requires IPv6:
+
 ```bash
 # Re-enable IPv6 in UFW
 sudo nano /etc/default/ufw
@@ -1402,6 +1512,7 @@ sudo ufw reload
 ```
 
 **2. Change default port numbers (optional extra security)**
+
 ```bash
 # Change SSH from 888 to a random port
 sudo nano /etc/ssh/sshd_config
@@ -1420,6 +1531,7 @@ sudo systemctl restart fail2ban
 ```
 
 **3. Configure automatic backups**
+
 ```bash
 # Create backup script
 nano ~/scripts/backup.sh
@@ -1461,11 +1573,13 @@ crontab -e
 **4. Monitoring and alerts**
 
 If you configured Telegram, you'll automatically receive:
+
 - Rkhunter: Daily at 03:00 (only on warnings)
 - Lynis: Monthly on the 1st at 04:00
 - Netdata: Real-time on problems (high CPU, disk full, etc.)
 
 **Run manually:**
+
 ```bash
 # Rkhunter scan now
 sudo rkhunter --check --skip-keypress
@@ -1477,6 +1591,7 @@ sudo lynis audit system
 **5. Regular update checks**
 
 Script installs automatic *security* updates. For all updates:
+
 ```bash
 # Manual update cycle
 sudo apt-get update
@@ -1515,6 +1630,7 @@ A: No! Everything the script installs is free and open source. Cloudflare Tunnel
 
 **Q: How much disk space does it use?**
 A: (Approximate estimates - actual usage may vary based on your system)
+
 - Script itself: ~5 GB (Docker, packages, etc.)
 - Containers: ~500 MB (Portainer + Netdata + Cloudflare)
 - Logs: ~500 MB (with automatic rotation)
@@ -1522,6 +1638,7 @@ A: (Approximate estimates - actual usage may vary based on your system)
 
 **Q: How much RAM does it use?**
 A: (Approximate estimates - actual usage may vary)
+
 - Base system: ~300 MB
 - Docker: ~100 MB
 - Portainer: ~50 MB
@@ -1532,10 +1649,12 @@ A: (Approximate estimates - actual usage may vary)
 
 **Q: I locked myself out, what now?**
 A:
+
 1. For VPS: Use VNC/Console in your provider dashboard
 2. For physical server: Connect monitor and keyboard
 3. For cloud: Restore last snapshot
 4. Login locally and reset SSH:
+
 ```bash
 sudo nano /etc/ssh/sshd_config
 # Add: PasswordAuthentication yes
@@ -1545,6 +1664,7 @@ sudo systemctl restart ssh
 
 **Q: Can I keep port 22 open?**
 A: Yes, but not recommended. If you still want to:
+
 ```bash
 # Add port 22 to firewall
 sudo ufw allow 22/tcp comment 'SSH legacy'
@@ -1555,6 +1675,7 @@ sudo ufw allow 22/tcp comment 'SSH legacy'
 
 **Q: How do I change the SSH port later?**
 A:
+
 ```bash
 # 1. Change config
 sudo nano /etc/ssh/sshd_config
@@ -1581,6 +1702,7 @@ sudo ufw delete allow 888/tcp
 
 **Q: Why can't I run docker commands without sudo?**
 A: You must log out and log back in after installation. The script adds you to the docker group, but that only becomes active after logging in again.
+
 ```bash
 # Force new session:
 newgrp docker
@@ -1589,6 +1711,7 @@ newgrp docker
 
 **Q: How do I stop containers?**
 A:
+
 ```bash
 # Via command line:
 cd ~/docker/portainer
@@ -1599,6 +1722,7 @@ docker compose down
 
 **Q: How do I update containers?**
 A:
+
 ```bash
 cd ~/docker/container-name
 docker compose pull
@@ -1611,6 +1735,7 @@ docker compose pull && docker compose up -d
 
 **Q: How do I remove unused containers/images?**
 A:
+
 ```bash
 # Remove stopped containers
 docker container prune
@@ -1627,6 +1752,7 @@ docker system prune -a --volumes
 
 **Q: Containers don't start after reboot**
 A: Check the restart policy:
+
 ```bash
 docker ps -a
 # Look at the RESTART column
@@ -1643,6 +1769,7 @@ docker compose up -d
 
 **Q: How do I see which IPs are blocked by Fail2ban?**
 A:
+
 ```bash
 # SSH jail status
 sudo fail2ban-client status sshd
@@ -1653,6 +1780,7 @@ sudo fail2ban-client set sshd unbanip 1.2.3.4
 
 **Q: How do I add extra IPs to the SSH whitelist?**
 A:
+
 ```bash
 # Add IP with SSH whitelist bypass
 sudo ufw insert 1 allow from 1.2.3.4 to any port 888 comment 'SSH whitelist - extra IP'
@@ -1661,6 +1789,7 @@ sudo ufw reload
 
 **Q: Are my passwords stored securely?**
 A: The script doesn't store passwords. Only tokens are stored:
+
 - **Cloudflare token**: `~/docker/cloudflare/.env` (chmod 600, user-owned) ✅ Secure
 - **Telegram credentials for security scans**: `/usr/local/bin/*-telegram.sh` (chmod 700, root-owned) ✅ Secure (root-only access)
 - **Telegram credentials for Netdata**: Stored in Docker environment variables (container-level isolation) ✅ Secure
@@ -1675,6 +1804,7 @@ All Telegram tokens are properly secured with restricted permissions. The securi
 - AIDE: Daily at 05:00 (sends alert on file changes, status if no changes)
 
 Check cron:
+
 ```bash
 sudo cat /etc/cron.d/security-scans
 ```
@@ -1683,6 +1813,7 @@ sudo cat /etc/cron.d/security-scans
 
 **Q: Netdata uses too much RAM**
 A: Netdata can be optimized:
+
 ```bash
 # Edit config
 docker exec -it netdata nano /etc/netdata/netdata.conf
@@ -1698,11 +1829,13 @@ docker restart netdata
 
 **Q: How do I get Telegram alerts working?**
 A:
+
 1. Create bot via @BotFather on Telegram
 2. Copy bot token (e.g.: `123456:ABCdef...`)
 3. Start chat with your bot (send /start)
 4. Get your chat ID via @userinfobot (e.g.: `987654321`)
 5. Test configuration:
+
 ```bash
 # If Netdata is running:
 docker exec netdata /usr/libexec/netdata/plugins.d/alarm-notify.sh test
@@ -1713,6 +1846,7 @@ sudo /usr/local/bin/rkhunter-telegram.sh
 
 **Q: Portainer web interface not accessible**
 A:
+
 ```bash
 # Check if container is running
 docker ps | grep portainer
@@ -1731,6 +1865,7 @@ sudo ufw status | grep 9443
 
 **Q: How do I get a Cloudflare Tunnel token?**
 A:
+
 1. Go to https://one.dash.cloudflare.com/
 2. Click "Networks" > "Tunnels"
 3. Click "Create a tunnel"
@@ -1741,6 +1876,7 @@ A:
 
 **Q: My tunnel doesn't work**
 A:
+
 ```bash
 # Check container logs
 docker logs cloudflared
@@ -1756,6 +1892,7 @@ docker compose -f ~/docker/cloudflare/docker-compose.yaml logs -f
 
 **Q: Can I use Cloudflare Tunnel without a domain name?**
 A: No, you need a domain name that runs through Cloudflare. Free alternatives:
+
 - Freenom (.tk, .ml, .ga domains - free)
 - DuckDNS (free subdomain)
 - Cloudflare Pages (free subdomain)
@@ -1764,6 +1901,7 @@ A: No, you need a domain name that runs through Cloudflare. Free alternatives:
 
 **Q: How do I update the system?**
 A: Security updates go automatically. For all updates:
+
 ```bash
 sudo apt-get update
 sudo apt-get upgrade -y
@@ -1775,6 +1913,7 @@ update
 
 **Q: How often should I reboot?**
 A:
+
 - After kernel updates (you'll get notification on login)
 - Monthly for general maintenance
 - On strange problems (RAM leaks, etc.)
@@ -1792,6 +1931,7 @@ sudo shutdown -c
 
 **Q: How do I see what was updated?**
 A:
+
 ```bash
 # Recently installed packages
 grep " install " /var/log/dpkg.log | tail -20
@@ -1811,6 +1951,7 @@ sudo cat /var/log/unattended-upgrades/unattended-upgrades.log
 **Cause:** The script has Windows-style line endings (CRLF) instead of Unix line endings (LF). This happens when the file was edited or transferred from a Windows system.
 
 **Solution:**
+
 ```bash
 # Fix line endings with sed
 sed -i 's/\r$//' ./install-script.sh
@@ -1831,6 +1972,7 @@ dos2unix ./install-script.sh
 **Cause:** SSH systemd hardening with `PrivateTmp=yes` isolates `/tmp` without proper ReadWritePaths.
 
 **Solution:**
+
 ```bash
 # Edit SSH hardening config
 sudo nano /etc/systemd/system/ssh.service.d/hardening.conf
@@ -1852,6 +1994,7 @@ exit
 **Cause:** IP forwarding disabled by kernel hardening, blocking QUIC protocol.
 
 **Solution:**
+
 ```bash
 # Check current IP forwarding status
 sysctl net.ipv4.conf.all.forwarding
@@ -1915,6 +2058,7 @@ sudo systemctl restart ssh
 ```
 
 **Why this works:**
+
 - VSCode needs to write to `~/.vscode-server/` - works without ProtectHome
 - Docker needs access to volume mounts from `/home/` - works without ProtectHome
 - You still have strong security from other hardening layers
@@ -1926,6 +2070,7 @@ sudo systemctl restart ssh
 **V4.0 Already Includes Common /etc Paths:**
 
 The current script includes these essential `/etc` directories in ReadWritePaths:
+
 - ✅ `/etc/ufw` - UFW firewall configuration
 - ✅ `/etc/systemd/system` - Service configuration files
 - ✅ `/etc/docker` - Docker daemon configuration
@@ -1933,6 +2078,7 @@ The current script includes these essential `/etc` directories in ReadWritePaths
 **If you need to write to OTHER /etc files:**
 
 **Option A: Temporary Remount (Most Secure - Recommended)**
+
 ```bash
 # Temporarily remount /etc as read-write
 sudo mount -o remount,rw /etc
@@ -1945,11 +2091,13 @@ sudo nano /etc/your-file
 ```
 
 **Benefits:**
+
 - ✅ Maximum security - /etc remains protected
 - ✅ Conscious decision required for /etc modifications
 - ✅ No permanent security reduction
 
 **Option B: Add Specific Path (Balanced Security)**
+
 ```bash
 # Edit SSH hardening config
 sudo nano /etc/systemd/system/ssh.service.d/hardening.conf
@@ -1964,11 +2112,13 @@ exit  # Log out and back in
 ```
 
 **Benefits:**
+
 - ✅ Convenient for frequently modified directories
 - ✅ Most of /etc remains protected
 - ⚠️  Slightly reduced security for that specific path
 
 **Option C: Full /etc Access (NOT Recommended)**
+
 ```bash
 # Add entire /etc to ReadWritePaths
 ReadWritePaths=/etc/ufw /tmp /var/tmp /home /etc/systemd/system /etc/docker /etc
@@ -1980,6 +2130,7 @@ exit
 ```
 
 **Drawbacks:**
+
 - ❌ Significantly reduced security
 - ❌ Compromised SSH session can modify any /etc file
 - ❌ Lower Lynis score
@@ -1992,12 +2143,14 @@ exit
 **Cause:** SSH systemd hardening with `ProtectSystem=full` makes `/usr` (including `/usr/local/bin`) read-only.
 
 **Affected Files:**
+
 - `/usr/local/bin/lynis-telegram.sh` - Lynis monitoring script
 - `/usr/local/bin/rkhunter-telegram.sh` - Rootkit scanner script
 - `/usr/local/bin/aide-telegram.sh` - AIDE integrity monitoring script
 - Any other custom scripts you've added to `/usr/local/bin`
 
 **Option A: Temporary Remount (Most Secure - Recommended)**
+
 ```bash
 # Temporarily remount /usr as read-write
 sudo mount -o remount,rw /usr
@@ -2012,12 +2165,14 @@ sudo nano /usr/local/bin/aide-telegram.sh
 ```
 
 **Benefits:**
+
 - ✅ Maximum security - /usr remains protected
 - ✅ Conscious decision required for system modifications
 - ✅ No permanent security reduction
 - ✅ Best practice for production servers
 
 **Option B: Add /usr/local/bin to ReadWritePaths (Balanced Security)**
+
 ```bash
 # Edit SSH hardening config
 sudo nano /etc/systemd/system/ssh.service.d/hardening.conf
@@ -2032,11 +2187,13 @@ exit  # Log out and back in
 ```
 
 **Benefits:**
+
 - ✅ Convenient for frequently modified scripts
 - ✅ /usr system directories remain protected
 - ⚠️  Slightly reduced security for /usr/local/bin
 
 **Option C: Full /usr Access (NOT Recommended)**
+
 ```bash
 # Add entire /usr to ReadWritePaths
 ReadWritePaths=/etc/ufw /tmp /var/tmp /etc/systemd/system /etc/docker /usr
@@ -2048,6 +2205,7 @@ exit
 ```
 
 **Drawbacks:**
+
 - ❌ Significantly reduced security
 - ❌ Compromised SSH session can modify system binaries
 - ❌ Lower Lynis score
@@ -2060,6 +2218,7 @@ exit
 **Cause:** SSH systemd hardening with `PrivateTmp=yes` isolates `/tmp` per SSH session. Lynis and Rkhunter need access to the system-wide `/tmp` directory to create temporary files.
 
 **Error you might see:**
+
 ```
 mktemp: failed to create file via template '/tmp/lynis.XXXXXXXXXX': No such file or directory
 ```
@@ -2087,12 +2246,14 @@ sudo aide --check
 ```
 
 **Why this works:**
+
 - `sudo bash -c` creates a new shell process outside your SSH session context
 - This shell has access to the system-wide `/tmp` directory
 - `cd /` ensures the script runs from root directory (simulates cron environment)
 - This is exactly how cron executes these scripts automatically
 
 **Automated scans still work normally:**
+
 - Cron jobs are not affected by SSH hardening
 - Daily/monthly scans via cron work perfectly
 - Only manual execution via SSH requires the `bash -c` wrapper
@@ -2100,6 +2261,7 @@ sudo aide --check
 **Alternative: Clean up stale PID files**
 
 If you see "PID file exists" warnings:
+
 ```bash
 # Remove stale Lynis PID file
 sudo rm -f /var/run/lynis.pid
@@ -2111,6 +2273,7 @@ sudo rm -f /var/lib/rkhunter/rkhunter.lock
 ### Installation Problems
 
 **"No internet connectivity detected"**
+
 ```bash
 # Test DNS
 ping -c 4 8.8.8.8
@@ -2125,6 +2288,7 @@ sudo nano /etc/resolv.conf
 ```
 
 **"Failed to update package lists after multiple attempts"**
+
 ```bash
 # Check repository status
 sudo apt-get update
@@ -2145,6 +2309,7 @@ sudo apt-get update
 ```
 
 **"Failed to download Docker GPG key"**
+
 ```bash
 # Test connection with Docker
 curl -I https://download.docker.com
@@ -2155,6 +2320,7 @@ curl -I https://download.docker.com
 ```
 
 **"Script exited with error code"**
+
 ```bash
 # Check error log
 sudo cat /var/log/server_install_*.log
@@ -2179,6 +2345,7 @@ sudo bash install-script.sh
 ### SSH Problems
 
 **"Connection refused on port 888"**
+
 ```bash
 # Via rescue console / VNC:
 
@@ -2201,6 +2368,7 @@ sudo systemctl restart ssh
 ```
 
 **"Permission denied (publickey)"**
+
 ```bash
 # On the server (via rescue console):
 
@@ -2225,6 +2393,7 @@ sudo restorecon -R -v ~/.ssh
 ```
 
 **"Too many authentication failures"**
+
 ```bash
 # Your SSH client is trying too many keys
 # Fix: Specify exactly which key to use
@@ -2243,6 +2412,7 @@ Host server
 ### Docker Problems
 
 **"Cannot connect to Docker daemon"**
+
 ```bash
 # 1. Check Docker is running
 sudo systemctl status docker
@@ -2269,6 +2439,7 @@ sudo chmod 666 /var/run/docker.sock
 ```
 
 **"docker compose: command not found"**
+
 ```bash
 # Script installs Docker Compose as plugin
 # Use "docker compose" (with space) not "docker-compose"
@@ -2285,6 +2456,7 @@ sudo chmod +x /usr/local/bin/docker-compose
 ```
 
 **"Error response from daemon: pull access denied"**
+
 ```bash
 # Image doesn't exist or typo in name
 # Check exact image name on Docker Hub
@@ -2297,6 +2469,7 @@ docker login
 ```
 
 **Container won't start / crashes**
+
 ```bash
 # Check logs
 docker logs container-name
@@ -2314,6 +2487,7 @@ docker run -it --entrypoint /bin/bash image-name
 ### Firewall Problems
 
 **"Cannot connect to service"**
+
 ```bash
 # 1. Check if service is running
 docker ps
@@ -2333,6 +2507,7 @@ sudo ufw status
 ```
 
 **"Lockout - can't login anymore"**
+
 ```bash
 # Via rescue console / physical access:
 
@@ -2356,6 +2531,7 @@ sudo ufw enable
 ### Performance Problems
 
 **"Server is slow"**
+
 ```bash
 # Check resources
 htop
@@ -2383,6 +2559,7 @@ sudo journalctl -xe
 ```
 
 **"Disk full"**
+
 ```bash
 # Check usage
 df -h
@@ -2406,6 +2583,7 @@ sudo apt-get clean
 ```
 
 **"RAM full"**
+
 ```bash
 # Check memory
 free -h
@@ -2428,6 +2606,7 @@ docker restart container-name
 ### Monitoring Issues
 
 **"Netdata dashboard empty"**
+
 ```bash
 # Check container logs
 docker logs netdata
@@ -2445,6 +2624,7 @@ docker compose -f ~/docker/netdata/docker-compose.yaml up -d
 ```
 
 **"No Telegram alerts"**
+
 ```bash
 # Test manually (Netdata)
 docker exec netdata /usr/libexec/netdata/plugins.d/alarm-notify.sh test
@@ -2488,17 +2668,20 @@ sudo lynis show details <TEST-ID>
 ```
 
 **Lynis Report Locations:**
+
 - Main report: `/var/log/lynis-report.dat` (machine-readable format)
 - Detailed log: `/var/log/lynis.log` (human-readable format)
 - Last scan results available after installation completes
 
 **Understanding Lynis Output:**
+
 - **Hardening Index**: 0-100 score
 - **Suggestions**: Recommendations to improve security further
 - **Warnings**: Potential security issues that should be addressed
 - **Tests**: Individual security checks performed
 
 **Example Recommendations You Might See:**
+
 - Add legal banners (already optional)
 - Configure additional firewall rules for specific services
 - Enable compiler restrictions (already optional for production)
@@ -2508,6 +2691,7 @@ sudo lynis show details <TEST-ID>
 ### Check Logs
 
 **Most important logs:**
+
 ```bash
 # Installation log
 sudo cat /var/log/server_install_*.log
@@ -2534,40 +2718,18 @@ docker logs -f container-name  # Follow mode
 
 ---
 
-## Contributing
-
-Contributions are welcome! If you have improvements:
-
-1. Fork this repository
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-**What we're looking for:**
-- Bug fixes
-- Documentation improvements
-- Support for more Linux distros
-- Additional security measures
-- Performance optimizations
-
-**Code guidelines:**
-- Use descriptive variable names
-- Add comments for complex sections
-- Test on at least Ubuntu 22.04 LTS
-- Maintain error handling and logging
-- Update README with new features
-
 ---
 
 ## Support
 
 **Need help?**
+
 - Open a [GitHub Issue](https://github.com/MadeByAdem/linux-server-management-scripts/issues)
 - Check [FAQ section](#faq) first
 - Check [Troubleshooting section](#troubleshooting) first
 
 **When reporting problems, include:**
+
 - OS version: `cat /etc/os-release`
 - Server specs: `free -h && df -h`
 - Error message from: `/var/log/server_install_*.log`
@@ -2581,6 +2743,7 @@ Contributions are welcome! If you have improvements:
 This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
 
 **What does this mean?**
+
 - You may use the script for free
 - You may modify the script
 - You may share the script
@@ -2594,6 +2757,7 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
 **Developed by:** MadeByAdem
 
 **Built with:**
+
 - Docker & Docker Compose
 - Netdata Monitoring
 - Portainer Container Management
@@ -2611,6 +2775,7 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
 ### Current Release - Comprehensive Lynis-Based Hardening
 
 - **NEW: 17 Advanced Security Hardening Sections** (Based on Lynis audit recommendations):
+
   - **Security Repository Configuration**: Verifies and configures official security update repositories
   - **Password Policies & PAM Hardening**: SHA-512 with 65536 rounds, libpam-pwquality, libpam-tmpdir
   - **Extended Kernel Hardening**: 15+ additional sysctl parameters (kptr_restrict, BPF hardening, protected files, ptrace restrictions)
@@ -2626,35 +2791,35 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
   - **AIDE File Integrity Monitoring**: Production server option with daily checks and email alerts
   - **Compiler Restrictions**: Production server option to restrict gcc/g++/make access
   - **Deprecated Package Cleanup**: Removes nis, rsh-client, telnet, tftp, xinetd
-
 - **NEW: Backwards Compatibility System**:
+
   - All 13 new security sections support `skip_if_completed()` checks
   - Safe re-run on existing installations without re-prompting
   - Only new/unconfigured features are prompted
   - State tracking in `/var/lib/server-setup/installation.state`
   - Seamless upgrade path from older script versions
-
 - **NEW: Interactive Configuration Prompts**:
+
   - SSH MaxSessions: User-configurable (1-10, default: 2) with validation
   - USB Storage: Platform-aware prompt (Raspberry Pi warning, default: no)
   - Legal Banners: Optional (recommended for business, default: no)
   - AIDE: Production server check (not for RPi/dev servers, default: no)
   - Compiler Restrictions: Production-only check (breaks dev workflows, default: no)
   - Systemd Service Restart: Optional immediate restart after hardening
-
 - **Enhanced Security Defaults**:
+
   - Lynis hardening score improvement: Expected 73 → 90-95+
   - Reduced Lynis suggestions from 34 to ~10-15
   - All configurations follow security best practices
   - Conservative defaults (security over convenience)
-
 - **Platform Compatibility**:
+
   - Raspberry Pi support with platform-specific warnings
   - VPS/Cloud server optimizations
   - Production vs. development server detection
   - Appropriate defaults per platform type
-
 - **Improved User Experience**:
+
   - Clear explanations for each security section
   - Impact descriptions before configuration
   - Raspberry Pi-specific warnings where relevant
@@ -2664,56 +2829,57 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
 ### Previous Release - Interactive & Safe for Existing Servers
 
 - **NEW: Three Operation Modes:**
+
   - `--fresh-install`: Minimal prompts for fresh servers (fast setup)
   - `--interactive`: Safe mode for existing servers with component-by-component confirmation
   - `--dry-run`: Preview mode showing what would be done without making changes
   - Auto-detection mode: Automatically detects if server has existing installations
-
 - **NEW: Comprehensive Safety Features:**
+
   - Automatic backup creation before any modifications (in interactive mode)
   - Rollback script generation for easy restoration
   - Component status detection (Docker, UFW, SSH, swap, etc.)
   - Context-aware prompts showing current state and implications
-
 - **NEW: Docker Safety Guards:**
+
   - Detects running Docker containers before reinstallation
   - Critical warning with double confirmation if containers are running
   - Shows container count and data loss warnings
   - Option to skip Docker installation to preserve existing setup
-
 - **NEW: UFW Firewall Merge Mode:**
+
   - Three options: MERGE (add rules, keep existing), RESET (delete all), or SKIP
   - Merge mode preserves existing firewall rules (recommended for production)
   - Reset mode requires explicit "DELETE ALL RULES" confirmation
   - Shows current rule count before making changes
-
 - **NEW: Interactive Component Prompts:**
+
   - Each major component (timezone, system updates, Docker, UFW, etc.) asks for confirmation
   - Shows current status, clear descriptions, and implications for each component
   - Configurable timeouts (60-90 seconds) with sensible defaults
   - In fresh-install mode: auto-accepts non-critical components for speed
-
 - **Enhanced Detection:**
+
   - Detects existing Docker installations and running containers
   - Detects active UFW rules and configuration
   - Detects custom SSH configurations
   - Detects existing swap files
   - Detects timezone and other system settings
-
 - **Improved Error Handling:**
+
   - Dry-run mode for safe preview of all operations
   - Better state management for skipped components
   - Graceful handling of user cancellations
   - Detailed logging of all decisions in dry-run mode
-
 - **Better User Experience:**
+
   - Color-coded output (green=info, yellow=warning, red=critical, cyan=dry-run)
   - Clear mode indicators at script start
   - Progress visibility with component status
   - Help command with usage examples (`--help`)
   - Automatic backup location display in summary
-
 - **Production-Ready:**
+
   - Safe for servers with existing services (interactive mode)
   - Prevents accidental data loss (Docker container protection)
   - Preserves existing configurations (UFW merge mode)
@@ -2721,49 +2887,52 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
   - Suitable for both development and production environments
 
 ### Earlier Release - Enhanced Security
+
 - **Enhanced Kernel Hardening:**
+
   - Fixed `net.ipv4.conf.default.accept_source_route = 0` (IP source routing disabled on new interfaces)
   - Fixed `net.ipv4.conf.default.log_martians = 1` (log suspicious packets on new interfaces)
   - Added IPv6 source routing protection (`net.ipv6.conf.all.accept_source_route = 0`)
   - Added `kernel.sysrq = 0` (disable kernel debugging keys for security)
   - Improved core dump security with `fs.suid_dumpable = 0`
-
 - **Protocol Security:**
+
   - Disabled uncommon network protocols (DCCP, SCTP, RDS, TIPC)
   - Reduces attack surface by blacklisting rarely-used protocols
   - Configuration in `/etc/modprobe.d/disable-protocols.conf`
-
 - **SSH Security Enhancements:**
+
   - SSH LogLevel set to VERBOSE for enhanced security auditing
   - Configurable SSH forwarding (AllowTcpForwarding, AllowAgentForwarding)
   - Default: **Enabled** for flexibility (user can disable for maximum security)
   - Interactive prompt with clear security implications
-
 - **Advanced Package Security Tools:**
+
   - `apt-listchanges` - Shows important package changes before upgrade
   - `debsums` - Verifies installed package file integrity
   - `apt-show-versions` - Better package version management
   - `needrestart` - Detects which services need restart after updates
   - Note: `apt-listbugs` excluded (Debian-only, not available on Ubuntu)
-
 - **Rkhunter Configuration:**
+
   - Automatic configuration for custom SSH port (888)
   - `ALLOW_SSH_ROOT_USER=prohibit-password` matches SSH config
   - `PORT_NUMBER=888` for accurate SSH scanning
-
 - **Netdata Monitoring Enhancements:**
+
   - **Systemd journal log access** - Mounts `/var/log/journal` and `/run/log/journal` for complete system log visibility
   - **Automatic systemd-journal plugin configuration** - Pre-configured to monitor host logs
   - Telegram environment variables passed directly in docker-compose (when configured)
   - Full Docker container monitoring with socket access
   - Fixes "Required filters are needed" warning in Netdata Cloud
-
 - **Ubuntu Compatibility:**
+
   - Removed Debian-specific packages
   - All security tools now Ubuntu-compatible
   - Better cross-distribution support
 
 ### Earlier Release - Core Functionality
+
 - Resume functionality on interrupts
 - Telegram integration for monitoring and security alerts
 - Rkhunter and Lynis security scanning with automatic reports
@@ -2774,6 +2943,7 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
 - Smart swap configuration based on RAM
 
 ### Initial Release
+
 - Initial release
 - Basic server setup and hardening
 - Docker, Python, Node.js installation
@@ -2790,6 +2960,7 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
 **USE AT YOUR OWN RISK**
 
 This script is intended as a tool for server configuration. The authors are not responsible for:
+
 - Data loss
 - Server downtime
 - Security breaches
@@ -2797,6 +2968,7 @@ This script is intended as a tool for server configuration. The authors are not 
 - Any other damage
 
 **Recommendations:**
+
 - Always make backups before running this script
 - Test first on a test server
 - Read the full documentation
