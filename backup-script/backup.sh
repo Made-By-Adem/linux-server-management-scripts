@@ -116,6 +116,7 @@ for folder in "${BACKUP_FOLDERS[@]}"; do
 
     echo "[*] Syncing ${folder} ..."
     if rsync -az --delete \
+        --exclude='node_modules' \
         -e "ssh -i '$SSH_KEY' -p $SSH_PORT -S '$SOCKET'" \
         "${REMOTE_USER}@${REMOTE_HOST}:${folder}" \
         "$LOCAL_PATH"; then
