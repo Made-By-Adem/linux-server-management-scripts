@@ -4232,6 +4232,13 @@ if [[ $install_rkhunter == "y" ]] || [[ $install_rkhunter == "Y" ]]; then
     # Fix WEB_CMD to use absolute path (fixes "Invalid WEB_CMD" error)
     sudo sed -i 's|^WEB_CMD=.*|WEB_CMD=/bin/false|' /etc/rkhunter.conf
 
+    # Whitelist known hidden files that are standard on Ubuntu servers
+    log_info "Whitelisting known hidden files in rkhunter..."
+    grep -q "^ALLOWHIDDENFILE=/etc/.resolv.conf.systemd-resolved.bak" /etc/rkhunter.conf || \
+        echo "ALLOWHIDDENFILE=/etc/.resolv.conf.systemd-resolved.bak" | sudo tee -a /etc/rkhunter.conf >/dev/null
+    grep -q "^ALLOWHIDDENFILE=/etc/.updated" /etc/rkhunter.conf || \
+        echo "ALLOWHIDDENFILE=/etc/.updated" | sudo tee -a /etc/rkhunter.conf >/dev/null
+
     # Add settings if they don't exist
     grep -q "^ALLOW_SSH_ROOT_USER=" /etc/rkhunter.conf || echo "ALLOW_SSH_ROOT_USER=prohibit-password" | sudo tee -a /etc/rkhunter.conf >/dev/null
     grep -q "^PORT_NUMBER=" /etc/rkhunter.conf || echo "PORT_NUMBER=888" | sudo tee -a /etc/rkhunter.conf >/dev/null
