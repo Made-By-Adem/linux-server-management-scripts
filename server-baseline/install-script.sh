@@ -4502,6 +4502,9 @@ else
         -d text="${MESSAGE}" \
         -d parse_mode="Markdown" >/dev/null 2>&1
 fi
+
+# Keep scan logs for 30 days
+find /var/log -name "rkhunter-scan-*.log" -mtime +30 -delete 2>/dev/null || true
 RKHUNTER_SCRIPT
 
     # Replace placeholders with actual credentials for rkhunter
