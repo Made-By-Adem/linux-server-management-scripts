@@ -204,10 +204,16 @@ backup-folders
 
 ### Scenario 1: New Server Setup
 
+> [!IMPORTANT]
+> If you already cloned the repository in the [Installation](#-installation) section above, **skip step 1** and just run `cd server-baseline` from inside the `linux-server-management-scripts` directory. Running `git clone` again will either fail or create a nested duplicate of the repo.
+
 ```bash
-# 1. Clone repository
+# 1. Clone repository (skip if already cloned)
 git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
 cd linux-server-management-scripts/server-baseline
+
+# If you already cloned it earlier, just run this instead:
+# cd server-baseline
 
 # 2. Run fresh installation
 sudo bash install-script.sh --fresh-install
