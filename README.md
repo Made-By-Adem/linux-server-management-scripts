@@ -375,7 +375,7 @@ For more specific troubleshooting, see individual README files:
 
 ## 💡 Next Step: Remote Monitoring & Control
 
-Once your server is set up and hardened, consider adding [Linux Server Telegram Bot](https://github.com/MadeByAdem/linux-server-telegram-bot) — a lightweight companion tool that lets you monitor and manage your server directly from Telegram.
+Once your server is set up and hardened, consider adding [Linux Server Telegram Bot](https://github.com/Made-By-Adem/linux-server-telegram-bot) — a lightweight companion tool that lets you monitor and manage your server directly from Telegram.
 
 - **Automated monitoring** — tracks CPU, memory, disk, Docker containers, and systemd services every 5 minutes
 - **Auto-recovery** — automatically restarts failed services and containers before you even notice
