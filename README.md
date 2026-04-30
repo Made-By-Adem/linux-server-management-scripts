@@ -104,9 +104,9 @@ A backup script that syncs specified folders from a remote server to the local m
 
 | Platform | New system | Existing system |
 | -------- | ---------- | --------------- |
-| **Ubuntu Server** | `sudo bash install-script.sh --fresh-install` | `sudo bash install-script.sh --interactive` |
-| **Raspberry Pi** | `sudo bash install-script.sh --fresh-install` | `sudo bash install-script.sh --section` |
-| **Ubuntu Desktop** | `sudo bash install-script.sh --fresh-install --desktop` | `sudo bash install-script.sh --interactive --desktop` |
+| [**Ubuntu Server**](server-baseline/README.md#-ubuntu-server) | `sudo bash install-script.sh --fresh-install` | `sudo bash install-script.sh --interactive` |
+| [**Raspberry Pi**](server-baseline/README.md#-raspberry-pi) | `sudo bash install-script.sh --fresh-install` | `sudo bash install-script.sh --section` |
+| [**Ubuntu Desktop**](server-baseline/README.md#-ubuntu-desktop) | `sudo bash install-script.sh --fresh-install --desktop` | `sudo bash install-script.sh --interactive --desktop` |
 
 ```bash
 # 1. Download
