@@ -1,6 +1,6 @@
 # Server Baseline - Automated System Installation & Hardening Script
 
-> **Part of:** [Linux Server Management Scripts](https://github.com/MadeByAdem/linux-server-management-scripts)
+> **Part of:** [Linux Server Management Scripts](https://github.com/Made-By-Adem/linux-server-management-scripts)
 
 A comprehensive, user-friendly installation script for Ubuntu/Debian servers and desktops that fully configures, secures, and optimizes your system with a single command. Supports a `--desktop` mode for Ubuntu Desktop with less restrictive security defaults.
 
@@ -25,20 +25,21 @@ A comprehensive, user-friendly installation script for Ubuntu/Debian servers and
 
 ---
 
-## 🚀 Quickstart - Choose Your Scenario
+## 🚀 Quickstart - Choose Your Platform
 
-| Scenario                                                         | Best Mode           | Estimated Time |
-| ---------------------------------------------------------------- | ------------------- | -------------- |
-| [New Ubuntu Server](#scenario-1-new-ubuntu-server)                  | `--fresh-install`            | 15-30 min      |
-| [Existing Ubuntu Server](#scenario-2-existing-ubuntu-server-in-use) | `--interactive`              | 20-40 min      |
-| [New Raspberry Pi](#scenario-3-new-raspberry-pi)                    | `--fresh-install`            | 20-45 min      |
-| [Existing Raspberry Pi](#scenario-4-existing-raspberry-pi-in-use)   | `--section`                  | 15-30 min      |
-| [New Ubuntu Desktop](#scenario-5-new-ubuntu-desktop)                | `--fresh-install --desktop`  | 15-25 min      |
-| [Existing Ubuntu Desktop](#scenario-6-existing-ubuntu-desktop)      | `--interactive --desktop`    | 15-30 min      |
+> **Choose your platform below.** Each section contains complete step-by-step instructions.
+
+| Platform | New system | Existing system |
+| -------- | ---------- | --------------- |
+| [**Ubuntu Server**](#-ubuntu-server) | [`--fresh-install`](#new-ubuntu-server) (15-30 min) | [`--interactive`](#existing-ubuntu-server) (20-40 min) |
+| [**Raspberry Pi**](#-raspberry-pi) | [`--fresh-install`](#new-raspberry-pi) (20-45 min) | [`--section`](#existing-raspberry-pi) (15-30 min) |
+| [**Ubuntu Desktop**](#-ubuntu-desktop) | [`--fresh-install --desktop`](#new-ubuntu-desktop) (15-25 min) | [`--interactive --desktop`](#existing-ubuntu-desktop) (15-30 min) |
 
 ---
 
-### Scenario 1: New Ubuntu Server
+## 🖥️ Ubuntu Server
+
+### New Ubuntu Server
 
 **Situation:** Fresh Ubuntu VPS or dedicated server, no services installed yet.
 
@@ -57,7 +58,7 @@ ssh-copy-id user@your-server-ip
 ssh user@your-server-ip
 
 # 2. Download the script
-git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+git clone https://github.com/Made-By-Adem/linux-server-management-scripts.git
 cd linux-server-management-scripts/server-baseline
 
 # 3. Run in fresh-install mode (minimal prompts)
@@ -72,19 +73,19 @@ sudo sed -i '/^Port 22$/d' /etc/ssh/sshd_config
 sudo systemctl restart ssh
 ```
 
-#### Warnings for This Scenario
+#### Warnings
 
 | Warning                 | Details                                                      |
 | ----------------------- | ------------------------------------------------------------ |
-| ⚠️ SSH Keys Required  | Script disables password login - ensure your key works first |
+| ⚠️ SSH Keys Required  | Script disables password login — ensure your key works first |
 | ⚠️ Keep Terminal Open | Don't close your SSH session until you've tested port 888    |
 | ⚠️ Reboot Needed      | Some kernel changes require a reboot to take effect          |
 
 ---
 
-### Scenario 2: Existing Ubuntu Server (In Use)
+### Existing Ubuntu Server
 
-**Situation:** Ubuntu server already running services (web server, databases, applications), but NO Docker containers.
+**Situation:** Ubuntu server already running services (web server, databases, applications).
 
 #### Prerequisites
 
@@ -100,13 +101,13 @@ ssh-copy-id user@your-server-ip  # Skip if already done
 ssh user@your-server-ip
 
 # 2. Download the script
-git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+git clone https://github.com/Made-By-Adem/linux-server-management-scripts.git
 cd linux-server-management-scripts/server-baseline
 
 # 3. Preview what will happen (recommended!)
 sudo bash install-script.sh --dry-run
 
-# 4. Run in interactive mode - confirms each component
+# 4. Run in interactive mode — confirms each component
 sudo bash install-script.sh --interactive
 
 # 5. For each component, you'll see:
@@ -118,7 +119,7 @@ sudo bash install-script.sh --interactive
 ssh -p 888 user@your-server-ip
 ```
 
-#### Warnings for This Scenario
+#### Warnings
 
 | Warning                | Details                                                               |
 | ---------------------- | --------------------------------------------------------------------- |
@@ -138,7 +139,9 @@ systemctl status your-app
 
 ---
 
-### Scenario 3: New Raspberry Pi
+## 🍓 Raspberry Pi
+
+### New Raspberry Pi
 
 **Situation:** Fresh Raspberry Pi OS installation, no services configured yet.
 
@@ -157,7 +160,7 @@ ssh-copy-id pi@raspberrypi.local           # or use IP address
 ssh pi@raspberrypi.local
 
 # 2. Download the script
-git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+git clone https://github.com/Made-By-Adem/linux-server-management-scripts.git
 cd linux-server-management-scripts/server-baseline
 
 # 3. Run in fresh-install mode
@@ -175,15 +178,15 @@ ssh -p 888 pi@raspberrypi.local
 sudo reboot
 ```
 
-#### Warnings for This Scenario
+#### Warnings
 
 | Warning                     | Details                                                     |
 | --------------------------- | ----------------------------------------------------------- |
 | ⚠️ SSH Keys Required      | Script disables password login                              |
-| ⚠️ USB Storage            | Answer 'n' to USB blacklist - Pi may use USB storage        |
-| 🚫**AIDE Monitoring** | **NEVER install on Raspberry Pi** - see warning below |
+| ⚠️ USB Storage            | Answer 'n' to USB blacklist — Pi may use USB storage        |
+| 🚫 **AIDE Monitoring** | **NEVER install on Raspberry Pi** — see warning below |
 | ⚠️ Swap Size              | Auto-configured for Pi's limited RAM                        |
-| ⚠️ Slower Installation    | Pi is slower than VPS - be patient                          |
+| ⚠️ Slower Installation    | Pi is slower than VPS — be patient                          |
 
 > ### 🚫 CRITICAL: AIDE on Raspberry Pi
 >
@@ -200,13 +203,13 @@ sudo reboot
 >
 > **Safe alternatives already included in this script:**
 >
-> - ✅ **rkhunter** - Lightweight rootkit detection
-> - ✅ **Lynis** - Security auditing without heavy I/O
-> - ✅ **debsums** - Package integrity verification (monthly, minimal I/O)
+> - ✅ **rkhunter** — Lightweight rootkit detection
+> - ✅ **Lynis** — Security auditing without heavy I/O
+> - ✅ **debsums** — Package integrity verification (monthly, minimal I/O)
 
 ---
 
-### Scenario 4: Existing Raspberry Pi (In Use)
+### Existing Raspberry Pi
 
 **Situation:** Raspberry Pi already running Docker containers, Home Assistant, Pi-hole, media servers, or other services that MUST NOT be interrupted.
 
@@ -229,7 +232,7 @@ systemctl list-units --type=service --state=running
 ssh pi@raspberrypi.local
 
 # 2. Download the script
-git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+git clone https://github.com/Made-By-Adem/linux-server-management-scripts.git
 cd linux-server-management-scripts/server-baseline
 
 # 3. Preview ALL changes first
@@ -265,7 +268,7 @@ sudo reboot
 | -------------------------------- | ----------------------------------------------- |
 | **6 (docker)**             | **WILL DESTROY ALL CONTAINERS AND DATA**  |
 | **13 (ssh-hardening)**     | Only if you're sure about SSH keys              |
-| **14 (ufw-firewall)**      | May block container ports - see below if needed |
+| **14 (ufw-firewall)**      | May block container ports — see below if needed |
 | **18 (systemd-hardening)** | Restarts Docker = brief container downtime      |
 | **20-22 (containers)**     | Only if you want these specific tools           |
 
@@ -307,11 +310,11 @@ ssh -p 888 pi@raspberrypi.local
 # 4. Only close old terminal if step 3 works!
 ```
 
-#### Warnings for This Scenario
+#### Warnings
 
 | Warning                     | Details                                                       |
 | --------------------------- | ------------------------------------------------------------- |
-| 🚫**NEVER Section 6** | Docker reinstall destroys ALL containers and volumes          |
+| 🚫 **NEVER Section 6** | Docker reinstall destroys ALL containers and volumes          |
 | ⚠️ Container Ports        | If using UFW, manually add all container ports                |
 | ⚠️ Brief Restarts         | Section 18 causes ~10 second container restart                |
 | ⚠️ Test SSH First         | Before section 13, verify your key works                      |
@@ -332,7 +335,11 @@ systemctl status docker
 
 ---
 
-### Scenario 5: New Ubuntu Desktop
+## 🖥️ Ubuntu Desktop
+
+> Desktop mode (`--desktop`) adapts the script for Ubuntu Desktop: keeps password login, USB drives, printing, and uses desktop-friendly kernel settings. Server-only features like Telegram, Cloudflare, and AIDE are skipped automatically.
+
+### New Ubuntu Desktop
 
 **Situation:** Fresh Ubuntu Desktop installation that you want to harden and set up with development tools.
 
@@ -342,7 +349,7 @@ systemctl status docker
 # 1. Open a terminal on your desktop
 
 # 2. Download the script
-git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+git clone https://github.com/Made-By-Adem/linux-server-management-scripts.git
 cd linux-server-management-scripts/server-baseline
 
 # 3. Preview what will happen (recommended!)
@@ -355,7 +362,41 @@ sudo bash install-script.sh --fresh-install --desktop
 sudo reboot
 ```
 
-#### What Desktop Mode Changes
+#### Warnings
+
+| Warning                 | Details                                                      |
+| ----------------------- | ------------------------------------------------------------ |
+| ⚠️ Reboot Needed      | Some kernel changes require a reboot to take effect          |
+| ⚠️ Docker Group       | Log out and back in for docker group membership to apply     |
+
+---
+
+### Existing Ubuntu Desktop
+
+**Situation:** Ubuntu Desktop already in use, you want to add security hardening.
+
+#### Step-by-Step
+
+```bash
+# 1. Open a terminal on your desktop
+
+# 2. Download the script
+git clone https://github.com/Made-By-Adem/linux-server-management-scripts.git
+cd linux-server-management-scripts/server-baseline
+
+# 3. Preview changes (recommended!)
+sudo bash install-script.sh --interactive --desktop --dry-run
+
+# 4. Run in interactive + desktop mode — confirms each component
+sudo bash install-script.sh --interactive --desktop
+
+# 5. Reboot when convenient
+sudo reboot
+```
+
+---
+
+### What Desktop Mode Changes
 
 | Feature | Server Mode | Desktop Mode |
 | ------- | ----------- | ------------ |
@@ -375,29 +416,6 @@ sudo reboot
 | Docker containers | Auto-started | **Not started** |
 | Fail2ban default | Yes | **No** (optional) |
 | Audit logging default | Yes | **No** (optional) |
-
----
-
-### Scenario 6: Existing Ubuntu Desktop
-
-**Situation:** Ubuntu Desktop already in use, you want to add security hardening.
-
-#### Step-by-Step
-
-```bash
-# 1. Download the script
-git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
-cd linux-server-management-scripts/server-baseline
-
-# 2. Preview changes
-sudo bash install-script.sh --interactive --desktop --dry-run
-
-# 3. Run in interactive + desktop mode (confirms each component)
-sudo bash install-script.sh --interactive --desktop
-
-# 4. Reboot when convenient
-sudo reboot
-```
 
 ---
 
@@ -1186,14 +1204,14 @@ Automatic security updates are convenient but can rarely cause problems.
 **Option A: With Git (recommended)**
 
 ```bash
-git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+git clone https://github.com/Made-By-Adem/linux-server-management-scripts.git
 cd linux-server-management-scripts/server-baseline
 ```
 
 **Option B: Direct Download**
 
 ```bash
-wget https://github.com/MadeByAdem/server_baseline/archive/main.zip
+wget https://github.com/Made-By-Adem/linux-server-management-scripts/archive/main.zip
 unzip main.zip
 cd server_baseline-main
 ```
@@ -2795,7 +2813,7 @@ docker logs -f container-name  # Follow mode
 
 **Need help?**
 
-- Open a [GitHub Issue](https://github.com/MadeByAdem/linux-server-management-scripts/issues)
+- Open a [GitHub Issue](https://github.com/Made-By-Adem/linux-server-management-scripts/issues)
 - Check [FAQ section](#faq) first
 - Check [Troubleshooting section](#troubleshooting) first
 
