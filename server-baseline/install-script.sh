@@ -1,9 +1,9 @@
 #!/bin/bash
 
 ###############################################################################
-# Server Installation & Hardening Script
-# For Ubuntu/Debian servers (including Raspberry Pi)
-# Version: 3.0 - Interactive & Safe for Existing Servers
+# System Installation & Hardening Script
+# For Ubuntu/Debian servers and desktops (including Raspberry Pi)
+# Version: 3.1 - Interactive & Safe for Existing Servers + Desktop Mode
 ###############################################################################
 
 set -e  # Exit on error
@@ -26,6 +26,7 @@ DRY_RUN=false
 SECTION_SELECT=false  # Set to true when --section is used
 SELECTED_SECTIONS=()  # Array to store selected section IDs
 CLOUDFLARE_ONLY=false  # When true, all Docker services bind to 127.0.0.1 and are only accessible via Cloudflare Tunnel
+DESKTOP_MODE=false     # When true, adapts script for Ubuntu Desktop (less restrictive security, desktop-friendly defaults)
 
 # Get the actual user (the one who ran sudo)
 # If running as root directly (not via sudo), find the first regular user
@@ -130,7 +131,8 @@ Modes:
   --dry-run          Show what would be done without making changes
 
 Options:
-  --help             Show this help message
+  --desktop            Adapt for Ubuntu Desktop (keeps password auth, USB, printing)
+  --help               Show this help message
 
 Examples:
   sudo bash $0 --fresh-install
@@ -138,8 +140,11 @@ Examples:
   sudo bash $0 --section
   sudo bash $0 --section --dry-run
   sudo bash $0 --dry-run
+  sudo bash $0 --fresh-install --desktop
+  sudo bash $0 --interactive --desktop --dry-run
 
 Note: If no mode is specified, the script will auto-detect based on existing installations.
+Desktop mode skips server-only features (Telegram, Cloudflare, AIDE) and uses desktop-friendly defaults.
 EOF
     exit 0
 }
@@ -163,6 +168,10 @@ parse_arguments() {
                 ;;
             --dry-run)
                 DRY_RUN=true
+                shift
+                ;;
+            --desktop)
+                DESKTOP_MODE=true
                 shift
                 ;;
             --help|-h)
@@ -190,8 +199,8 @@ detect_mode() {
         ((indicators++))
     fi
 
-    # Check for custom SSH config
-    if grep -q "^Port 888" /etc/ssh/sshd_config 2>/dev/null; then
+    # Check for custom SSH config (server only — desktop never uses port 888)
+    if [ "$DESKTOP_MODE" = false ] && grep -q "^Port 888" /etc/ssh/sshd_config 2>/dev/null; then
         ((indicators++))
     fi
 
@@ -329,10 +338,17 @@ show_section_menu() {
     echo " 19. audit-logging           - Audit logging configuration"
     echo " 20. netdata                 - Install Netdata monitoring"
     echo " 21. portainer               - Install Portainer"
-    echo " 22. cloudflare-tunnel       - Configure Cloudflare Tunnel"
-    echo " 23. telegram                - Configure Telegram notifications"
-    echo " 24. legal-banners           - Legal warning banners"
-    echo " 25. custom-motd             - Custom MOTD (Message of the Day)"
+    if [ "$DESKTOP_MODE" = true ]; then
+        echo " 22. cloudflare-tunnel       - Configure Cloudflare Tunnel       [server only — skipped]"
+        echo " 23. telegram                - Configure Telegram notifications   [server only — skipped]"
+        echo " 24. legal-banners           - Legal warning banners              [server only — skipped]"
+        echo " 25. custom-motd             - Custom MOTD (Message of the Day)   [server only — skipped]"
+    else
+        echo " 22. cloudflare-tunnel       - Configure Cloudflare Tunnel"
+        echo " 23. telegram                - Configure Telegram notifications"
+        echo " 24. legal-banners           - Legal warning banners"
+        echo " 25. custom-motd             - Custom MOTD (Message of the Day)"
+    fi
     echo ""
     echo "Enter section numbers separated by spaces (e.g., 1 3 18)"
     echo "Or press ENTER to cancel"
@@ -377,7 +393,16 @@ show_section_menu() {
     SELECTED_SECTIONS=()
     for num in $selection; do
         if [ -n "${section_map[$num]}" ]; then
-            SELECTED_SECTIONS+=("${section_map[$num]}")
+            local section_key="${section_map[$num]}"
+            if [ "$DESKTOP_MODE" = true ]; then
+                case "$section_key" in
+                    "cloudflare-tunnel"|"telegram"|"legal-banners"|"custom-motd")
+                        log_warning "Section '$section_key' is server only, skipping in desktop mode"
+                        continue
+                        ;;
+                esac
+            fi
+            SELECTED_SECTIONS+=("$section_key")
         else
             log_warning "Invalid section number: $num"
         fi
@@ -410,6 +435,16 @@ ask_component_install() {
     local description="$3"
     local implications="$4"
     local default="${5:-y}"  # Default to 'y' if not specified
+
+    # Desktop mode: auto-skip server-only components
+    if [ "$DESKTOP_MODE" = true ]; then
+        case "$component_key" in
+            "cloudflare-tunnel"|"cloudflare-token"|"telegram"|"legal-banners"|"custom-motd"|"compiler-restrictions"|"aide")
+                log_info "$component_name skipped (desktop mode — server only)"
+                return 1
+                ;;
+        esac
+    fi
 
     # In dry-run mode, just log and return yes
     if [ "$DRY_RUN" = true ]; then
@@ -689,7 +724,11 @@ parse_arguments "$@"
 # Show mode banner
 echo ""
 echo "=========================================================================="
-echo "  Server Installation & Hardening Script v3.0"
+if [ "$DESKTOP_MODE" = true ]; then
+    echo "  System Installation & Hardening Script v3.1 (Desktop Mode)"
+else
+    echo "  System Installation & Hardening Script v3.1"
+fi
 echo "=========================================================================="
 echo ""
 
@@ -1560,7 +1599,28 @@ Lynis recommendations: AUTH-9230, AUTH-9262, AUTH-9286, DEB-0280" \
             sudo cp /etc/security/pwquality.conf /etc/security/pwquality.conf.backup.$(date +%Y%m%d_%H%M%S)
         fi
 
-        cat <<'EOF' | sudo tee /etc/security/pwquality.conf >/dev/null
+        if [ "$DESKTOP_MODE" = true ]; then
+            cat <<'EOF' | sudo tee /etc/security/pwquality.conf >/dev/null
+# Password quality requirements - Desktop mode (less restrictive)
+# Configured by system baseline script
+
+# Minimum password length
+minlen = 8
+
+# Minimum number of character classes (lower, upper, digit, special)
+minclass = 2
+
+# Maximum number of allowed consecutive same characters
+maxrepeat = 4
+
+# Require at least one digit
+dcredit = -1
+
+# Require at least one lowercase letter
+lcredit = -1
+EOF
+        else
+            cat <<'EOF' | sudo tee /etc/security/pwquality.conf >/dev/null
 # Password quality requirements - Lynis AUTH-9262
 # Configured by server baseline script
 
@@ -1591,6 +1651,7 @@ ocredit = -1
 # Reject passwords containing username
 # usercheck = 1
 EOF
+        fi
 
         log_info "Password quality requirements configured"
 
@@ -2378,6 +2439,13 @@ vm.swappiness = 10
 vm.vfs_cache_pressure = 50
 EOF
 
+        if [ "$DESKTOP_MODE" = true ]; then
+            sudo sed -i 's/^kernel.yama.ptrace_scope = 1/kernel.yama.ptrace_scope = 0/' /etc/sysctl.d/99-server-hardening.conf
+            sudo sed -i 's/^vm.swappiness = 10/vm.swappiness = 60/' /etc/sysctl.d/99-server-hardening.conf
+            sudo sed -i 's/^vm.vfs_cache_pressure = 50/vm.vfs_cache_pressure = 100/' /etc/sysctl.d/99-server-hardening.conf
+            log_info "Desktop mode: adjusted ptrace_scope=0, swappiness=60, vfs_cache_pressure=100"
+        fi
+
         sudo sysctl -p /etc/sysctl.d/99-server-hardening.conf >/dev/null 2>&1 || log_warning "Some sysctl parameters may not be available on this kernel"
 
         log_info "Kernel hardening applied"
@@ -2444,6 +2512,9 @@ fi
 
 if skip_if_completed "DISABLE_USB_STORAGE"; then
     log_info "USB storage control already configured, skipping"
+elif [ "$DESKTOP_MODE" = true ]; then
+    log_info "USB storage control skipped (desktop mode — USB drives needed)"
+    mark_completed "DISABLE_USB_STORAGE"
 else
     if ask_component_install \
         "DISABLE USB STORAGE DEVICES" \
@@ -2679,6 +2750,9 @@ fi
 
 if skip_if_completed "DISABLE_CUPS"; then
     log_info "CUPS configuration already processed, skipping"
+elif [ "$DESKTOP_MODE" = true ]; then
+    log_info "CUPS disabling skipped (desktop mode — printing needed)"
+    mark_completed "DISABLE_CUPS"
 else
     # Check if CUPS is installed
     if systemctl list-unit-files cups.service &>/dev/null 2>&1 || dpkg -l cups 2>/dev/null | grep -q "^ii"; then
@@ -2886,7 +2960,23 @@ UFW_MODE="reset"  # Default mode
 if [[ "$UFW_STATUS" =~ ^active:([0-9]+)$ ]]; then
     RULE_COUNT="${BASH_REMATCH[1]}"
     UFW_DESC="Configure UFW firewall with standard security rules."
-    UFW_IMPLICATIONS="🔴 CRITICAL: UFW is ACTIVE with $RULE_COUNT existing rules!
+    if [ "$DESKTOP_MODE" = true ]; then
+        UFW_IMPLICATIONS="🔴 CRITICAL: UFW is ACTIVE with $RULE_COUNT existing rules!
+
+Options for proceeding:
+1. MERGE (Recommended): Add new rules, keep existing rules
+   • Safest option - preserves your current configuration
+   • Adds: SSH (port 22)
+   • Your existing rules remain untouched
+
+2. RESET (Destructive): Delete ALL rules and start fresh
+   ⚠️  WARNING: This will DELETE all $RULE_COUNT existing rules!
+   • Use only if you want to completely reconfigure
+
+3. SKIP: Leave firewall unchanged
+   • No modifications to existing setup"
+    else
+        UFW_IMPLICATIONS="🔴 CRITICAL: UFW is ACTIVE with $RULE_COUNT existing rules!
 
 Options for proceeding:
 1. MERGE (Recommended): Add new rules, keep existing rules
@@ -2903,6 +2993,7 @@ Options for proceeding:
 3. SKIP: Leave firewall unchanged
    • No modifications to existing setup
    • You can configure manually later"
+    fi
 
     if ask_component_install \
         "FIREWALL (UFW) CONFIGURATION" \
@@ -2948,12 +3039,20 @@ Options for proceeding:
     fi
 else
     # UFW not active or no rules - safe to configure normally
-    UFW_DESC="Configure UFW firewall with standard security rules (SSH, HTTP, HTTPS)."
-    UFW_IMPLICATIONS="✅ UFW not detected or inactive - safe to configure
+    if [ "$DESKTOP_MODE" = true ]; then
+        UFW_DESC="Configure UFW firewall with desktop security rules (SSH only)."
+        UFW_IMPLICATIONS="✅ UFW not detected or inactive - safe to configure
+• Will set up with secure defaults
+• Deny all incoming, allow all outgoing
+• Allows: SSH (port 22)"
+    else
+        UFW_DESC="Configure UFW firewall with standard security rules (SSH, HTTP, HTTPS)."
+        UFW_IMPLICATIONS="✅ UFW not detected or inactive - safe to configure
 • Will set up with secure defaults
 • Deny all incoming, allow all outgoing
 • Allows: SSH (ports 22, 888), HTTP (80), HTTPS (443)
 • Rate limiting enabled for SSH"
+    fi
 
     if ask_component_install \
         "FIREWALL (UFW) CONFIGURATION" \
@@ -2975,7 +3074,11 @@ if [ "$UFW_MODE" != "skip" ]; then
         if [ "$UFW_MODE" = "reset" ]; then
             log_dry_run "Would reset UFW to defaults"
         fi
-        log_dry_run "Would add rules: SSH (22, 888), HTTP (80), HTTPS (443)"
+        if [ "$DESKTOP_MODE" = true ]; then
+            log_dry_run "Would add rules: SSH (22)"
+        else
+            log_dry_run "Would add rules: SSH (22, 888), HTTP (80), HTTPS (443)"
+        fi
     else
         log_info "Configuring firewall (UFW) in $UFW_MODE mode..."
 
@@ -2992,15 +3095,18 @@ if [ "$UFW_MODE" != "skip" ]; then
         sudo ufw default deny incoming
         sudo ufw default allow outgoing
 
-        # Allow SSH on BOTH ports 22 and 888 (prevents lockout)
-        sudo ufw allow 22/tcp comment 'SSH (will be disabled manually later)' || handle_error "Failed to add SSH port 22"
-        sudo ufw limit 888/tcp comment 'SSH rate limited' || handle_error "Failed to add SSH port 888"
-
-        # Allow HTTP and HTTPS
-        sudo ufw allow 80/tcp comment 'HTTP' || handle_error "Failed to add HTTP port"
-        sudo ufw allow 443/tcp comment 'HTTPS' || handle_error "Failed to add HTTPS port"
-
-        log_info "Standard ports configured (22/SSH-temp, 888/SSH, 80/HTTP, 443/HTTPS)"
+        if [ "$DESKTOP_MODE" = true ]; then
+            # Desktop: only SSH on port 22
+            sudo ufw allow 22/tcp comment 'SSH' || handle_error "Failed to add SSH port 22"
+            log_info "Desktop firewall configured (22/SSH only)"
+        else
+            # Server: SSH on ports 22 and 888 with rate limiting, plus HTTP/HTTPS
+            sudo ufw allow 22/tcp comment 'SSH (will be disabled manually later)' || handle_error "Failed to add SSH port 22"
+            sudo ufw limit 888/tcp comment 'SSH rate limited' || handle_error "Failed to add SSH port 888"
+            sudo ufw allow 80/tcp comment 'HTTP' || handle_error "Failed to add HTTP port"
+            sudo ufw allow 443/tcp comment 'HTTPS' || handle_error "Failed to add HTTPS port"
+            log_info "Standard ports configured (22/SSH-temp, 888/SSH, 80/HTTP, 443/HTTPS)"
+        fi
     fi
 else
     log_info "UFW configuration skipped"
@@ -3222,7 +3328,7 @@ Benefits:
 • Requires reboot to take full effect
 
 Lynis recommendation: FILE-6000" \
-        "y"; then
+        "$([ "$DESKTOP_MODE" = true ] && echo 'n' || echo 'y')"; then
 
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would add 'proc /proc proc defaults,hidepid=2 0 0' to /etc/fstab"
@@ -3275,18 +3381,27 @@ else
     echo "SSH CONFIGURATION - IMPORTANT!"
     echo "=========================================================================="
     echo ""
-    echo "⚠️  WARNING: Changing SSH port can lock you out of your server!"
-    echo ""
-    echo "The script will:"
-    echo "  1. Add port 888 for SSH (keeping port 22 active)"
-    echo "  2. Apply security hardening (disable root, password auth, etc.)"
-    echo "  3. Restart SSH with BOTH ports 22 and 888 active"
-    echo ""
-    echo "After the script completes:"
-    echo "  1. Test SSH connection on port 888: ssh -p 888 user@server"
-    echo "  2. If port 888 works, manually disable port 22 with these commands:"
-    echo "     sudo sed -i '/^Port 22$/d' /etc/ssh/sshd_config"
-    echo "     sudo systemctl restart ssh"
+    if [ "$DESKTOP_MODE" = true ]; then
+        echo "Desktop mode: SSH will be hardened with password authentication ENABLED."
+        echo ""
+        echo "The script will:"
+        echo "  1. Keep SSH on port 22 (no port 888)"
+        echo "  2. Apply security hardening (keep password auth, enable X11Forwarding)"
+        echo "  3. Restart SSH service"
+    else
+        echo "⚠️  WARNING: Changing SSH port can lock you out of your server!"
+        echo ""
+        echo "The script will:"
+        echo "  1. Add port 888 for SSH (keeping port 22 active)"
+        echo "  2. Apply security hardening (disable root, password auth, etc.)"
+        echo "  3. Restart SSH with BOTH ports 22 and 888 active"
+        echo ""
+        echo "After the script completes:"
+        echo "  1. Test SSH connection on port 888: ssh -p 888 user@server"
+        echo "  2. If port 888 works, manually disable port 22 with these commands:"
+        echo "     sudo sed -i '/^Port 22$/d' /etc/ssh/sshd_config"
+        echo "     sudo systemctl restart ssh"
+    fi
     echo ""
     read -p "Do you want to proceed with SSH hardening? (y/n): " ssh_harden
     ssh_harden=${ssh_harden:-y}
@@ -3297,28 +3412,32 @@ else
     # Backup original sshd_config
     sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d_%H%M%S)
 
-    # Verify SSH key exists before disabling password authentication
-    log_info "Verifying SSH key authentication is configured..."
-    if [ ! -f "$USER_HOME/.ssh/authorized_keys" ] || [ ! -s "$USER_HOME/.ssh/authorized_keys" ]; then
-        log_warning "WARNING: No SSH keys found in $USER_HOME/.ssh/authorized_keys"
-        echo ""
-        echo "⚠️  CRITICAL WARNING ⚠️"
-        echo "═══════════════════════════════════════════════════════════"
-        echo "No SSH keys detected in ~/.ssh/authorized_keys"
-        echo "The script will disable password authentication for security."
-        echo ""
-        echo "If you continue without SSH keys, you may be LOCKED OUT!"
-        echo ""
-        echo "Recommended: Cancel now (Ctrl+C) and run: ssh-copy-id $USER@$(hostname -I | awk '{print $1}')"
-        echo "═══════════════════════════════════════════════════════════"
-        read -p "Continue anyway? (y/N): " continue_without_keys
-        continue_without_keys=${continue_without_keys:-n}
-        if [[ ! $continue_without_keys =~ ^[Yy]$ ]]; then
-            handle_error "SSH hardening cancelled - please configure SSH keys first"
-        fi
-        log_warning "User chose to continue without SSH keys - RISK OF LOCKOUT!"
+    if [ "$DESKTOP_MODE" = true ]; then
+        log_info "Desktop mode: password authentication stays enabled, skipping SSH key verification"
     else
-        log_info "SSH keys verified in authorized_keys"
+        # Verify SSH key exists before disabling password authentication
+        log_info "Verifying SSH key authentication is configured..."
+        if [ ! -f "$USER_HOME/.ssh/authorized_keys" ] || [ ! -s "$USER_HOME/.ssh/authorized_keys" ]; then
+            log_warning "WARNING: No SSH keys found in $USER_HOME/.ssh/authorized_keys"
+            echo ""
+            echo "⚠️  CRITICAL WARNING ⚠️"
+            echo "═══════════════════════════════════════════════════════════"
+            echo "No SSH keys detected in ~/.ssh/authorized_keys"
+            echo "The script will disable password authentication for security."
+            echo ""
+            echo "If you continue without SSH keys, you may be LOCKED OUT!"
+            echo ""
+            echo "Recommended: Cancel now (Ctrl+C) and run: ssh-copy-id $USER@$(hostname -I | awk '{print $1}')"
+            echo "═══════════════════════════════════════════════════════════"
+            read -p "Continue anyway? (y/N): " continue_without_keys
+            continue_without_keys=${continue_without_keys:-n}
+            if [[ ! $continue_without_keys =~ ^[Yy]$ ]]; then
+                handle_error "SSH hardening cancelled - please configure SSH keys first"
+            fi
+            log_warning "User chose to continue without SSH keys - RISK OF LOCKOUT!"
+        else
+            log_info "SSH keys verified in authorized_keys"
+        fi
     fi
 
     # Ask about IPv6
@@ -3374,7 +3493,11 @@ else
     # SSH hardening configurations (idempotent - using sed replace)
     # Note: PermitRootLogin set to 'prohibit-password' to allow key-based root login
     sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-    sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
+    if [ "$DESKTOP_MODE" = true ]; then
+        sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+    else
+        sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
+    fi
     sudo sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
     sudo sed -i 's/^#\?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
 
@@ -3386,7 +3509,11 @@ else
         sudo sed -i 's/^#\?AddressFamily .*/AddressFamily any/' /etc/ssh/sshd_config
         log_info "SSH configured for IPv4 and IPv6"
     fi
-    sudo sed -i 's/^#\?X11Forwarding .*/X11Forwarding no/' /etc/ssh/sshd_config
+    if [ "$DESKTOP_MODE" = true ]; then
+        sudo sed -i 's/^#\?X11Forwarding .*/X11Forwarding yes/' /etc/ssh/sshd_config
+    else
+        sudo sed -i 's/^#\?X11Forwarding .*/X11Forwarding no/' /etc/ssh/sshd_config
+    fi
     sudo sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 3/' /etc/ssh/sshd_config
     sudo sed -i 's/^#\?ClientAliveInterval .*/ClientAliveInterval 300/' /etc/ssh/sshd_config
     sudo sed -i 's/^#\?ClientAliveCountMax .*/ClientAliveCountMax 2/' /etc/ssh/sshd_config
@@ -3406,9 +3533,14 @@ else
         log_info "SSH forwarding disabled (maximum security)"
     fi
 
-    # Add BOTH port 22 and 888 (idempotent - only if not present)
-    grep -q "^Port 22$" /etc/ssh/sshd_config || echo "Port 22" | sudo tee -a /etc/ssh/sshd_config >/dev/null
-    grep -q "^Port 888$" /etc/ssh/sshd_config || echo "Port 888" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+    if [ "$DESKTOP_MODE" = true ]; then
+        # Desktop: only port 22
+        grep -q "^Port 22$" /etc/ssh/sshd_config || echo "Port 22" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+    else
+        # Server: BOTH port 22 and 888 (idempotent - only if not present)
+        grep -q "^Port 22$" /etc/ssh/sshd_config || echo "Port 22" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+        grep -q "^Port 888$" /etc/ssh/sshd_config || echo "Port 888" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+    fi
 
     # Add additional SSH hardening if not present (already idempotent)
     grep -q "^Protocol 2" /etc/ssh/sshd_config || echo "Protocol 2" | sudo tee -a /etc/ssh/sshd_config >/dev/null
@@ -3428,13 +3560,18 @@ else
     echo ""
     echo "Current default: 10"
     echo ""
-    read -p "Enter MaxSessions value (1-10, default: 2): " max_sessions
-    max_sessions=${max_sessions:-2}
+    if [ "$DESKTOP_MODE" = true ]; then
+        max_sessions_default=10
+    else
+        max_sessions_default=2
+    fi
+    read -p "Enter MaxSessions value (1-10, default: $max_sessions_default): " max_sessions
+    max_sessions=${max_sessions:-$max_sessions_default}
 
     # Validate input
     if ! [[ "$max_sessions" =~ ^[0-9]+$ ]] || [ "$max_sessions" -lt 1 ] || [ "$max_sessions" -gt 10 ]; then
-        log_warning "Invalid MaxSessions value: $max_sessions, using default: 2"
-        max_sessions=2
+        log_warning "Invalid MaxSessions value: $max_sessions, using default: $max_sessions_default"
+        max_sessions=$max_sessions_default
     fi
 
     # Apply MaxSessions
@@ -3471,45 +3608,50 @@ else
 
     # Define SSH ports
     SSH_PORT_OLD=22
-    SSH_PORT_NEW=888
 
-    # Add SSH firewall rules with dual-layer protection
-    log_info "Configuring SSH firewall rules..."
-
-    # Ask user for trusted home IP for whitelist
-    echo ""
-    echo "═══════════════════════════════════════════════════════════"
-    echo "SSH TRUSTED IP CONFIGURATION"
-    echo "═══════════════════════════════════════════════════════════"
-    echo "You can whitelist your home/office IP for guaranteed SSH access."
-    echo "This IP will bypass rate limiting on port $SSH_PORT_NEW."
-    echo ""
-    echo "Benefits:"
-    echo "  - No rate limiting from this IP (unlimited connection attempts)"
-    echo "  - Guaranteed access even if rate limits are triggered"
-    echo "  - Recommended for your main work location"
-    echo ""
-    echo "Note: You can find your public IP at: https://icanhazip.com"
-    echo ""
-    read -p "Enter your trusted IP address (or press Enter to skip): " TRUSTED_IP
-
-    # Layer 1: Whitelist trusted home IP if provided (no rate limiting)
-    if [[ ! -z "$TRUSTED_IP" ]]; then
-        # Validate IP format (basic check)
-        if [[ $TRUSTED_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-            sudo ufw allow from "$TRUSTED_IP" to any port "$SSH_PORT_NEW" comment 'SSH whitelist - trusted home IP' || \
-                log_warning "Failed to add SSH whitelist rule"
-            log_info "Trusted IP $TRUSTED_IP whitelisted for SSH access on port $SSH_PORT_NEW"
-        else
-            log_warning "Invalid IP format: $TRUSTED_IP - skipping whitelist"
-            log_warning "Expected format: xxx.xxx.xxx.xxx (e.g., 192.168.1.1)"
-        fi
+    if [ "$DESKTOP_MODE" = true ]; then
+        log_info "Desktop mode: SSH stays on port 22 only, skipping trusted IP and rate limiting config"
     else
-        log_info "No trusted IP configured - all IPs will use rate limiting"
-    fi
+        SSH_PORT_NEW=888
 
-    # Layer 2: Rate limiting for all other IPs already configured earlier (ufw limit 888/tcp)
-    log_info "SSH firewall: Rate limiting active for all non-whitelisted IPs"
+        # Add SSH firewall rules with dual-layer protection
+        log_info "Configuring SSH firewall rules..."
+
+        # Ask user for trusted home IP for whitelist
+        echo ""
+        echo "═══════════════════════════════════════════════════════════"
+        echo "SSH TRUSTED IP CONFIGURATION"
+        echo "═══════════════════════════════════════════════════════════"
+        echo "You can whitelist your home/office IP for guaranteed SSH access."
+        echo "This IP will bypass rate limiting on port $SSH_PORT_NEW."
+        echo ""
+        echo "Benefits:"
+        echo "  - No rate limiting from this IP (unlimited connection attempts)"
+        echo "  - Guaranteed access even if rate limits are triggered"
+        echo "  - Recommended for your main work location"
+        echo ""
+        echo "Note: You can find your public IP at: https://icanhazip.com"
+        echo ""
+        read -p "Enter your trusted IP address (or press Enter to skip): " TRUSTED_IP
+
+        # Layer 1: Whitelist trusted home IP if provided (no rate limiting)
+        if [[ ! -z "$TRUSTED_IP" ]]; then
+            # Validate IP format (basic check)
+            if [[ $TRUSTED_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+                sudo ufw allow from "$TRUSTED_IP" to any port "$SSH_PORT_NEW" comment 'SSH whitelist - trusted home IP' || \
+                    log_warning "Failed to add SSH whitelist rule"
+                log_info "Trusted IP $TRUSTED_IP whitelisted for SSH access on port $SSH_PORT_NEW"
+            else
+                log_warning "Invalid IP format: $TRUSTED_IP - skipping whitelist"
+                log_warning "Expected format: xxx.xxx.xxx.xxx (e.g., 192.168.1.1)"
+            fi
+        else
+            log_info "No trusted IP configured - all IPs will use rate limiting"
+        fi
+
+        # Layer 2: Rate limiting for all other IPs already configured earlier (ufw limit 888/tcp)
+        log_info "SSH firewall: Rate limiting active for all non-whitelisted IPs"
+    fi
 
     # Configure IPv6 in UFW based on user choice
     if [ "$IPV6_DISABLED" = true ]; then
@@ -3527,7 +3669,11 @@ else
     fi
 
     # Configure systemd socket for SSH ports (required for Ubuntu with socket activation)
-    log_info "Configuring systemd SSH socket for ports 22 and 888..."
+    if [ "$DESKTOP_MODE" = true ]; then
+        log_info "Configuring systemd SSH socket for port 22..."
+    else
+        log_info "Configuring systemd SSH socket for ports 22 and 888..."
+    fi
 
     # Check if ssh.socket exists (Ubuntu uses systemd socket activation)
     if systemctl list-unit-files | grep -q "ssh.socket"; then
@@ -3536,10 +3682,27 @@ else
         # Create systemd override directory
         sudo mkdir -p /etc/systemd/system/ssh.socket.d
 
-        # Create override configuration for SSH socket to listen on both ports
+        # Create override configuration for SSH socket
         # Must explicitly bind to 0.0.0.0 — bare port numbers default to [::] (IPv6)
         # which fails when IPv6 is disabled at the system level
-        if [ "$IPV6_DISABLED" = true ]; then
+        if [ "$DESKTOP_MODE" = true ]; then
+            if [ "$IPV6_DISABLED" = true ]; then
+                cat <<EOF | sudo tee /etc/systemd/system/ssh.socket.d/ports.conf
+[Socket]
+ListenStream=
+ListenStream=0.0.0.0:22
+EOF
+                log_info "SSH socket configured for port 22 (IPv4 only)"
+            else
+                cat <<EOF | sudo tee /etc/systemd/system/ssh.socket.d/ports.conf
+[Socket]
+ListenStream=
+ListenStream=0.0.0.0:22
+ListenStream=[::]:22
+EOF
+                log_info "SSH socket configured for port 22 (IPv4 + IPv6)"
+            fi
+        elif [ "$IPV6_DISABLED" = true ]; then
             cat <<EOF | sudo tee /etc/systemd/system/ssh.socket.d/ports.conf
 [Socket]
 ListenStream=
@@ -3574,40 +3737,52 @@ EOF
         # Wait for SSH to fully start
         sleep 3
 
-        # Verify SSH is listening on both ports with retry
-        log_info "Verifying SSH is listening on ports 22 and 888..."
-        RETRY_COUNT=0
-        MAX_RETRIES=3
-        SSH_VERIFIED=false
-
-        while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SSH_VERIFIED" = false ]; do
-            if ss -tlnp 2>/dev/null | grep -q ":888" && ss -tlnp 2>/dev/null | grep -q ":22"; then
-                log_info "Verified: SSH is listening on both port 22 and 888"
-                SSH_VERIFIED=true
+        if [ "$DESKTOP_MODE" = true ]; then
+            # Desktop: only verify port 22
+            if ss -tlnp 2>/dev/null | grep -q ":22"; then
+                log_info "Verified: SSH is listening on port 22"
             else
-                RETRY_COUNT=$((RETRY_COUNT + 1))
-                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-                    log_warning "SSH not yet listening on both ports, retrying ($RETRY_COUNT/$MAX_RETRIES)..."
-                    sudo systemctl restart ssh.socket 2>/dev/null || true
-                    sudo systemctl restart ssh 2>/dev/null || true
-                    sleep 3
-                fi
+                log_warning "SSH not listening on port 22, attempting restart..."
+                sudo systemctl daemon-reload
+                sudo systemctl restart ssh.socket 2>/dev/null || true
+                sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null || true
             fi
-        done
+        else
+            # Server: verify both ports with retry
+            log_info "Verifying SSH is listening on ports 22 and 888..."
+            RETRY_COUNT=0
+            MAX_RETRIES=3
+            SSH_VERIFIED=false
 
-        if [ "$SSH_VERIFIED" = false ]; then
-            log_warning "SSH verification failed after $MAX_RETRIES attempts"
-            log_warning "Current SSH listening status:"
-            ss -tlnp 2>/dev/null | grep -E "(ssh|:22|:888)" || echo "  No SSH ports found"
-            log_warning "Attempting full daemon-reload and restart..."
-            sudo systemctl daemon-reload
-            sudo systemctl restart ssh.socket 2>/dev/null || true
-            sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null || true
-            sleep 3
-            if ss -tlnp 2>/dev/null | grep -q ":888"; then
-                log_info "SSH now listening on port 888 after full restart"
-            else
-                log_warning "SSH still not on port 888. Manual fix: sudo systemctl daemon-reload && sudo systemctl restart ssh.socket && sudo systemctl restart ssh"
+            while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SSH_VERIFIED" = false ]; do
+                if ss -tlnp 2>/dev/null | grep -q ":888" && ss -tlnp 2>/dev/null | grep -q ":22"; then
+                    log_info "Verified: SSH is listening on both port 22 and 888"
+                    SSH_VERIFIED=true
+                else
+                    RETRY_COUNT=$((RETRY_COUNT + 1))
+                    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                        log_warning "SSH not yet listening on both ports, retrying ($RETRY_COUNT/$MAX_RETRIES)..."
+                        sudo systemctl restart ssh.socket 2>/dev/null || true
+                        sudo systemctl restart ssh 2>/dev/null || true
+                        sleep 3
+                    fi
+                fi
+            done
+
+            if [ "$SSH_VERIFIED" = false ]; then
+                log_warning "SSH verification failed after $MAX_RETRIES attempts"
+                log_warning "Current SSH listening status:"
+                ss -tlnp 2>/dev/null | grep -E "(ssh|:22|:888)" || echo "  No SSH ports found"
+                log_warning "Attempting full daemon-reload and restart..."
+                sudo systemctl daemon-reload
+                sudo systemctl restart ssh.socket 2>/dev/null || true
+                sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null || true
+                sleep 3
+                if ss -tlnp 2>/dev/null | grep -q ":888"; then
+                    log_info "SSH now listening on port 888 after full restart"
+                else
+                    log_warning "SSH still not on port 888. Manual fix: sudo systemctl daemon-reload && sudo systemctl restart ssh.socket && sudo systemctl restart ssh"
+                fi
             fi
         fi
     else
@@ -3618,7 +3793,11 @@ EOF
     fi
 
         log_info "SSH hardened successfully"
-        log_info "SSH is now listening on BOTH port 22 and 888"
+        if [ "$DESKTOP_MODE" = true ]; then
+            log_info "SSH is listening on port 22 (password auth enabled)"
+        else
+            log_info "SSH is now listening on BOTH port 22 and 888"
+        fi
         if [ "$IPV6_DISABLED" = true ]; then
             log_info "Note: IPv6 is disabled for SSH and firewall"
         else
@@ -3639,11 +3818,22 @@ fi
 if skip_if_completed "FAIL2BAN"; then
     log_info "Fail2ban already configured, skipping"
 else
-    if ask_component_install \
-        "FAIL2BAN INTRUSION PREVENTION" \
-        "fail2ban" \
-        "Configure Fail2ban to protect against brute-force attacks on SSH." \
-        "Configuration:
+    if [ "$DESKTOP_MODE" = true ]; then
+        fail2ban_desc="Configure Fail2ban to protect against brute-force attacks on SSH."
+        fail2ban_impl="Configuration (desktop mode):
+• SSH protection on port 22
+• Max 5 failed attempts allowed
+• Ban time: 1 hour (3600s)
+• Detection window: 10 minutes (600s)
+• Monitors /var/log/auth.log
+
+Benefits:
+• Automatic blocking of brute-force attacks
+• Protection against SSH password guessing"
+        fail2ban_default="n"
+    else
+        fail2ban_desc="Configure Fail2ban to protect against brute-force attacks on SSH."
+        fail2ban_impl="Configuration:
 • SSH protection on ports 22 and 888
 • Max 3 failed attempts allowed
 • Ban time: 2 hours (7200s)
@@ -3654,8 +3844,15 @@ Benefits:
 • Automatic blocking of brute-force attacks
 • Protection against SSH password guessing
 • Reduces server load from attack attempts
-• Configurable and extensible" \
-        "y"; then
+• Configurable and extensible"
+        fail2ban_default="y"
+    fi
+    if ask_component_install \
+        "FAIL2BAN INTRUSION PREVENTION" \
+        "fail2ban" \
+        "$fail2ban_desc" \
+        "$fail2ban_impl" \
+        "$fail2ban_default"; then
 
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would backup existing /etc/fail2ban/jail.local if present"
@@ -3686,7 +3883,27 @@ Benefits:
         sudo mkdir -p /etc/fail2ban/jail.d
 
         # Configure Fail2ban for SSH in jail.d (doesn't overwrite existing custom jails)
-        cat <<EOF | sudo tee /etc/fail2ban/jail.d/server-baseline.conf
+        if [ "$DESKTOP_MODE" = true ]; then
+            cat <<EOF | sudo tee /etc/fail2ban/jail.d/server-baseline.conf
+# System Baseline Fail2ban Configuration (Desktop Mode)
+# Created by system baseline installation script
+
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 5
+
+[sshd]
+enabled = true
+port = 22
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 5
+bantime = 3600
+findtime = 600
+EOF
+        else
+            cat <<EOF | sudo tee /etc/fail2ban/jail.d/server-baseline.conf
 # Server Baseline Fail2ban Configuration
 # Created by server_baseline installation script
 
@@ -3706,6 +3923,7 @@ maxretry = 3
 bantime = 7200
 findtime = 600
 EOF
+        fi
 
         log_info "Fail2ban configuration created in /etc/fail2ban/jail.d/server-baseline.conf"
         log_info "Existing custom jails in jail.local are preserved"
@@ -4125,7 +4343,7 @@ Benefits:
 • Security incident detection
 
 View logs: sudo ausearch -k sshd_config_changes" \
-    "y"; then
+    "$([ "$DESKTOP_MODE" = true ] && echo 'n' || echo 'y')"; then
 
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would install: auditd, acct, audispd-plugins"
@@ -4422,8 +4640,13 @@ if [ "$RKHUNTER_INSTALLED" = false ] && [ "$LYNIS_INSTALLED" = false ]; then
     log_info "  Lynis: Download from https://github.com/CISOfy/lynis/releases"
 fi
 
-# Only configure Telegram integration if at least one tool was installed
-if [ "$RKHUNTER_INSTALLED" = true ] || [ "$LYNIS_INSTALLED" = true ]; then
+# Only configure Telegram integration if at least one tool was installed (server only)
+if [ "$DESKTOP_MODE" = true ]; then
+    if [ "$RKHUNTER_INSTALLED" = true ] || [ "$LYNIS_INSTALLED" = true ]; then
+        log_info "Desktop mode: Telegram integration skipped"
+        log_info "Run scans manually: sudo rkhunter --check / sudo lynis audit system"
+    fi
+elif [ "$RKHUNTER_INSTALLED" = true ] || [ "$LYNIS_INSTALLED" = true ]; then
 
 # Check if we have Telegram credentials (from Netdata or ask user)
 SECURITY_TELEGRAM_BOT_TOKEN=""
@@ -4691,7 +4914,7 @@ else
     fi
 fi
 
-fi  # End of at least one tool installed check
+fi  # End of desktop mode / tool installed check
 
 ###############################################################################
 # SYSSTAT PERFORMANCE MONITORING
@@ -4725,7 +4948,7 @@ Benefits:
 • Minimal overhead (~0.1% CPU)
 
 Lynis recommendation: ACCT-9626" \
-        "y"; then
+        "$([ "$DESKTOP_MODE" = true ] && echo 'n' || echo 'y')"; then
 
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would install sysstat package"
@@ -4780,6 +5003,9 @@ fi
 
 if skip_if_completed "AIDE"; then
     log_info "AIDE already configured, skipping"
+elif [ "$DESKTOP_MODE" = true ]; then
+    log_info "AIDE file integrity monitoring skipped (desktop mode — server intrusion detection)"
+    mark_completed "AIDE"
 else
     # Detect Raspberry Pi
     IS_RASPBERRY_PI=false
@@ -5136,6 +5362,9 @@ fi
 
 if skip_if_completed "COMPILER_RESTRICTIONS"; then
     log_info "Compiler restrictions already configured, skipping"
+elif [ "$DESKTOP_MODE" = true ]; then
+    log_info "Compiler restrictions skipped (desktop mode — needed for development)"
+    mark_completed "COMPILER_RESTRICTIONS"
 else
     if ask_component_install \
         "COMPILER ACCESS RESTRICTIONS" \
@@ -5616,7 +5845,7 @@ if ask_component_install \
 
 Directory: $USER_HOME/docker/portainer/
 Access: https://$SERVER_IP:9443 (after deployment)" \
-    "y"; then
+    "$([ "$DESKTOP_MODE" = true ] && echo 'n' || echo 'y')"; then
 
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would create $USER_HOME/docker/portainer/"
@@ -5788,7 +6017,13 @@ Access: http://$SERVER_IP:19999 (after deployment)" \
     NETDATA_HOSTNAME=${NETDATA_HOSTNAME:-$CURRENT_HOSTNAME}
     log_info "Netdata hostname will be set to: $NETDATA_HOSTNAME"
 
-    # Configure Telegram alerts (optional)
+    # Configure Telegram alerts (optional — server only)
+    if [ "$DESKTOP_MODE" = true ]; then
+        log_info "Desktop mode: Netdata Telegram alerts skipped"
+        TELEGRAM_CONFIGURED=false
+        TELEGRAM_BOT_TOKEN=""
+        TELEGRAM_CHAT_ID=""
+    else
     echo ""
     echo "=========================================================================="
     echo "NETDATA TELEGRAM ALERTS CONFIGURATION"
@@ -5872,6 +6107,7 @@ Access: http://$SERVER_IP:19999 (after deployment)" \
         log_info "Telegram alerts not configured"
         TELEGRAM_CONFIGURED=false
     fi
+    fi  # End of desktop mode Telegram skip
 
     # Create persistent health_alarm_notify.conf if Telegram is configured
     if [ "$TELEGRAM_CONFIGURED" = true ]; then
@@ -6106,9 +6342,14 @@ fi
 # START DOCKER CONTAINERS
 ###############################################################################
 
-# Skip container startup in dry-run mode
+# Skip container startup in dry-run and desktop mode
 if [ "$DRY_RUN" = true ]; then
     log_dry_run "Skipping Docker container startup (dry-run mode)"
+    PORTAINER_STARTED=false
+    NETDATA_STARTED=false
+elif [ "$DESKTOP_MODE" = true ]; then
+    log_info "Desktop mode: Docker containers will not be started automatically"
+    log_info "Start containers manually when needed: cd ~/docker/<service> && docker compose up -d"
     PORTAINER_STARTED=false
     NETDATA_STARTED=false
 else
@@ -6252,15 +6493,24 @@ if [ "$DRY_RUN" = true ]; then
     echo "Review the report to see what would have been done."
     echo ""
     echo "To execute the installation:"
+    desktop_flag=""
+    if [ "$DESKTOP_MODE" = true ]; then
+        desktop_flag=" --desktop"
+    fi
     if [ "$MODE" = "interactive" ]; then
-        echo "  sudo bash $0 --interactive"
+        echo "  sudo bash $0 --interactive$desktop_flag"
     else
-        echo "  sudo bash $0 --fresh-install"
+        echo "  sudo bash $0 --fresh-install$desktop_flag"
     fi
     echo ""
     echo "Or run without dry-run:"
-    echo "  sudo bash $0 --interactive   # For existing servers (recommended)"
-    echo "  sudo bash $0 --fresh-install # For fresh installations"
+    if [ "$DESKTOP_MODE" = true ]; then
+        echo "  sudo bash $0 --interactive --desktop   # For existing desktops (recommended)"
+        echo "  sudo bash $0 --fresh-install --desktop  # For fresh desktop installations"
+    else
+        echo "  sudo bash $0 --interactive   # For existing servers (recommended)"
+        echo "  sudo bash $0 --fresh-install # For fresh installations"
+    fi
     echo ""
     echo "=========================================================================="
     exit 0
@@ -6272,7 +6522,11 @@ fi
 
 echo ""
 echo "=========================================================================="
-log_info "Server setup completed successfully!"
+if [ "$DESKTOP_MODE" = true ]; then
+    log_info "Desktop setup completed successfully!"
+else
+    log_info "Server setup completed successfully!"
+fi
 echo "=========================================================================="
 echo ""
 echo "Mode used: $MODE"
@@ -6289,30 +6543,43 @@ echo "  - Python: $(python3 --version 2>/dev/null)"
 echo "  - Node.js: $(node --version 2>/dev/null)"
 echo "  - npm: $(npm --version 2>/dev/null)"
 echo "  - Git: $(git --version 2>/dev/null)"
+if [ "$DESKTOP_MODE" = true ]; then
+echo "  - Swap: ${SWAP_SIZE}MB (swappiness=60)"
+else
 echo "  - Swap: ${SWAP_SIZE}MB (swappiness=10)"
+fi
 echo ""
 echo "Security features:"
-if [ "$SSH_HARDENED" = true ]; then
-echo "  - SSH: Ports 22 AND 888 (key-only authentication)"
-echo "    ⚠️  REMEMBER: Test port 888 and manually disable port 22!"
+if [ "$DESKTOP_MODE" = true ]; then
+    if [ "$SSH_HARDENED" = true ]; then
+        echo "  - SSH: Port 22 (password + key authentication)"
+    else
+        echo "  - SSH: Not hardened (skipped)"
+    fi
+    echo "  - Firewall: UFW enabled (port 22/SSH only)"
 else
-echo "  - SSH: Not hardened (skipped)"
+    if [ "$SSH_HARDENED" = true ]; then
+        echo "  - SSH: Ports 22 AND 888 (key-only authentication)"
+        echo "    ⚠️  REMEMBER: Test port 888 and manually disable port 22!"
+    else
+        echo "  - SSH: Not hardened (skipped)"
+    fi
+    if [ "$CLOUDFLARE_ONLY" = true ]; then
+        UFW_PORTS="22, 888 (SSH only)"
+        echo "  - Firewall: UFW enabled (ports $UFW_PORTS) - Cloudflare-only mode"
+        echo "  - Cloudflare-only: All services bound to 127.0.0.1 (localhost)"
+    else
+        UFW_PORTS="22, 80, 443, 888, 9443"
+        if [ "${PORTAINER_AGENT_ENABLED:-false}" = true ]; then
+            UFW_PORTS="$UFW_PORTS, 8000"
+        fi
+        if [ "${NETDATA_CONFIGURED:-false}" = true ]; then
+            UFW_PORTS="$UFW_PORTS, 19999"
+        fi
+        echo "  - Firewall: UFW enabled (ports $UFW_PORTS)"
+    fi
+    echo "  - Fail2ban: Enabled for SSH (monitoring ports 22 and 888)"
 fi
-if [ "$CLOUDFLARE_ONLY" = true ]; then
-UFW_PORTS="22, 888 (SSH only)"
-echo "  - Firewall: UFW enabled (ports $UFW_PORTS) - Cloudflare-only mode"
-echo "  - Cloudflare-only: All services bound to 127.0.0.1 (localhost)"
-else
-UFW_PORTS="22, 80, 443, 888, 9443"
-if [ "$PORTAINER_AGENT_ENABLED" = true ]; then
-UFW_PORTS="$UFW_PORTS, 8000"
-fi
-if [ "$NETDATA_CONFIGURED" = true ]; then
-UFW_PORTS="$UFW_PORTS, 19999"
-fi
-echo "  - Firewall: UFW enabled (ports $UFW_PORTS)"
-fi
-echo "  - Fail2ban: Enabled for SSH (monitoring ports 22 and 888)"
 echo "  - Automatic updates: Enabled"
 echo "  - Kernel hardening: Applied"
 echo ""
@@ -6340,76 +6607,98 @@ echo "  - ~/scripts"
 echo "  - ~/projects"
 echo ""
 echo "Docker services configured:"
-if [ "$CF_CONFIGURED" = true ]; then
-echo "  ✅ Cloudflare Tunnel (~/docker/cloudflare)"
-if [ "$CLOUDFLARE_ONLY" = true ]; then
-echo "     🔒 Cloudflare-only mode: all services routed through tunnel"
-fi
+if [ "$DESKTOP_MODE" = true ]; then
+    echo "  ✅ Docker installed (no containers started in desktop mode)"
+    echo "  Start containers manually: cd ~/docker/<service> && docker compose up -d"
 else
-echo "  ⏭️  Cloudflare Tunnel (skipped)"
-fi
-if [ "$CLOUDFLARE_ONLY" = true ]; then
-echo "  ✅ Portainer (~/docker/portainer) - localhost:9443 via Cloudflare"
-else
-echo "  ✅ Portainer (~/docker/portainer)"
-fi
-if [ "$NETDATA_CONFIGURED" = true ]; then
-if [ "$CLOUDFLARE_ONLY" = true ]; then
-echo "  ✅ Netdata (~/docker/netdata) - localhost:19999 via Cloudflare"
-else
-echo "  ✅ Netdata (~/docker/netdata)"
-fi
-fi
-echo ""
-echo "Container status:"
-if [ "$CF_CONFIGURED" = true ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q cloudflared; then
-echo "  🟢 Cloudflare Tunnel: Running"
-elif [ "$CF_CONFIGURED" = true ]; then
-echo "  ⚪ Cloudflare Tunnel: Not started"
-fi
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -q portainer; then
-echo "  🟢 Portainer: Running"
-else
-echo "  ⚪ Portainer: Not started"
-fi
-if [ "$NETDATA_CONFIGURED" = true ]; then
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q netdata; then
-    echo "  🟢 Netdata: Running"
+    if [ "${CF_CONFIGURED:-false}" = true ]; then
+        echo "  ✅ Cloudflare Tunnel (~/docker/cloudflare)"
+        if [ "$CLOUDFLARE_ONLY" = true ]; then
+            echo "     🔒 Cloudflare-only mode: all services routed through tunnel"
+        fi
     else
-    echo "  ⚪ Netdata: Not started"
+        echo "  ⏭️  Cloudflare Tunnel (skipped)"
+    fi
+    if [ "$CLOUDFLARE_ONLY" = true ]; then
+        echo "  ✅ Portainer (~/docker/portainer) - localhost:9443 via Cloudflare"
+    else
+        echo "  ✅ Portainer (~/docker/portainer)"
+    fi
+    if [ "${NETDATA_CONFIGURED:-false}" = true ]; then
+        if [ "$CLOUDFLARE_ONLY" = true ]; then
+            echo "  ✅ Netdata (~/docker/netdata) - localhost:19999 via Cloudflare"
+        else
+            echo "  ✅ Netdata (~/docker/netdata)"
+        fi
     fi
 fi
 echo ""
+if [ "$DESKTOP_MODE" != true ]; then
+    echo "Container status:"
+    if [ "${CF_CONFIGURED:-false}" = true ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q cloudflared; then
+        echo "  🟢 Cloudflare Tunnel: Running"
+    elif [ "${CF_CONFIGURED:-false}" = true ]; then
+        echo "  ⚪ Cloudflare Tunnel: Not started"
+    fi
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q portainer; then
+        echo "  🟢 Portainer: Running"
+    else
+        echo "  ⚪ Portainer: Not started"
+    fi
+    if [ "${NETDATA_CONFIGURED:-false}" = true ]; then
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q netdata; then
+            echo "  🟢 Netdata: Running"
+        else
+            echo "  ⚪ Netdata: Not started"
+        fi
+    fi
+    echo ""
+fi
 echo "IMPORTANT NOTES:"
-if [ "$SSH_HARDENED" = true ]; then
-echo "  1. ⚠️  SSH: Currently on BOTH port 22 AND 888"
-echo "     - Test connection: ssh -p 888 user@$SERVER_IP"
-echo "     - After confirming 888 works, disable 22 with:"
-echo "       sudo sed -i '/^Port 22$/d' /etc/ssh/sshd_config"
-echo "       sudo systemctl restart ssh"
-echo "  2. Password authentication is DISABLED"
-echo "  3. Make sure your SSH key is authorized before disconnecting!"
+if [ "$DESKTOP_MODE" = true ]; then
+    if [ "$SSH_HARDENED" = true ]; then
+        echo "  1. SSH: Port 22 with password authentication enabled"
+        echo "  2. Consider setting up SSH keys for additional security"
+    else
+        echo "  1. SSH hardening was skipped"
+        echo "  2. Consider running SSH hardening for additional security"
+    fi
+    echo "  3. Docker installed but no containers started (start manually when needed)"
+    echo "  4. User '$ACTUAL_USER' has been added to docker group"
+    echo "  5. Log out and back in for docker group to take effect"
 else
-echo "  1. SSH hardening was skipped"
-echo "  2. ⚠️  Consider running SSH hardening manually for security!"
+    if [ "$SSH_HARDENED" = true ]; then
+        echo "  1. ⚠️  SSH: Currently on BOTH port 22 AND 888"
+        echo "     - Test connection: ssh -p 888 user@$SERVER_IP"
+        echo "     - After confirming 888 works, disable 22 with:"
+        echo "       sudo sed -i '/^Port 22$/d' /etc/ssh/sshd_config"
+        echo "       sudo systemctl restart ssh"
+        echo "  2. Password authentication is DISABLED"
+        echo "  3. Make sure your SSH key is authorized before disconnecting!"
+    else
+        echo "  1. SSH hardening was skipped"
+        echo "  2. ⚠️  Consider running SSH hardening manually for security!"
+    fi
+    echo "  4. User '$ACTUAL_USER' has been added to docker group"
+    echo "  5. Log out and back in for docker group to take effect"
 fi
-echo "  4. User '$ACTUAL_USER' has been added to docker group"
-echo "  5. Log out and back in for docker group to take effect"
 echo ""
-echo "Quick access URLs:"
-if [ "$CLOUDFLARE_ONLY" = true ]; then
-echo "  ⚠️  Cloudflare-only mode: configure public hostnames in Cloudflare Dashboard"
-echo "  - Portainer: https://portainer.your-domain.com (configure in Cloudflare → localhost:9443)"
-if [ "$NETDATA_CONFIGURED" = true ]; then
-echo "  - Netdata:   https://netdata.your-domain.com (configure in Cloudflare → localhost:19999)"
-fi
-else
-if [ "$PORTAINER_STARTED" = true ]; then
-echo "  - Portainer: https://$SERVER_IP:9443"
-fi
-if [ "$NETDATA_STARTED" = true ]; then
-echo "  - Netdata: http://$SERVER_IP:19999"
-fi
+if [ "$DESKTOP_MODE" != true ]; then
+    echo "Quick access URLs:"
+    if [ "$CLOUDFLARE_ONLY" = true ]; then
+        echo "  ⚠️  Cloudflare-only mode: configure public hostnames in Cloudflare Dashboard"
+        echo "  - Portainer: https://portainer.your-domain.com (configure in Cloudflare → localhost:9443)"
+        if [ "${NETDATA_CONFIGURED:-false}" = true ]; then
+            echo "  - Netdata:   https://netdata.your-domain.com (configure in Cloudflare → localhost:19999)"
+        fi
+    else
+        if [ "${PORTAINER_STARTED:-false}" = true ]; then
+            echo "  - Portainer: https://$SERVER_IP:9443"
+        fi
+        if [ "${NETDATA_STARTED:-false}" = true ]; then
+            echo "  - Netdata: http://$SERVER_IP:19999"
+        fi
+    fi
 fi
 echo ""
 echo "Error log saved to: $ERROR_LOG"

@@ -1,6 +1,6 @@
 # Server Management Scripts
 
-A collection of professional bash scripts for Ubuntu/Debian server management, automation, and Docker container maintenance.
+A collection of professional bash scripts for Ubuntu/Debian server and desktop management, automation, and Docker container maintenance.
 
 ## 📦 What's Inside?
 
@@ -8,9 +8,9 @@ This repository contains two main toolsets:
 
 ### 1. [Server Baseline Setup](server-baseline/)
 
-**Purpose:** Fresh server installation and hardening automation
+**Purpose:** Fresh server/desktop installation and hardening automation
 
-A comprehensive script for setting up and securing new Ubuntu/Debian servers (including Raspberry Pi). Features interactive mode for existing servers and fresh-install mode for new deployments.
+A comprehensive script for setting up and securing new Ubuntu/Debian servers and desktops (including Raspberry Pi). Features interactive mode for existing systems, fresh-install mode for new deployments, and a `--desktop` mode for Ubuntu Desktop with less restrictive security defaults.
 
 **Key Features:**
 
@@ -33,11 +33,13 @@ A comprehensive script for setting up and securing new Ubuntu/Debian servers (in
 - Resume capability for interrupted installations
 - Backwards compatibility (safe re-run on existing installations)
 - Dry-run mode for testing
+- **Desktop mode** (`--desktop`): adapted security for Ubuntu Desktop (password auth, USB, printing preserved)
 
 **Use Cases:**
 
 - Setting up new servers from scratch
 - Hardening existing servers
+- **Securing Ubuntu Desktop installations**
 - Standardizing server configurations
 - Automated deployments
 
@@ -98,19 +100,26 @@ A backup script that syncs specified folders from a remote server to the local m
 
 ## 🚀 Quick Start
 
-### Server Baseline Setup
+### Server Baseline Setup — Choose Your Platform
+
+| Platform | New system | Existing system |
+| -------- | ---------- | --------------- |
+| [**Ubuntu Server**](server-baseline/README.md#-ubuntu-server) | `sudo bash install-script.sh --fresh-install` | `sudo bash install-script.sh --interactive` |
+| [**Raspberry Pi**](server-baseline/README.md#-raspberry-pi) | `sudo bash install-script.sh --fresh-install` | `sudo bash install-script.sh --section` |
+| [**Ubuntu Desktop**](server-baseline/README.md#-ubuntu-desktop) | `sudo bash install-script.sh --fresh-install --desktop` | `sudo bash install-script.sh --interactive --desktop` |
 
 ```bash
-# Fresh server installation
-cd server-baseline
-sudo bash install-script.sh --fresh-install
+# 1. Download
+git clone https://github.com/Made-By-Adem/linux-server-management-scripts.git
+cd linux-server-management-scripts/server-baseline
 
-# Interactive mode (existing server)
-sudo bash install-script.sh --interactive
-
-# Dry-run (preview changes)
+# 2. Preview changes first (recommended)
 sudo bash install-script.sh --dry-run
+
+# 3. Run the command for your platform (see table above)
 ```
+
+[→ Full platform-specific instructions](server-baseline/README.md#-quickstart---choose-your-platform)
 
 ### Docker Container Updates
 
@@ -161,7 +170,7 @@ backup-folders
 
 ```bash
 # Clone to your server
-git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+git clone https://github.com/Made-By-Adem/linux-server-management-scripts.git
 cd linux-server-management-scripts
 ```
 
@@ -202,29 +211,22 @@ backup-folders
 
 ## 📖 Common Workflows
 
-### Scenario 1: New Server Setup
-
-> [!IMPORTANT]
-> If you already cloned the repository in the [Installation](#-installation) section above, **skip step 1** and just run `cd server-baseline` from inside the `linux-server-management-scripts` directory. Running `git clone` again will either fail or create a nested duplicate of the repo.
+### Scenario 1: New System Setup
 
 ```bash
 # 1. Clone repository (skip if already cloned)
-git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+git clone https://github.com/Made-By-Adem/linux-server-management-scripts.git
 cd linux-server-management-scripts/server-baseline
 
-# If you already cloned it earlier, just run this instead:
-# cd server-baseline
-
-# 2. Run fresh installation
-sudo bash install-script.sh --fresh-install
+# 2. Run fresh installation (pick one):
+sudo bash install-script.sh --fresh-install            # Ubuntu Server / Raspberry Pi
+sudo bash install-script.sh --fresh-install --desktop   # Ubuntu Desktop
 
 # 3. Follow the interactive prompts
-# - Creates user with sudo access
-# - Sets up SSH keys
-# - Configures firewall
-# - Installs Docker
-# - Optional: Portainer, Netdata, etc.
 ```
+
+> [!TIP]
+> See the [full platform-specific instructions](server-baseline/README.md#-quickstart---choose-your-platform) for detailed steps per platform.
 
 ### Scenario 2: Weekly Container Updates
 
