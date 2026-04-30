@@ -1,6 +1,6 @@
 # Server Management Scripts
 
-A collection of professional bash scripts for Ubuntu/Debian server management, automation, and Docker container maintenance.
+A collection of professional bash scripts for Ubuntu/Debian server and desktop management, automation, and Docker container maintenance.
 
 ## 📦 What's Inside?
 
@@ -8,9 +8,9 @@ This repository contains two main toolsets:
 
 ### 1. [Server Baseline Setup](server-baseline/)
 
-**Purpose:** Fresh server installation and hardening automation
+**Purpose:** Fresh server/desktop installation and hardening automation
 
-A comprehensive script for setting up and securing new Ubuntu/Debian servers (including Raspberry Pi). Features interactive mode for existing servers and fresh-install mode for new deployments.
+A comprehensive script for setting up and securing new Ubuntu/Debian servers and desktops (including Raspberry Pi). Features interactive mode for existing systems, fresh-install mode for new deployments, and a `--desktop` mode for Ubuntu Desktop with less restrictive security defaults.
 
 **Key Features:**
 
@@ -33,11 +33,13 @@ A comprehensive script for setting up and securing new Ubuntu/Debian servers (in
 - Resume capability for interrupted installations
 - Backwards compatibility (safe re-run on existing installations)
 - Dry-run mode for testing
+- **Desktop mode** (`--desktop`): adapted security for Ubuntu Desktop (password auth, USB, printing preserved)
 
 **Use Cases:**
 
 - Setting up new servers from scratch
 - Hardening existing servers
+- **Securing Ubuntu Desktop installations**
 - Standardizing server configurations
 - Automated deployments
 

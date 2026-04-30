@@ -1,8 +1,8 @@
-# Server Baseline - Automated Server Installation & Hardening Script
+# Server Baseline - Automated System Installation & Hardening Script
 
 > **Part of:** [Linux Server Management Scripts](https://github.com/MadeByAdem/linux-server-management-scripts)
 
-A comprehensive, user-friendly installation script for Ubuntu/Debian servers that fully configures, secures, and optimizes your server with a single command.
+A comprehensive, user-friendly installation script for Ubuntu/Debian servers and desktops that fully configures, secures, and optimizes your system with a single command. Supports a `--desktop` mode for Ubuntu Desktop with less restrictive security defaults.
 
 ## Table of Contents
 
@@ -29,10 +29,12 @@ A comprehensive, user-friendly installation script for Ubuntu/Debian servers tha
 
 | Scenario                                                         | Best Mode           | Estimated Time |
 | ---------------------------------------------------------------- | ------------------- | -------------- |
-| [New Ubuntu Server](#scenario-1-new-ubuntu-server)                  | `--fresh-install` | 15-30 min      |
-| [Existing Ubuntu Server](#scenario-2-existing-ubuntu-server-in-use) | `--interactive`   | 20-40 min      |
-| [New Raspberry Pi](#scenario-3-new-raspberry-pi)                    | `--fresh-install` | 20-45 min      |
-| [Existing Raspberry Pi](#scenario-4-existing-raspberry-pi-in-use)   | `--section`       | 15-30 min      |
+| [New Ubuntu Server](#scenario-1-new-ubuntu-server)                  | `--fresh-install`            | 15-30 min      |
+| [Existing Ubuntu Server](#scenario-2-existing-ubuntu-server-in-use) | `--interactive`              | 20-40 min      |
+| [New Raspberry Pi](#scenario-3-new-raspberry-pi)                    | `--fresh-install`            | 20-45 min      |
+| [Existing Raspberry Pi](#scenario-4-existing-raspberry-pi-in-use)   | `--section`                  | 15-30 min      |
+| [New Ubuntu Desktop](#scenario-5-new-ubuntu-desktop)                | `--fresh-install --desktop`  | 15-25 min      |
+| [Existing Ubuntu Desktop](#scenario-6-existing-ubuntu-desktop)      | `--interactive --desktop`    | 15-30 min      |
 
 ---
 
@@ -330,7 +332,76 @@ systemctl status docker
 
 ---
 
-⚠️ **Need more details?** See the [Section Safety Guide](#section-safety-guide) for a complete breakdown of all 23 sections.
+### Scenario 5: New Ubuntu Desktop
+
+**Situation:** Fresh Ubuntu Desktop installation that you want to harden and set up with development tools.
+
+#### Step-by-Step
+
+```bash
+# 1. Open a terminal on your desktop
+
+# 2. Download the script
+git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+cd linux-server-management-scripts/server-baseline
+
+# 3. Preview what will happen (recommended!)
+sudo bash install-script.sh --fresh-install --desktop --dry-run
+
+# 4. Run in fresh-install + desktop mode
+sudo bash install-script.sh --fresh-install --desktop
+
+# 5. Reboot to apply all changes
+sudo reboot
+```
+
+#### What Desktop Mode Changes
+
+| Feature | Server Mode | Desktop Mode |
+| ------- | ----------- | ------------ |
+| SSH password auth | Disabled (key-only) | **Enabled** |
+| SSH port | 22 + 888 | 22 only |
+| X11Forwarding | Disabled | **Enabled** |
+| UFW ports | 22, 80, 443, 888 | **22 only** |
+| USB storage | Can be disabled | **Always kept** |
+| CUPS printing | Can be disabled | **Always kept** |
+| Kernel swappiness | 10 (server) | **60 (desktop)** |
+| ptrace_scope | 1 (restricted) | **0 (debuggers work)** |
+| Telegram alerts | Available | **Skipped** |
+| Cloudflare Tunnel | Available | **Skipped** |
+| AIDE integrity | Available | **Skipped** |
+| Compiler restrictions | Available | **Skipped** |
+| Legal banners | Available | **Skipped** |
+| Docker containers | Auto-started | **Not started** |
+| Fail2ban default | Yes | **No** (optional) |
+| Audit logging default | Yes | **No** (optional) |
+
+---
+
+### Scenario 6: Existing Ubuntu Desktop
+
+**Situation:** Ubuntu Desktop already in use, you want to add security hardening.
+
+#### Step-by-Step
+
+```bash
+# 1. Download the script
+git clone https://github.com/MadeByAdem/linux-server-management-scripts.git
+cd linux-server-management-scripts/server-baseline
+
+# 2. Preview changes
+sudo bash install-script.sh --interactive --desktop --dry-run
+
+# 3. Run in interactive + desktop mode (confirms each component)
+sudo bash install-script.sh --interactive --desktop
+
+# 4. Reboot when convenient
+sudo reboot
+```
+
+---
+
+⚠️ **Need more details?** See the [Section Safety Guide](#section-safety-guide) for a complete breakdown of all 25 sections.
 
 **⚠️ IMPORTANT:** This script contains **no hardcoded credentials or private endpoints**. All tokens and sensitive configuration are provided interactively by you during setup.
 
