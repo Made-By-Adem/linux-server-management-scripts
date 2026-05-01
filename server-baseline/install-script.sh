@@ -1835,7 +1835,9 @@ Note: Installs from NodeSource repository for latest LTS version" \
 
         # Ubuntu Desktop ships libnode-dev / libnodeXX which clash with NodeSource nodejs
         # (apt-get install would fail with "trying to overwrite '/usr/include/node/...'")
-        CONFLICTING_NODE_PKGS=$(dpkg-query -W -f='${Package}\n' 2>/dev/null | grep -E '^(libnode[0-9]*(-dev)?|nodejs-doc)$' | tr '\n' ' ')
+        # Use awk (not grep) for filtering: awk exits 0 on no matches, so the
+        # pipeline stays clean under `set -o pipefail`.
+        CONFLICTING_NODE_PKGS=$(dpkg-query -W -f='${Package}\n' 2>/dev/null | awk '/^(libnode[0-9]*(-dev)?|nodejs-doc)$/' | tr '\n' ' ')
         if [ -n "${CONFLICTING_NODE_PKGS// /}" ]; then
             log_info "Removing pre-installed packages that conflict with NodeSource: $CONFLICTING_NODE_PKGS"
             DEBIAN_FRONTEND=noninteractive sudo apt-get remove -y $CONFLICTING_NODE_PKGS || log_warning "Could not remove conflicting packages, install may fail"
@@ -5658,7 +5660,12 @@ Owner: $ACTUAL_USER" \
 
         # Cross-check USER_HOME against /etc/passwd for ACTUAL_USER and verify the directory exists.
         # On Ubuntu Desktop with multiple users, the early autodetection may have picked the wrong one.
-        PASSWD_HOME=$(getent passwd "$ACTUAL_USER" 2>/dev/null | cut -d: -f6)
+        # Guard `getent` (not present on minimal systems) the same way the early detection does.
+        if command -v getent &>/dev/null; then
+            PASSWD_HOME=$(getent passwd "$ACTUAL_USER" 2>/dev/null | cut -d: -f6)
+        else
+            PASSWD_HOME=$(grep "^$ACTUAL_USER:" /etc/passwd 2>/dev/null | cut -d: -f6)
+        fi
         if [ -n "$PASSWD_HOME" ] && [ "$PASSWD_HOME" != "/" ] && [ "$PASSWD_HOME" != "$USER_HOME" ]; then
             log_warning "USER_HOME ($USER_HOME) does not match /etc/passwd entry for $ACTUAL_USER ($PASSWD_HOME)"
             log_info "Using home directory from /etc/passwd: $PASSWD_HOME"
@@ -5666,7 +5673,7 @@ Owner: $ACTUAL_USER" \
         fi
 
         if [ ! -d "$USER_HOME" ]; then
-            handle_error "Home directory does not exist: $USER_HOME (user: $ACTUAL_USER). Re-run with 'sudo -u <correct-user>' or set SUDO_USER explicitly."
+            handle_error "Home directory does not exist: $USER_HOME (user: $ACTUAL_USER). Re-run the script with sudo from the intended account, or set SUDO_USER explicitly to the correct user."
         fi
 
         # Final verification
