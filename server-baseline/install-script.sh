@@ -1790,9 +1790,12 @@ Useful for running Python applications and scripts" \
     "y"; then
 
     if [ "$DRY_RUN" = true ]; then
+        log_dry_run "Would run: apt-get update"
         log_dry_run "Would install: python3, python3-pip, python3-venv"
     else
         log_info "Installing Python with pip and venv..."
+        # Refresh package lists in case the system-update section was skipped
+        DEBIAN_FRONTEND=noninteractive sudo apt-get update -qq || log_warning "apt-get update reported issues, continuing"
         DEBIAN_FRONTEND=noninteractive sudo apt-get install -y python3 python3-pip python3-venv || handle_error "Failed to install Python"
         log_info "Python $(python3 --version) installed successfully"
     fi
@@ -1818,6 +1821,7 @@ Note: Installs from NodeSource repository for latest LTS version" \
 
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would install Node.js LTS from NodeSource repository"
+        log_dry_run "Would remove pre-installed libnode*/nodejs-doc packages if present (Ubuntu Desktop conflict)"
         log_dry_run "Would install npm package manager"
     else
         log_info "Installing Node.js LTS..."
@@ -1828,6 +1832,15 @@ Note: Installs from NodeSource repository for latest LTS version" \
         fi
         sudo -E bash /tmp/nodesource_setup.sh || handle_error "Failed to execute NodeSource setup script"
         rm -f /tmp/nodesource_setup.sh
+
+        # Ubuntu Desktop ships libnode-dev / libnodeXX which clash with NodeSource nodejs
+        # (apt-get install would fail with "trying to overwrite '/usr/include/node/...'")
+        CONFLICTING_NODE_PKGS=$(dpkg-query -W -f='${Package}\n' 2>/dev/null | grep -E '^(libnode[0-9]*(-dev)?|nodejs-doc)$' | tr '\n' ' ')
+        if [ -n "${CONFLICTING_NODE_PKGS// /}" ]; then
+            log_info "Removing pre-installed packages that conflict with NodeSource: $CONFLICTING_NODE_PKGS"
+            DEBIAN_FRONTEND=noninteractive sudo apt-get remove -y $CONFLICTING_NODE_PKGS || log_warning "Could not remove conflicting packages, install may fail"
+        fi
+
         DEBIAN_FRONTEND=noninteractive sudo apt-get install -y nodejs || handle_error "Failed to install Node.js"
         log_info "Node.js $(node --version) and npm $(npm --version) installed successfully"
     fi
@@ -5641,6 +5654,19 @@ Owner: $ACTUAL_USER" \
                 log_warning "Could not determine correct home directory, using /home/$SUDO_USER"
                 USER_HOME="/home/$SUDO_USER"
             fi
+        fi
+
+        # Cross-check USER_HOME against /etc/passwd for ACTUAL_USER and verify the directory exists.
+        # On Ubuntu Desktop with multiple users, the early autodetection may have picked the wrong one.
+        PASSWD_HOME=$(getent passwd "$ACTUAL_USER" 2>/dev/null | cut -d: -f6)
+        if [ -n "$PASSWD_HOME" ] && [ "$PASSWD_HOME" != "/" ] && [ "$PASSWD_HOME" != "$USER_HOME" ]; then
+            log_warning "USER_HOME ($USER_HOME) does not match /etc/passwd entry for $ACTUAL_USER ($PASSWD_HOME)"
+            log_info "Using home directory from /etc/passwd: $PASSWD_HOME"
+            USER_HOME="$PASSWD_HOME"
+        fi
+
+        if [ ! -d "$USER_HOME" ]; then
+            handle_error "Home directory does not exist: $USER_HOME (user: $ACTUAL_USER). Re-run with 'sudo -u <correct-user>' or set SUDO_USER explicitly."
         fi
 
         # Final verification
