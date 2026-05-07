@@ -5673,7 +5673,7 @@ Owner: $ACTUAL_USER" \
         fi
 
         if [ ! -d "$USER_HOME" ]; then
-            handle_error "Home directory does not exist: $USER_HOME (user: $ACTUAL_USER). Re-run the script with sudo from the intended account, or set SUDO_USER explicitly to the correct user."
+            handle_error "Home directory does not exist: $USER_HOME (user: $ACTUAL_USER). Re-run the script with sudo from the intended account."
         fi
 
         # Final verification
