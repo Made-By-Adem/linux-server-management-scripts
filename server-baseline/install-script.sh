@@ -2,7 +2,7 @@
 
 ###############################################################################
 # System Installation & Hardening Script
-# For Ubuntu/Debian servers and desktops (including Raspberry Pi)
+# For Ubuntu/Debian/Kali servers and desktops (including Raspberry Pi)
 # Version: 3.1 - Interactive & Safe for Existing Servers + Desktop Mode
 ###############################################################################
 
@@ -1177,6 +1177,8 @@ Repositories:
                 else
                     log_info "Debian security repository already configured"
                 fi
+            elif [ "$OS_ID" = "kali" ]; then
+                log_info "Kali Linux detected - security updates included in kali-rolling repository"
             else
                 log_warning "Unknown OS: $OS_ID - skipping security repository configuration"
             fi
@@ -1952,7 +1954,7 @@ fi
 if [ "${SKIP_DOCKER:-false}" = false ] && ! is_completed "DOCKER_INSTALL" && [ "$DRY_RUN" = false ]; then
 # Detect OS for Docker repository
 if [ ! -f /etc/os-release ]; then
-    handle_error "/etc/os-release not found. This script requires Ubuntu, Debian, or Raspbian OS"
+    handle_error "/etc/os-release not found. This script requires Ubuntu, Debian, Kali, or Raspbian OS"
 fi
 
 . /etc/os-release
@@ -1965,6 +1967,11 @@ fi
 DOCKER_OS="${ID}"
 if [ "$ID" = "raspbian" ]; then
     DOCKER_OS="debian"
+fi
+if [ "$ID" = "kali" ]; then
+    DOCKER_OS="debian"
+    # Kali rolling is based on Debian testing/sid; Docker only ships stable suites
+    VERSION_CODENAME="bookworm"
 fi
 
 # Check if required codename variable exists
