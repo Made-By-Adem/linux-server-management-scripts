@@ -34,3 +34,6 @@ tests/
 *.test
 
 .claude
+
+# Companion project - lives in its own repo (Made-By-Adem/linux-server-telegram-bot)
+linux-server-telegram-bot/
