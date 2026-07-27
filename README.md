@@ -2,6 +2,9 @@
 
 A collection of professional bash scripts for Ubuntu/Debian server and desktop management, automation, and Docker container maintenance.
 
+> [!IMPORTANT]
+> **These scripts are built for single-admin servers.** They assume every account with shell access on the machine is trusted — typically a VPS, homelab box, or Raspberry Pi that you alone administer. Several deliberate design choices trade local privilege-boundary hardening for practicality and lockout safety. If your server has untrusted local users, read the **Security model** section below before running anything here.
+
 ## 📦 What's Inside?
 
 This repository contains two main toolsets:
@@ -271,24 +274,68 @@ sudo bash update-containers.sh --interactive
 
 ---
 
-## 🛡️ Security
+## 🛡️ Security Model
 
-Both scripts follow security best practices:
+### Threat model
 
-- **Minimal privileges:** Only request sudo when needed
-- **Input validation:** All user inputs are sanitized
-- **Safe defaults:** Secure configurations out of the box
-- **Backup creation:** Critical files backed up before changes
-- **Audit logging:** All actions logged for review
-- **Error handling:** Graceful failure with rollback support
+These scripts harden a server against **remote attackers** — the internet-facing surface. They are **not** designed to defend against an unprivileged local user who already has shell access on the same machine.
 
-### Security Features (Server Baseline)
+**In scope:**
 
-- SSH hardening (disable root login, password auth)
-- UFW firewall configuration
-- Fail2ban intrusion prevention
-- Automatic security updates
-- HTTPS-only package downloads
+- Remote attackers: SSH brute force, exposed services, network-level attacks
+- Automated scanners and opportunistic bots
+- Unpatched packages and known CVEs
+
+**Explicitly out of scope:**
+
+- Privilege escalation by an unprivileged local user who already has a shell
+- Isolation between multiple users sharing the same host
+- Defending against a malicious administrator
+
+If your server has untrusted local users — shared hosting, a jump box with several operators, or a CI runner executing untrusted code — **these scripts are not a good fit as they stand**. See *Hardening beyond the default* below.
+
+### Deliberate design choices
+
+The following are conscious trade-offs that follow from the threat model above, not oversights. Each one is safe under "every local user is trusted" and becomes a real risk if that assumption does not hold for you.
+
+| Choice | Rationale | What it means for you |
+| ------ | --------- | --------------------- |
+| **Port 22 stays open** alongside the hardened SSH port (888) | Lockout prevention. If the new port, the firewall, or the SSH config turns out to be wrong, you can still get in — especially on a remote VPS with no console access. | Port 888 is rate-limited with `ufw limit`; port 22 is a plain `ufw allow`. Fail2ban monitors both (`port = 22,888`). If you don't need the fallback, remove port 22 from `sshd_config` and UFW once you have verified that 888 works. |
+| **`PermitRootLogin prohibit-password`** | Key-based root login stays available for rescue and automation. | CIS and Lynis (SSH-7412) recommend `PermitRootLogin no`. Direct root login also bypasses the sudo audit trail. Change it if you don't need root over SSH. |
+| **Docker publishes ports on all interfaces** — Portainer (9443), Portainer Agent (8000), Netdata (19999) | These services are meant to be reachable; that is the point of installing them. | Docker writes its own DNAT rules and **bypasses the UFW `INPUT` chain**. A UFW rule is not what makes these ports reachable, and declining the UFW prompt does *not* close them. To bind everything to localhost instead, answer **yes** to the Cloudflare-only prompt in the Cloudflare Tunnel section — that binds all Docker services to `127.0.0.1` and reaches them through the tunnel. |
+| **Netdata runs without authentication** and mounts the systemd journal, `/etc/passwd`, and `docker.sock` (read-only) | Full host visibility out of the box, no extra configuration. | Combined with the row above, an unauthenticated Netdata on a public IP exposes system logs, usernames, and the process table. Either use Cloudflare-only mode, put it behind a reverse proxy with authentication, or restrict it with `ufw allow from <trusted-ip> to any port 19999`. |
+| **Config files are written as root** into the admin's home directory, and predictable `/tmp` paths are used for dry-run reports and downloads | Simplicity, and the paths are easy to find afterwards. | Symlink and TOCTOU races against these paths are possible, but they require an unprivileged local user — out of scope by design. |
+| **`update-containers.sh` discovers compose files under `/home/*/docker/`** and runs them as root | Finds your stacks wherever they live, without configuration. | Anyone who can write to those directories can influence what root executes. Fine when you are the only user; not fine on a shared box. |
+| **The admin is added to the `docker` group** | Run Docker without `sudo` for every command. | Docker group membership is functionally equivalent to root (`docker run -v /:/host --privileged`). Treat that account as a root account. |
+
+### What the scripts do protect
+
+- **SSH hardening:** password authentication disabled in server mode (kept in `--desktop` mode by design), public-key authentication enforced, non-standard port with rate limiting, `MaxSessions` limits
+- **UFW firewall:** default-deny inbound, explicit rules per service (note the Docker caveat above)
+- **Fail2ban:** intrusion prevention on SSH (ports 22 and 888) and other services
+- **Automatic security updates:** unattended-upgrades for security patches
+- **Kernel and system hardening:** 15+ sysctl parameters, USB storage control, core dump protection, `/proc` hardening, PAM and password policies (SHA-512, 65536 rounds)
+- **File integrity monitoring:** AIDE with SHA-512 checksums, plus rkhunter and Lynis scans
+- **HTTPS-only downloads:** all package sources over TLS; the Docker APT repository is added with a verified `signed-by` keyring
+- **Backups before changes:** critical files such as `sshd_config` are backed up with a timestamp before modification
+- **Audit logging:** every action logged to `/var/log/server_install_[timestamp].log`
+
+**Known gaps, honestly stated:**
+
+- **Input validation is partial.** Numeric inputs (port numbers, session limits, container selection) and the Netdata Telegram credentials are validated with explicit checks. Free-text inputs — the DNS domain, the MOTD server description, and the security-scan Telegram token — are not. They are interpolated into `sed` expressions and generated scripts as-is. Malformed input can break the run; it is not a remote attack surface, but do not paste untrusted text into these prompts.
+- **Container images are not pinned.** Netdata, Portainer, and cloudflared use `:latest`/`:lts`. A compromised upstream image would be pulled by the next `update-containers.sh` run, and both Portainer and Netdata mount `docker.sock`. Pin to a digest if that matters to you.
+- **Not every download is integrity-checked.** The Lynis tarball and the NodeSource setup script are fetched over HTTPS but without a checksum or GPG signature.
+- **Rollback is partial.** `sshd_config` always gets a timestamped backup, and interactive mode generates a `rollback.sh`. In `--fresh-install` mode there is no backup of `journald.conf`, `jail.local`, or the sysctl settings.
+
+### Hardening beyond the default
+
+If your threat model includes untrusted local users, make at least these changes before using the scripts:
+
+1. Bind all Docker services to `127.0.0.1` (use Cloudflare-only mode) and reach them through a tunnel, VPN, or authenticated reverse proxy.
+2. Remove `/home/*/docker` from the search paths in `update-containers.sh`, or require that compose files are owned by root before executing them.
+3. Set `PermitRootLogin no` and close port 22 once port 888 is verified.
+4. Do not add regular users to the `docker` group; consider rootless Docker instead.
+5. Add `umask 077` to the scripts so generated files are not world-readable by default.
 
 ### Security Features (Container Updates)
 
