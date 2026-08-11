@@ -38,7 +38,7 @@ A comprehensive script for setting up and securing new Ubuntu/Debian servers and
 - Dry-run mode for testing
 - **Desktop mode** (`--desktop`): adapted security for Ubuntu Desktop (password auth, USB, printing preserved)
 - **Control verification** ([`security-selfcheck.sh`](server-baseline/security-selfcheck.sh)): a daily check that the security controls actually produce a result, rather than merely being installed. Runs standalone on any host.
-- **Security watchdog** ([`watchdogs/security-watchdog.sh`](server-baseline/watchdogs/security-watchdog.sh)): per-minute alert when `auditd`, `fail2ban`, or the fail2ban sshd jail stops or comes back, with a monthly self-test of the alert path.
+- **Security watchdog** ([`watchdogs/security-watchdog.sh`](server-baseline/watchdogs/security-watchdog.sh)): per-minute alert on `auditd`/`fail2ban` stopping, the fail2ban jail going unreachable, a new port on `0.0.0.0`, changed SSH keys, PATH hijacking, `ld.so.preload`, UFW being disabled, a second Docker daemon, or an unknown container image — each with a diff of what changed. Monthly self-test of the alert path.
 - **Verify mode** (`--verify`): read-only check that the controls actually work — is fail2ban banning, is sshd on the right port only, does auditd have rules, is anything on `0.0.0.0` that should not be.
 
 **Use Cases:**
@@ -403,10 +403,31 @@ It runs daily at 06:00 when installed by the baseline, and stays silent unless
 something fails.
 
 Alongside it, [`watchdogs/security-watchdog.sh`](server-baseline/watchdogs/security-watchdog.sh)
-runs every minute and alerts on **state transitions**, in either direction, of
-`auditd`, `fail2ban`, and — separately — whether the fail2ban **sshd jail** is
-actually reachable. That last one is tracked on its own because "fail2ban is
-active" was true throughout the incident while the jail banned nothing. The two are complementary: the self-check is level-triggered and
+runs every minute and alerts on **change**, staying silent otherwise. Every
+alert says *what* changed, not merely that something did.
+
+| Watched | Alerts when |
+| --- | --- |
+| `auditd`, `fail2ban` | The unit stops — and again when it returns unexplained |
+| `fail2ban-jail` | The service is up but the sshd jail is unreachable. Tracked separately because "fail2ban is active" was true throughout the incident while it banned nothing |
+| `listeners` | A port appears on `0.0.0.0`. In the incident a management API came back after a reboot and was exploited 25 seconds later |
+| `root-keys` | `authorized_keys` changes for root or an admin user |
+| `path-hijack` | `.local/bin` under a system path, or a replaced `top`/`crontab`/`lsof` |
+| `ld-preload` | `/etc/ld.so.preload` becomes non-empty |
+| `ufw` | The firewall is disabled or a default policy changes |
+| `docker-daemons` | A second `dockerd`/`containerd` appears |
+| `container-images` | A container image never seen on this host starts running |
+| `boot-id` | The machine rebooted — context for the service alerts that follow |
+
+Drop any of them via `WATCH_MONITORS` in `/etc/server-baseline/selfcheck.env` if
+one proves noisy in your environment. Use `--reset` to re-baseline after an
+intentional change.
+
+Deliberately *not* watched here: new systemd unit files. The self-installing
+unit in the incident existed for 30 seconds, so a per-minute poll would have
+missed it — that is what the auditd watch on `/etc/systemd/system/` is for.
+Outbound connections are also excluded: too noisy to poll, and the short-lived
+ones get missed anyway. That is an egress-policy problem, not an alerting one. The two are complementary: the self-check is level-triggered and
 answers "is everything healthy right now", the watchdog is edge-triggered and
 answers "did something just change". auditd can be stopped and a payload
 deployed inside a single minute, which a daily check reports far too late.

@@ -1,39 +1,55 @@
 #!/bin/bash
 ###############################################################################
-# Security watchdog - alerts on STATE TRANSITIONS of security controls
+# Security watchdog - alerts on STATE CHANGES of security-relevant things
 #
 # The daily self-check is level-triggered: it reports what is true at 06:00.
-# This is edge-triggered: it reports the moment a control changes state, and
-# says nothing the rest of the time.
+# This is edge-triggered: it reports the moment something changes, and says
+# nothing the rest of the time.
 #
 # That distinction is the whole point. In the incident this was written for,
 # auditd was stopped at 07:24:49 as the first step of the compromise and the
 # payload was deployed 25 seconds later. A daily check would have reported it
 # hours afterwards. Nothing alerted at all.
 #
-# Reports both directions. "It came back" is not noise - an unexplained restart
-# is as interesting as an unexplained stop.
-#
 # WHAT IS WATCHED
 #
-#   auditd            systemd unit state
-#   fail2ban          systemd unit state
-#   fail2ban-jail     synthetic: is the sshd jail actually reachable?
+#   Units (WATCH_UNITS)           systemd state, alerting on stop and on return
+#     auditd                      stopping it is the first move of this attack class
+#     fail2ban                    if it stops, SSH accepts unlimited attempts
+#     fail2ban-jail               synthetic: is the sshd jail actually reachable?
 #
-# The last one exists because "fail2ban is active" was true throughout the
-# incident while the jail banned nothing. A unit being up is not the same as the
-# control working, so the jail is tracked as a state of its own.
+#   Monitors (WATCH_MONITORS)     content snapshots, alerting on what changed
+#     listeners                   a new port bound to 0.0.0.0 / ::
+#     root-keys                   authorized_keys for root and admin users
+#     path-hijack                 .local/bin under a system path, shim directories
+#     ld-preload                  /etc/ld.so.preload is non-empty
+#     ufw                         firewall disabled or default policy changed
+#     docker-daemons              a second dockerd/containerd appearing
+#     container-images            a container image never seen on this host before
+#     boot-id                     the machine rebooted (context for the rest)
+#
+# fail2ban-jail is tracked separately from the fail2ban unit because "fail2ban
+# is active" was true throughout the incident while the jail banned nothing.
+# A unit being up is not the same as the control working.
+#
+# Alerts state WHAT changed, not merely that something did. A message saying
+# "authorized_keys changed" at 03:00 without the diff is not actionable.
 #
 # Usage:
 #   security-watchdog.sh           # check and alert on change (for cron/timer)
 #   security-watchdog.sh --test    # send a test alert, verifying the alert path
 #   security-watchdog.sh --status  # print current state, change nothing
+#   security-watchdog.sh --reset   # re-baseline everything without alerting
 #
 # Config, from /etc/server-baseline/selfcheck.env:
 #   TELEGRAM_BOT_TOKEN=...
 #   TELEGRAM_CHAT_ID=...
-#   WATCH_UNITS="auditd fail2ban"   # optional, space separated
-#   WATCH_JAIL="sshd"               # optional, "" disables the jail check
+#   WATCH_UNITS="auditd fail2ban"
+#   WATCH_JAIL="sshd"                   # "" disables the jail check
+#   WATCH_MONITORS="listeners root-keys path-hijack ld-preload ufw docker-daemons container-images boot-id"
+#
+# Drop any monitor from WATCH_MONITORS that turns out to be too noisy for your
+# environment. Each one is independent.
 ###############################################################################
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -52,12 +68,14 @@ TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${SECRET_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-${CHAT_ID_PERSON1:-}}"
 WATCH_UNITS="${WATCH_UNITS:-auditd fail2ban}"
 WATCH_JAIL="${WATCH_JAIL-sshd}"
+WATCH_MONITORS="${WATCH_MONITORS:-listeners root-keys path-hijack ld-preload ufw docker-daemons container-images boot-id}"
 
 MODE="check"
 case "${1:-}" in
     --test)   MODE="test" ;;
     --status) MODE="status" ;;
-    --help|-h) sed -n '2,38p' "$0"; exit 0 ;;
+    --reset)  MODE="reset" ;;
+    --help|-h) sed -n '2,55p' "$0"; exit 0 ;;
     "") : ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
 esac
@@ -70,10 +88,19 @@ fi
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
 
+# Syslog is the trace that survives when Telegram does not. Never let its
+# absence produce noise on a scheduled run.
+syslog() {
+    if command -v logger >/dev/null 2>&1; then
+        logger -t security-watchdog "$1"
+    fi
+    return 0
+}
+
 # Telegram's HTML parse mode rejects a message containing a raw <, > or &.
-# A journal line with any of those would make the API return 400 and the alert
-# would vanish silently - the exact failure class this watchdog exists to catch,
-# so it must not be reintroduced here.
+# A journal line or a key comment with any of those would make the API return
+# 400 and the alert would vanish silently - the exact failure class this
+# watchdog exists to catch, so it must not be reintroduced here.
 html_escape() {
     sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
@@ -82,7 +109,7 @@ send_telegram() {
     local msg="$1"
 
     if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
-        logger -t security-watchdog "no Telegram credentials configured; alert not sent"
+        syslog "no Telegram credentials configured; alert not sent"
         echo "$msg" >&2
         return 1
     fi
@@ -99,12 +126,14 @@ send_telegram() {
         return 0
     fi
     # A silently failing alerter is worse than none, so make it loud in syslog.
-    logger -t security-watchdog "Telegram send FAILED with HTTP ${http_code}"
+    syslog "Telegram send FAILED with HTTP ${http_code}"
     return 1
 }
 
-# What this control is for, and why its absence matters. Shown in the alert so
-# whoever reads it at 03:00 does not have to remember.
+###############################################################################
+# Unit checks - state is a single word, alerting on stop and on return
+###############################################################################
+
 impact_of() {
     case "$1" in
         auditd)
@@ -127,8 +156,6 @@ recovery_of() {
     esac
 }
 
-# Current state of a watched thing. Real units resolve through systemctl; the
-# synthetic fail2ban-jail entry resolves through fail2ban-client.
 state_of() {
     case "$1" in
         fail2ban-jail)
@@ -146,11 +173,155 @@ state_of() {
     esac
 }
 
-# Only watch what is actually installed on this host.
+###############################################################################
+# Monitors - state is a content snapshot, alerting on what changed
+###############################################################################
+
+# Human-readable title per monitor
+monitor_title() {
+    case "$1" in
+        listeners)        echo "PUBLIC LISTENERS CHANGED" ;;
+        root-keys)        echo "AUTHORIZED SSH KEYS CHANGED" ;;
+        path-hijack)      echo "PATH HIJACK DETECTED" ;;
+        ld-preload)       echo "LD_PRELOAD HIJACK DETECTED" ;;
+        ufw)              echo "FIREWALL STATE CHANGED" ;;
+        docker-daemons)   echo "DOCKER DAEMON SET CHANGED" ;;
+        container-images) echo "NEW CONTAINER IMAGE" ;;
+        boot-id)          echo "SYSTEM REBOOTED" ;;
+        *)                echo "STATE CHANGED: $1" ;;
+    esac
+}
+
+monitor_impact() {
+    case "$1" in
+        listeners)
+            echo "A port bound to all interfaces is reachable from the internet unless a firewall stops it - and for container ports, UFW does not. In the incident this watchdog was built for, a management API came back online after a reboot and was exploited 25 seconds later." ;;
+        root-keys)
+            echo "An added key grants permanent access and survives password changes and reboots. Verify you made this change." ;;
+        path-hijack)
+            echo "A directory under a system path now precedes /usr/bin in PATH. This is how top, htop, lsof, crontab, df and mount get replaced with versions that filter their own output. Treat every observation made through those tools as unreliable." ;;
+        ld-preload)
+            echo "Every dynamically linked binary on this host now loads the listed library first. This is a full userland rootkit hook." ;;
+        ufw)
+            echo "The host firewall state changed. If it is now inactive, every service on this machine is exposed." ;;
+        docker-daemons)
+            echo "A second Docker daemon with its own data-root runs containers that do not appear in 'docker ps'. That is not filtering - it is a separate container environment." ;;
+        container-images)
+            echo "A container image not previously seen on this host is now running. Verify it is one of yours." ;;
+        boot-id)
+            echo "The machine rebooted. Expect accompanying alerts about services stopping - that is normal for a reboot. If you did not initiate it, that is the finding." ;;
+        *)
+            echo "This monitored state changed." ;;
+    esac
+}
+
+# Severity: crit = always an incident, warn = verify it was you,
+# info = context only. Drives the emoji and nothing else.
+monitor_level() {
+    case "$1" in
+        path-hijack|ld-preload|docker-daemons) echo "crit" ;;
+        boot-id)                               echo "info" ;;
+        *)                                     echo "warn" ;;
+    esac
+}
+
+# Whether a non-empty snapshot is inherently bad. Those alert on the very first
+# run too - a host that is already compromised at install time must not have
+# that state silently accepted as the baseline.
+monitor_expects_empty() {
+    case "$1" in
+        path-hijack|ld-preload) return 0 ;;
+        *)                      return 1 ;;
+    esac
+}
+
+# Current snapshot for a monitor: zero or more lines, order-independent.
+# Must never include PIDs or timestamps - those change constantly and would
+# turn every monitor into a source of noise.
+monitor_snapshot() {
+    case "$1" in
+
+    listeners)
+        # port + owning process, never the PID
+        ss -tlnpH 2>/dev/null | while read -r line; do
+            local addr port proc
+            addr=$(echo "$line" | awk '{print $4}')
+            case "$addr" in
+                0.0.0.0:*|'*':*|'[::]':*) : ;;
+                *) continue ;;
+            esac
+            port=${addr##*:}
+            proc=$(echo "$line" | grep -oE 'users:\(\("[^"]+"' | grep -oE '"[^"]+"' | tr -d '"' | head -1)
+            echo "${port} ${proc:-unknown}"
+        done | sort -u
+        ;;
+
+    root-keys)
+        for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do
+            [ -f "$f" ] || continue
+            # Fingerprints, not raw keys: stable, and safe to put in a message
+            ssh-keygen -lf "$f" 2>/dev/null | while read -r bits fp comment rest; do
+                echo "$f ${fp} ${comment}"
+            done
+        done | sort -u
+        ;;
+
+    path-hijack)
+        grep -ls '/bin/\.local/bin\|/usr/bin/\.local/bin' \
+            /etc/profile /etc/profile.d/* /etc/environment /etc/bash.bashrc \
+            /root/.bashrc /root/.profile 2>/dev/null | sed 's/^/profile: /'
+        for d in /usr/bin/.local /bin/.local; do
+            [ -d "$d" ] && echo "shim-dir: $d"
+        done
+        for b in top htop lsof crontab df mount strace ldd; do
+            for d in /usr/bin /bin; do
+                [ -f "$d/.local/bin/$b" ] && echo "shim: $d/.local/bin/$b"
+            done
+        done
+        true
+        ;;
+
+    ld-preload)
+        [ -s /etc/ld.so.preload ] && sed 's/^/preload: /' /etc/ld.so.preload
+        true
+        ;;
+
+    ufw)
+        if command -v ufw >/dev/null 2>&1; then
+            ufw status verbose 2>/dev/null | grep -iE '^status:|^default:' | tr -s ' '
+        fi
+        ;;
+
+    docker-daemons)
+        # Normalised command lines, no PIDs. Legitimate daemons are excluded by
+        # their standard invocation; anything else is reported.
+        ps -eo args 2>/dev/null | \
+            grep -E '(^|/)(dockerd|containerd)( |$)' | \
+            grep -v grep | \
+            grep -vE -- '-H fd://|--config /etc/containerd|^/usr/bin/containerd$|containerd-shim' | \
+            cut -c1-120 | sort -u
+        ;;
+
+    container-images)
+        if command -v docker >/dev/null 2>&1; then
+            docker ps --format '{{.Image}}' 2>/dev/null | sort -u
+        fi
+        ;;
+
+    boot-id)
+        cat /proc/sys/kernel/random/boot_id 2>/dev/null
+        ;;
+
+    esac
+}
+
+###############################################################################
+# Which checks apply to this host
+###############################################################################
+
 WATCH_LIST=""
 for unit in $WATCH_UNITS; do
-    if systemctl list-unit-files "${unit}.service" >/dev/null 2>&1 && \
-       systemctl cat "$unit" >/dev/null 2>&1; then
+    if systemctl cat "$unit" >/dev/null 2>&1; then
         WATCH_LIST="$WATCH_LIST $unit"
     fi
 done
@@ -162,10 +333,19 @@ WATCH_LIST="${WATCH_LIST# }"
 HOST=$(hostname)
 TS=$(date '+%d-%m-%Y %H:%M:%S')
 
+###############################################################################
+# --test / --status / --reset
+###############################################################################
+
 if [ "$MODE" = "test" ]; then
-    STATE_LINES=""
+    LINES=""
     for unit in $WATCH_LIST; do
-        STATE_LINES="${STATE_LINES}• <code>${unit}</code>: $(state_of "$unit")
+        LINES="${LINES}• <code>${unit}</code>: $(state_of "$unit")
+"
+    done
+    for m in $WATCH_MONITORS; do
+        n=$(monitor_snapshot "$m" 2>/dev/null | grep -c . || true)
+        LINES="${LINES}• <code>${m}</code>: ${n:-0} entries
 "
     done
     MSG="<b>🧪 WATCHDOG TEST</b>
@@ -173,10 +353,10 @@ if [ "$MODE" = "test" ]; then
 <b>Time:</b> ${TS}
 
 <b>Currently watching:</b>
-${STATE_LINES}
+${LINES}
 <i>This is a deliberate test. If you are reading it, the alert path works.</i>"
     if send_telegram "$MSG"; then
-        echo "Test alert sent. Watching: $WATCH_LIST"
+        echo "Test alert sent."
         exit 0
     fi
     echo "Test alert FAILED - see: journalctl -t security-watchdog" >&2
@@ -184,12 +364,31 @@ ${STATE_LINES}
 fi
 
 if [ "$MODE" = "status" ]; then
+    echo "Units:"
     for unit in $WATCH_LIST; do
-        printf '%-18s now=%-18s last_seen=%s\n' \
-            "$unit" \
-            "$(state_of "$unit")" \
+        printf '  %-18s now=%-18s last_seen=%s\n' \
+            "$unit" "$(state_of "$unit")" \
             "$(cat "${STATE_DIR}/${unit}.state" 2>/dev/null || echo '(none)')"
     done
+    echo "Monitors:"
+    for m in $WATCH_MONITORS; do
+        now=$(monitor_snapshot "$m" 2>/dev/null | grep -c . || true)
+        was=$(grep -c . "${STATE_DIR}/${m}.snapshot" 2>/dev/null || true)
+        printf '  %-18s now=%-4s entries   baseline=%s\n' "$m" "${now:-0}" "${was:-none}"
+    done
+    exit 0
+fi
+
+if [ "$MODE" = "reset" ]; then
+    for unit in $WATCH_LIST; do
+        state_of "$unit" > "${STATE_DIR}/${unit}.state"
+        chmod 600 "${STATE_DIR}/${unit}.state"
+    done
+    for m in $WATCH_MONITORS; do
+        monitor_snapshot "$m" 2>/dev/null > "${STATE_DIR}/${m}.snapshot"
+        chmod 600 "${STATE_DIR}/${m}.snapshot"
+    done
+    echo "Baseline reset. Nothing was alerted."
     exit 0
 fi
 
@@ -198,6 +397,8 @@ fi
 ###############################################################################
 
 EXIT_CODE=0
+
+# --- Units ------------------------------------------------------------------
 
 for unit in $WATCH_LIST; do
     STATE_FILE="${STATE_DIR}/${unit}.state"
@@ -214,7 +415,7 @@ for unit in $WATCH_LIST; do
     echo "$NOW" > "$STATE_FILE"
     chmod 600 "$STATE_FILE"
 
-    [ "$NOW" = "$PREV" ] && continue   # no transition, nothing to report
+    [ "$NOW" = "$PREV" ] && continue
 
     LABEL=$(echo "$unit" | tr '[:lower:]-' '[:upper:] ')
 
@@ -225,7 +426,7 @@ for unit in $WATCH_LIST; do
 <b>Status:</b> active (was <code>${PREV}</code>)
 
 $(recovery_of "$unit")"
-        logger -t security-watchdog "${unit} restored on ${HOST} (was ${PREV})"
+        syslog "${unit} restored on ${HOST} (was ${PREV})"
     else
         case "$unit" in
             fail2ban-jail) JOURNAL_UNIT="fail2ban" ;;
@@ -247,10 +448,83 @@ $(impact_of "$unit")
 <pre>${LAST}</pre>
 
 <i>Verify whether this was expected.</i>"
-        logger -t security-watchdog "${unit} STOPPED on ${HOST} (state=${NOW}, was ${PREV})"
+        syslog "${unit} STOPPED on ${HOST} (state=${NOW}, was ${PREV})"
         EXIT_CODE=1
     fi
 
+    send_telegram "$MSG" || true
+done
+
+# --- Monitors ---------------------------------------------------------------
+
+TMP_NOW=$(mktemp) || exit 1
+TMP_PREV=$(mktemp) || exit 1
+trap 'rm -f "$TMP_NOW" "$TMP_PREV"' EXIT
+
+for m in $WATCH_MONITORS; do
+    SNAP_FILE="${STATE_DIR}/${m}.snapshot"
+
+    monitor_snapshot "$m" 2>/dev/null | grep -v '^$' > "$TMP_NOW"
+
+    FIRST_RUN=false
+    if [ -f "$SNAP_FILE" ]; then
+        cp "$SNAP_FILE" "$TMP_PREV"
+    else
+        : > "$TMP_PREV"
+        FIRST_RUN=true
+    fi
+
+    # Persist before alerting, same reasoning as the unit checks above.
+    cp "$TMP_NOW" "$SNAP_FILE"
+    chmod 600 "$SNAP_FILE"
+
+    if cmp -s "$TMP_NOW" "$TMP_PREV"; then
+        continue
+    fi
+
+    # On the very first run there is nothing to compare against. Stay quiet,
+    # unless the monitor is one where any content at all is a finding.
+    if [ "$FIRST_RUN" = true ]; then
+        if monitor_expects_empty "$m" && [ -s "$TMP_NOW" ]; then
+            : # fall through and alert
+        else
+            continue
+        fi
+    fi
+
+    ADDED=$(grep -vxF -f "$TMP_PREV" "$TMP_NOW" 2>/dev/null | head -10 | html_escape)
+    REMOVED=$(grep -vxF -f "$TMP_NOW" "$TMP_PREV" 2>/dev/null | head -10 | html_escape)
+
+    DETAIL=""
+    [ -n "$ADDED" ]   && DETAIL="${DETAIL}<b>Appeared:</b>
+<pre>${ADDED}</pre>
+"
+    [ -n "$REMOVED" ] && DETAIL="${DETAIL}<b>Gone:</b>
+<pre>${REMOVED}</pre>
+"
+    [ -z "$DETAIL" ]  && DETAIL="<i>Content changed but the diff is empty - check manually.</i>
+"
+
+    case "$(monitor_level "$m")" in
+        crit) ICON="🚨"; EXIT_CODE=1 ;;
+        info) ICON="ℹ️" ;;
+        *)    ICON="⚠️" ;;
+    esac
+
+    WHO=$(who 2>/dev/null | wc -l)
+
+    MSG="<b>${ICON} $(monitor_title "$m")</b>
+<b>Host:</b> <code>${HOST}</code>
+<b>Time:</b> ${TS}
+<b>Sessions:</b> ${WHO} logged in
+
+${DETAIL}
+<b>Why this matters:</b>
+$(monitor_impact "$m")
+
+<i>Verify whether this was expected.</i>"
+
+    syslog "${m} changed on ${HOST}"
     send_telegram "$MSG" || true
 done
 

@@ -439,13 +439,25 @@ That difference is the point. auditd was stopped in under a second as the first
 step of the compromise, and nothing reported it. A daily check would have said
 so hours later.
 
-It watches three things:
+It watches three services and eight state snapshots:
 
 | Watched | Why |
 | --- | --- |
 | `auditd` unit state | Stopping it is the first move of this compromise class |
 | `fail2ban` unit state | If it stops, SSH accepts unlimited attempts |
 | `fail2ban-jail` | Tracked separately, because "fail2ban is active" was true throughout the incident **while the jail banned nothing**. A unit being up is not the same as the control working. |
+| `listeners` | A port appearing on `0.0.0.0`. The API on 8120 came back after the reboot and was hit 25 seconds later |
+| `root-keys` | `authorized_keys` changing for root or an admin user |
+| `path-hijack` | `.local/bin` under a system path, or replaced diagnostic tools |
+| `ld-preload` | `/etc/ld.so.preload` becoming non-empty |
+| `ufw` | The firewall being disabled or a default policy changing |
+| `docker-daemons` | A second `dockerd`/`containerd` — the hidden daemon from evidence item 3 |
+| `container-images` | A container image never seen on this host before |
+| `boot-id` | A reboot, as context for the service alerts that follow it |
+
+Alerts include a diff, so you can see *what* changed rather than only that
+something did. `--reset` re-baselines everything without alerting, for after an
+intentional change.
 
 ```bash
 install -m 700 -o root -g root \

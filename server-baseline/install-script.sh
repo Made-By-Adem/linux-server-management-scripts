@@ -5343,8 +5343,8 @@ else
     if ask_component_install \
         "SECURITY WATCHDOG" \
         "audit-logging" \
-        "Alert immediately when a security control stops or comes back." \
-        "What it watches, every minute:
+        "Alert immediately when a security control stops or something changes." \
+        "Services (alerts on stop AND on unexplained return):
 • auditd         - systemd unit state
 • fail2ban       - systemd unit state
 • fail2ban-jail  - whether the sshd jail is actually reachable
@@ -5353,15 +5353,27 @@ That last one exists because 'fail2ban is active' was true throughout the
 incident this was written for, while the jail banned nothing. A unit being up
 is not the same as the control working, so the jail is tracked separately.
 
+State changes (alerts with a diff of what changed):
+• listeners        - a new port bound to 0.0.0.0 or ::
+• root-keys        - authorized_keys for root and admin users
+• path-hijack      - .local/bin under a system path, or replaced diagnostic tools
+• ld-preload       - /etc/ld.so.preload became non-empty
+• ufw              - firewall disabled or default policy changed
+• docker-daemons   - a second dockerd/containerd appeared
+• container-images - a container image never seen on this host before
+• boot-id          - the machine rebooted (context for the alerts around it)
+
 Behaviour:
-• Alerts on transition only - silent while nothing changes
-• Reports both directions (a stop AND an unexplained restart)
-• Each alert states the impact, the logged-in session count and the last log line
+• Alerts on change only - silent while nothing changes
+• Every alert says WHAT changed, not just that something did
+• States the impact, the logged-in session count and the last log line
 • Logs to syslog as well, so there is a trace even if Telegram fails
+• Any monitor can be dropped via WATCH_MONITORS if it proves noisy
 
 Installed to: /usr/local/bin/security-watchdog.sh
 Schedule:     systemd timer, every minute
 Test alert:   sudo security-watchdog --test  (also runs monthly on its own)
+Re-baseline:  sudo security-watchdog --reset (after intentional changes)
 
 Why separate from the daily self-check: a control can be stopped and the payload
 deployed inside a single minute. A once-a-day check reports that far too late." \
