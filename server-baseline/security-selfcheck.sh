@@ -190,25 +190,44 @@ else
     # full of failures is a fault, not quiet.
     # Note: `grep -c` prints 0 AND exits 1 on no match, so `|| echo 0` would
     # produce "0\n0" and break the numeric test. wc -l always exits 0.
-    BANS=$(fail2ban-client status sshd 2>/dev/null | /bin/grep -i 'Total banned' | /bin/grep -oE '[0-9]+$' | /usr/bin/head -1)
+    #
+    # Both counters must cover the SAME window. fail2ban's totals reset when the
+    # service restarts, so comparing them against a fixed 7-day journal count
+    # reports a freshly restarted jail as broken - which is exactly what this
+    # check did on its first real run.
+    F2B_STATUS=$(fail2ban-client status sshd 2>/dev/null)
+    BANS=$(echo "$F2B_STATUS" | /bin/grep -i 'Total banned' | /bin/grep -oE '[0-9]+$' | /usr/bin/head -1)
     BANS=${BANS:-0}
-    ATTEMPTS=$(/bin/journalctl -u ssh --since "-7 days" --no-pager 2>/dev/null | \
-               /bin/grep -iE 'Failed password|Invalid user|authentication failure' | /usr/bin/wc -l)
+    SEEN=$(echo "$F2B_STATUS" | /bin/grep -i 'Total failed' | /bin/grep -oE '[0-9]+$' | /usr/bin/head -1)
+    SEEN=${SEEN:-0}
+
+    # Count the journal over the jail's own uptime, not an arbitrary week.
+    F2B_SINCE=$(/bin/systemctl show fail2ban --property=ActiveEnterTimestamp --value 2>/dev/null)
+    if [ -n "$F2B_SINCE" ]; then
+        ATTEMPTS=$(/bin/journalctl -u ssh --since "$F2B_SINCE" --no-pager 2>/dev/null | \
+                   /bin/grep -iE 'Failed password|Invalid user|authentication failure' | /usr/bin/wc -l)
+    else
+        ATTEMPTS=0
+    fi
     ATTEMPTS=${ATTEMPTS:-0}
     # Zero bans is the obvious failure. A handful of bans against thousands of
     # attempts is the same failure wearing a disguise: the jail is technically
     # alive but is not seeing most of what reaches sshd. With maxretry=3, even
     # allowing for repeat offenders being banned once, the ratio should not be
     # anywhere near this lopsided.
-    if [ "${ATTEMPTS:-0}" -gt 50 ] && [ "${BANS:-0}" -eq 0 ]; then
-        fail "$ATTEMPTS failed SSH logins in 7 days but 0 total bans - the jail is not working"
-    elif [ "${ATTEMPTS:-0}" -gt 200 ] && [ "${BANS:-0}" -lt $(( ATTEMPTS / 100 )) ]; then
-        fail "$ATTEMPTS failed logins but only $BANS bans - implausibly low, the jail is missing most attempts"
-        warn "  Usually means it is reading the wrong source. Check: fail2ban-client get sshd logpath"
-    elif [ "${ATTEMPTS:-0}" -gt 50 ]; then
-        pass "$ATTEMPTS failed logins, $BANS bans - jail is banning"
+    # Two separate questions, in order:
+    #   1. Is the jail SEEING what the journal sees? (reading the right source)
+    #   2. Having seen them, is it BANNING? (acting on what it reads)
+    if [ "$ATTEMPTS" -gt 20 ] && [ "$SEEN" -eq 0 ]; then
+        fail "The journal shows $ATTEMPTS failed logins since fail2ban started, but the jail has seen 0"
+        warn "  It is running against the wrong source. Check: fail2ban-client get sshd logpath"
+    elif [ "$SEEN" -gt 30 ] && [ "$BANS" -eq 0 ]; then
+        fail "The jail registered $SEEN failures but banned nothing - it reads but does not act"
+        warn "  Check maxretry/findtime: fail2ban-client get sshd maxretry"
+    elif [ "$SEEN" -gt 0 ] || [ "$BANS" -gt 0 ]; then
+        pass "Jail has seen $SEEN failures and issued $BANS ban(s) since it started"
     else
-        pass "$ATTEMPTS failed logins in 7 days (too few to judge banning)"
+        pass "No failed logins since fail2ban started - nothing to judge yet"
     fi
 fi
 
@@ -450,7 +469,7 @@ else
         LOG_AGE_DAYS=$(( ( $(/bin/date +%s) - $(/usr/bin/stat -c %Y "$LAST_AIDE_LOG") ) / 86400 ))
         if [ "$LOG_AGE_DAYS" -gt 3 ]; then
             fail "The last AIDE run was ${LOG_AGE_DAYS} days ago - the scheduled check is not running"
-        elif /bin/grep -qE 'missing configuration|Invalid|error' "$LAST_AIDE_LOG" 2>/dev/null; then
+        elif /bin/grep -qE '^(ERROR|.*missing configuration|.*Invalid configure|.*Configuration error)' "$LAST_AIDE_LOG" 2>/dev/null; then
             fail "The last AIDE run ended in an error - integrity is UNVERIFIED"
             warn "  See: $LAST_AIDE_LOG"
         else

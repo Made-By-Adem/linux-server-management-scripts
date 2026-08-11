@@ -659,7 +659,7 @@ Fix: install aide-common and build the initial database. Takes 10-20 minutes." \
             note "No AIDE run has ever produced a log on this host."
             note "Verify once, when you have the time:  aide-refresh --check-only"
             ADVISORY+=("AIDE has never produced a run log - verify with: aide-refresh --check-only")
-        elif grep -qE 'missing configuration|Invalid|error' "$local_last" 2>/dev/null; then
+        elif grep -qE '^(ERROR|.*missing configuration|.*Invalid configure|.*Configuration error)' "$local_last" 2>/dev/null; then
             bad "The last AIDE run ended in an error - integrity is UNVERIFIED"
             note "See: $local_last"
             ADVISORY+=("Last AIDE run errored ($local_last)")
@@ -1146,6 +1146,64 @@ Retention needs no action: it is already on by default (30 days, in .attic/)." \
                 backup_trust_fix
         fi
     fi
+fi
+
+###############################################################################
+header "8c. SSH port configured in two places"
+###############################################################################
+#
+# With socket activation, Port directives in sshd_config are ignored entirely.
+# Leaving them there is not merely untidy: it is a trap. Deleting "Port 22" from
+# sshd_config on such a host looks like it closed the port and changes nothing.
+
+if ! systemctl is-active ssh.socket >/dev/null 2>&1; then
+    ok "No socket activation - sshd_config is the only place ports are set"
+    CLEAN+=("ssh-port-single-source")
+elif ! grep -qE '^Port +[0-9]+' /etc/ssh/sshd_config 2>/dev/null; then
+    ok "Ports are configured in one place only (ssh.socket)"
+    CLEAN+=("ssh-port-single-source")
+else
+    echo "    sshd_config still contains: $(grep -E '^Port +[0-9]+' /etc/ssh/sshd_config | tr '\n' ' ')"
+    echo "    Actually listening on:      $(ss -tlnH 2>/dev/null | grep -i sshd | grep -oE ':[0-9]+ ' | tr -d ': ' | sort -u | tr '\n' ' ')"
+
+    ssh_port_fix() {
+        cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak.$(date +%Y%m%d_%H%M%S)"
+        sed -i '/^#\?Port [0-9]/d' /etc/ssh/sshd_config
+        if ! grep -q '^# Listening ports are managed by ssh.socket' /etc/ssh/sshd_config; then
+            {
+                echo ""
+                echo "# Listening ports are managed by ssh.socket, not by this file."
+                echo "# A Port directive here has NO effect. Change ports in:"
+                echo "#   /etc/systemd/system/ssh.socket.d/ports.conf"
+                echo "# then: systemctl daemon-reload && systemctl restart ssh.socket"
+            } >> /etc/ssh/sshd_config
+        fi
+
+        # Removing an ignored directive cannot change what is listening, but
+        # verify anyway - this is the one file where being wrong locks you out.
+        if sshd -t 2>/dev/null; then
+            ok "Removed the ignored Port directives; sshd config still validates"
+            note "Nothing was restarted. Listening ports are unchanged:"
+            note "  $(ss -tlnH 2>/dev/null | grep -i sshd | grep -oE ':[0-9]+ ' | tr -d ': ' | sort -u | tr '\n' ' ')"
+            return 0
+        fi
+        bad "sshd -t failed after the edit - restoring the backup"
+        cp "$(ls -1t /etc/ssh/sshd_config.bak.* | head -1)" /etc/ssh/sshd_config
+        return 1
+    }
+
+    offer "ssh-port-single-source" "The SSH port is configured in two places" \
+"ssh.socket is active, so systemd opens the listening socket and hands it to
+sshd. The Port directives still sitting in sshd_config are ignored completely.
+
+That is a trap rather than a cosmetic issue: the standard advice for closing
+port 22 is to delete its Port line from sshd_config, which on this host would
+appear to work and change nothing at all.
+
+Fix: remove the ignored directives and leave a comment saying where the ports
+really live. Nothing is restarted and no listening port changes - the file being
+edited has no effect on them, which is the entire point." \
+        ssh_port_fix
 fi
 
 ###############################################################################
