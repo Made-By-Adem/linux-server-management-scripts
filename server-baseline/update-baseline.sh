@@ -736,6 +736,100 @@ NOT affect SSH (that is host traffic, not container traffic)." \
 fi
 
 ###############################################################################
+header "8b. Backup host key trust"
+###############################################################################
+#
+# Retention needs no action: backup.sh defaults to RETENTION_DAYS=30 and moves
+# anything it would delete or overwrite into <backup-dir>/.attic/<timestamp>/.
+#
+# The host key policy does. It defaults to accept-new, which trusts any host not
+# yet in known_hosts on first contact. For a scheduled job that is a blind trust
+# decision, and it matters when a provider IP is released and re-issued to
+# someone else. It cannot simply be defaulted to "yes": without a seeded
+# known_hosts that breaks the backup on the next run.
+
+BACKUP_DIR_REPO="$(dirname "$SCRIPT_DIR")/backup-script"
+
+if [ ! -d "$BACKUP_DIR_REPO" ]; then
+    note "No backup-script directory in this checkout - skipping"
+else
+    ENV_FILES=$(find "$BACKUP_DIR_REPO" -maxdepth 1 -name '.env' -o -maxdepth 1 -name '.env.*' 2>/dev/null | grep -v '\.example$' || true)
+
+    if [ -z "$ENV_FILES" ]; then
+        note "No backup .env files configured - nothing to check"
+    else
+        NEEDS_TRUST=""
+        for env_file in $ENV_FILES; do
+            grep -qE '^[[:space:]]*STRICT_HOST_KEY=["'"'"']?yes' "$env_file" 2>/dev/null && continue
+            NEEDS_TRUST="$NEEDS_TRUST $env_file"
+        done
+
+        if [ -z "$NEEDS_TRUST" ]; then
+            ok "All backup configs pin the host key (STRICT_HOST_KEY=yes)"
+            CLEAN+=("backup-host-key")
+        else
+            echo "    Configs still on 'accept-new':"
+            for e in $NEEDS_TRUST; do echo "      $(basename "$e")"; done
+
+            backup_trust_fix() {
+                local home_dir kh done_any=false
+                home_dir=$(getent passwd "$LOGIN_USER" | cut -d: -f6)
+                if [ -z "$home_dir" ]; then
+                    bad "Could not resolve the home directory for $LOGIN_USER"
+                    return 1
+                fi
+                kh="$home_dir/.ssh/known_hosts"
+                mkdir -p "$home_dir/.ssh"
+                touch "$kh"
+
+                for env_file in $NEEDS_TRUST; do
+                    # Read only the two values needed, without sourcing the file
+                    local host port
+                    host=$(grep -E '^[[:space:]]*REMOTE_HOST=' "$env_file" | head -1 | cut -d= -f2- | tr -d '"'"'"' ')
+                    port=$(grep -E '^[[:space:]]*SSH_PORT=' "$env_file" | head -1 | cut -d= -f2- | tr -d '"'"'"' ')
+                    port=${port:-22}
+
+                    if [ -z "$host" ]; then
+                        note "$(basename "$env_file"): no REMOTE_HOST, skipping"
+                        continue
+                    fi
+
+                    if ssh-keyscan -T 10 -p "$port" "$host" >>"$kh" 2>/dev/null && \
+                       grep -q "$host" "$kh"; then
+                        echo 'STRICT_HOST_KEY="yes"' >> "$env_file"
+                        ok "$(basename "$env_file"): seeded $host:$port and pinned the key"
+                        done_any=true
+                    else
+                        # Never set 'yes' when the key could not be fetched - that
+                        # would break the backup on its next scheduled run.
+                        bad "$(basename "$env_file"): could not reach $host:$port"
+                        note "  Left on accept-new. Seed it manually when the host is reachable:"
+                        note "  ssh-keyscan -p $port $host >> $kh"
+                    fi
+                done
+
+                chown -R "$LOGIN_USER" "$home_dir/.ssh" 2>/dev/null || true
+                [ "$done_any" = true ] && return 0
+                return 1
+            }
+
+            offer "backup-host-key" "Backups trust unknown host keys on first contact" \
+"StrictHostKeyChecking=accept-new trusts any host not yet in known_hosts. From
+cron that is a blind first-contact trust decision - and a provider IP that gets
+released and re-issued to someone else is trusted silently.
+
+Fix: fetch each backup source's host key into ${LOGIN_USER}'s known_hosts, then
+set STRICT_HOST_KEY=\"yes\" in that config. A host that cannot be reached is
+left on accept-new rather than pinned to nothing, so this cannot break a
+working backup.
+
+Retention needs no action: it is already on by default (30 days, in .attic/)." \
+                backup_trust_fix
+        fi
+    fi
+fi
+
+###############################################################################
 header "9. Security self-check"
 ###############################################################################
 

@@ -572,19 +572,29 @@ accepts `SECRET_TOKEN` / `CHAT_ID_PERSON1` if you already use those names.
 `rsync --delete` mirrors the source. One run after the source is compromised
 overwrites the last clean copy, and there is nothing left to restore from.
 
-If you use `backup-script/backup.sh`, add to your `.env`:
+**Retention is already handled** — nothing to do. `backup.sh` defaults to
+`RETENTION_DAYS=30` and moves anything it would delete or overwrite into
+`<backup-dir>/.attic/<timestamp>/`. Only set it explicitly if you want a
+different window, or `0` to go back to mirror-only behaviour.
+
+**The host key policy is genuinely still open**, and deliberately so. The
+default is `accept-new`, which trusts any host not yet in `known_hosts` on first
+contact. Flipping it to `yes` without seeding `known_hosts` first would break the
+backup on the next run, so it cannot be the default and it cannot be changed
+blind.
+
+`update-baseline.sh` section 8b does both steps for you. By hand:
 
 ```bash
-RETENTION_DAYS="30"       # superseded files kept under <backup-dir>/.attic/<timestamp>/
-STRICT_HOST_KEY="yes"     # after seeding known_hosts (see below)
-```
-
-Seed `known_hosts` once so scheduled runs are not making a blind first-contact
-trust decision — this matters when a provider IP is released and re-issued:
-
-```bash
+# 1. Seed the key, as the user that runs the backup (not root)
 ssh-keyscan -p "$SSH_PORT" "$REMOTE_HOST" >> ~/.ssh/known_hosts
+
+# 2. Only after that succeeds
+echo 'STRICT_HOST_KEY="yes"' >> backup-script/.env
 ```
+
+This matters most when a provider IP is released and re-issued — the open
+action point about OC1's DigitalOcean address going back into the pool.
 
 Retention inside the same directory tree is a floor, not a backup strategy.
 Anything that can reach the backup host can still reach the attic. For a restore
