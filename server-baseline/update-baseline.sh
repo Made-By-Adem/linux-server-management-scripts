@@ -68,6 +68,18 @@ header() {
     echo -e "${BOLD}══════════════════════════════════════════════════════════════════${NC}"
 }
 
+# True when the installed copy differs from the one in this checkout. Without
+# this, "already installed" hides every subsequent repo update: the operator
+# pulls a fix, the script reports the component as correct, and the stale copy
+# keeps running. That is how the watchdog on the first real host kept reading
+# the old credential location after the refactor that moved it.
+needs_refresh() {
+    local repo_file="$1" installed="$2"
+    [ -f "$repo_file" ] || return 1
+    [ -f "$installed" ] || return 0
+    ! cmp -s "$repo_file" "$installed"
+}
+
 # offer <id> <title> <why> <fix_function>
 # The caller has already established that the fix is needed.
 offer() {
@@ -476,8 +488,8 @@ header "4. security watchdog"
 if [ ! -f "$SCRIPT_DIR/watchdogs/security-watchdog.sh" ]; then
     note "watchdogs/security-watchdog.sh not found next to this script - skipping"
     SKIPPED+=("security-watchdog (source missing)")
-elif systemctl is-active security-watchdog.timer >/dev/null 2>&1; then
-    ok "security watchdog timer is active"
+elif systemctl is-active security-watchdog.timer >/dev/null 2>&1 &&      ! needs_refresh "$SCRIPT_DIR/watchdogs/security-watchdog.sh" /usr/local/bin/security-watchdog.sh; then
+    ok "security watchdog timer is active and up to date"
     CLEAN+=("security-watchdog")
 else
     watchdog_fix() {
@@ -545,6 +557,18 @@ fi
 ###############################################################################
 header "5. AIDE reporting"
 ###############################################################################
+
+# Keep every installed reporter in step with this checkout. Without it, a
+# `git pull` that fixes a reporter leaves the old copy running while this
+# script reports the component as correct.
+for r in aide rkhunter lynis; do
+    if [ -f "/usr/local/bin/${r}-telegram.sh" ] && \
+       needs_refresh "$SCRIPT_DIR/reporters/${r}-telegram.sh" "/usr/local/bin/${r}-telegram.sh"; then
+        install -m 700 -o root -g root \
+            "$SCRIPT_DIR/reporters/${r}-telegram.sh" "/usr/local/bin/${r}-telegram.sh"
+        ok "Refreshed the ${r} reporter from this checkout"
+    fi
+done
 
 if [ ! -f /usr/local/bin/aide-telegram.sh ]; then
     if command -v aide >/dev/null 2>&1; then
@@ -1212,8 +1236,8 @@ header "9. Security self-check"
 
 if [ ! -f "$SCRIPT_DIR/security-selfcheck.sh" ]; then
     note "security-selfcheck.sh not found next to this script - skipping"
-elif [ -f /etc/cron.d/security-selfcheck ]; then
-    ok "Daily self-check is scheduled"
+elif [ -f /etc/cron.d/security-selfcheck ] &&      ! needs_refresh "$SCRIPT_DIR/security-selfcheck.sh" /usr/local/bin/security-selfcheck.sh &&      ! needs_refresh "$SCRIPT_DIR/aide-refresh.sh" /usr/local/bin/aide-refresh.sh; then
+    ok "Daily self-check is scheduled and up to date"
     CLEAN+=("selfcheck")
 else
     selfcheck_fix() {

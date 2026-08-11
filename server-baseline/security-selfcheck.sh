@@ -449,7 +449,11 @@ else
     # The evidence that AIDE completes is in the last scheduled run's log,
     # which is the same reasoning applied to rkhunter. --deep forces a real
     # check for when you want one.
-    LAST_AIDE_LOG=$(/bin/ls -1t /var/log/aide-check-*.log /var/log/aide-refresh-*.log 2>/dev/null | /usr/bin/head -1)
+    # Only consider logs written AFTER the current database. A rebuild makes
+    # every earlier log irrelevant: they describe a baseline that no longer
+    # exists, and judging the present by them reports failures that were
+    # already fixed.
+    LAST_AIDE_LOG=$(/usr/bin/find /var/log -maxdepth 1                         \( -name 'aide-check-*.log' -o -name 'aide-refresh-*.log' \)                         -newer /var/lib/aide/aide.db 2>/dev/null |                     /usr/bin/xargs -r /bin/ls -1t 2>/dev/null | /usr/bin/head -1)
 
     if [ "$DEEP" = true ]; then
         echo "  ---- running a full aide --check (10-20 minutes)..."
@@ -463,7 +467,7 @@ else
             pass "aide --check completes cleanly"
         fi
     elif [ -z "$LAST_AIDE_LOG" ]; then
-        warn "No AIDE run has ever produced a log - the scheduled check may not be running"
+        warn "No AIDE run since the database was built - the first scheduled check has not run yet"
         warn "  Verify once with: sudo security-selfcheck --deep   (takes 10-20 minutes)"
     else
         LOG_AGE_DAYS=$(( ( $(/bin/date +%s) - $(/usr/bin/stat -c %Y "$LAST_AIDE_LOG") ) / 86400 ))
