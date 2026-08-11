@@ -990,6 +990,79 @@ else
 fi
 
 ###############################################################################
+header "12. AIDE baseline rebuild"
+###############################################################################
+#
+# Runs last, on purpose. Rebuilding the baseline declares "this filesystem is
+# now the truth", and that is only defensible once the fixes above have been
+# applied and the host shows no compromise indicators. Doing it first would
+# bake an unknown state into the reference.
+#
+# It is also why this does NOT live in update-containers.sh: that runs on a
+# schedule, often unattended, at an hour when nobody is looking. "Make this the
+# new truth" is not a decision to take at 03:00 without a human.
+
+if ! command -v aide >/dev/null 2>&1; then
+    note "AIDE is not installed - nothing to rebuild"
+elif [ "$MODE" = "check" ] || [ "$DRY_RUN" = true ]; then
+    note "Would offer to rebuild the AIDE baseline (skipped in check/dry-run mode)"
+else
+    # Fast compromise-indicator gate. No AIDE, no filesystem scan - just the
+    # signals that say "do not trust this host's current state".
+    DIRTY=""
+    grep -qs '/bin/\.local/bin\|/usr/bin/\.local/bin' \
+        /etc/profile /etc/profile.d/* /etc/environment /root/.bashrc /root/.profile 2>/dev/null \
+        && DIRTY="$DIRTY PATH-injection"
+    for d in /usr/bin/.local /bin/.local /usr/bin/wbin /bin/wbin /var/.i.* /tmp/.t.*; do
+        [ -e "$d" ] && DIRTY="$DIRTY $d"
+    done
+    [ -s /etc/ld.so.preload ] && DIRTY="$DIRTY ld.so.preload"
+    ps -eo args 2>/dev/null | grep -E '(^|/)(dockerd|containerd)( |$)' | grep -v grep | \
+        grep -qvE -- '-H fd://|--config /etc/containerd|^/usr/bin/containerd$|containerd-shim' \
+        && DIRTY="$DIRTY second-docker-daemon"
+    if command -v docker >/dev/null 2>&1; then
+        docker ps -a --format '{{.Image}}' 2>/dev/null | \
+            grep -qiE 'repocket|packetstream|psclient|bitping|proxyrack|earnfm|wipter|antgain|traffmonetizer|pawns' \
+            && DIRTY="$DIRTY proxyware-container"
+    fi
+
+    if [ -n "$DIRTY" ]; then
+        bad "Compromise indicators present:$DIRTY"
+        bad "NOT offering a baseline rebuild - that would make this state the reference."
+        ADVISORY+=("Compromise indicators found ($DIRTY). Investigate before rebuilding the AIDE baseline.")
+    elif [ ${#FAILED[@]} -gt 0 ]; then
+        note "Some fixes above did not complete - resolve those first, then rebuild:"
+        note "  sudo aideinit -y -f && sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db"
+        ADVISORY+=("AIDE baseline not rebuilt because some fixes failed")
+    else
+        aide_rebuild() {
+            note "Rebuilding - this takes 10-20 minutes and cannot be interrupted safely."
+            if aideinit -y -f >/tmp/aideinit.log 2>&1 && [ -f /var/lib/aide/aide.db.new ]; then
+                mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+                ok "Baseline rebuilt from the current filesystem"
+                note "From now on, run 'sudo aide-refresh --reason ...' after deliberate changes"
+                note "rather than rebuilding again - it reports what it absorbs."
+                return 0
+            fi
+            bad "aideinit did not produce a database - see /tmp/aideinit.log"
+            return 1
+        }
+
+        offer "aide-rebuild" "The AIDE baseline still reflects the old state" \
+"No compromise indicators were found and the fixes above completed, so the
+current filesystem is a defensible reference point.
+
+A stale baseline produces so much noise that it gets ignored, which is the same
+outcome as having none. Rebuilding it once here resets that.
+
+This takes 10-20 minutes. Afterwards, keep it current with 'aide-refresh' after
+each deliberate change instead of rebuilding again - that reports which files it
+accepts, so nothing is absorbed silently." \
+            aide_rebuild
+    fi
+fi
+
+###############################################################################
 header "Summary"
 ###############################################################################
 

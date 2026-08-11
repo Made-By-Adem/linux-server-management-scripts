@@ -218,6 +218,22 @@ offers to run it in interactive mode for exactly that reason, and never does so
 unattended: a 10-20 minute baseline refresh should be a decision, not a side
 effect of a cron job.
 
+### The one-time rebuild
+
+`update-baseline.sh` section 12 offers this at the **end** of its run, and the
+order matters. Rebuilding declares "this filesystem is now the truth", which is
+only defensible once the fixes have been applied and the host shows no
+compromise indicators. It refuses if it finds a PATH injection, a shim or `wbin`
+directory, a non-empty `ld.so.preload`, a second Docker daemon or a proxyware
+container — baking any of those into the reference would be worse than a stale
+database.
+
+It also refuses if any fix earlier in the run failed. Fix those first.
+
+This is deliberately *not* in `update-containers.sh`: that runs on a schedule,
+often unattended, at an hour when nobody is looking. After the one-time rebuild,
+`aide-refresh` keeps it current at each change instead.
+
 ---
 
 ## 3. auditd — cover the paths that persistence actually uses
