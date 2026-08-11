@@ -6123,15 +6123,34 @@ Lynis recommendation: PKGS-7346" \
         sudo apt-get clean >/dev/null 2>&1
 
         # Purge removed/config-only packages (Lynis PKGS-7346)
+        #
+        # NEVER purge boot-critical packages. On a stock cloud image grub-pc is
+        # routinely left in 'rc' state, and purging it asks whether to delete
+        # /boot/grub - a question that makes the machine unbootable if answered
+        # wrongly, asked in the middle of an unattended cleanup step. Tidying up
+        # residual config files is not worth any risk to the bootloader.
         log_info "Purging old configuration files from removed packages..."
-        RC_PACKAGES=$(dpkg -l | awk '/^rc/{print $2}')
+        RC_PACKAGES=$(dpkg -l | awk '/^rc/{print $2}' | \
+                      grep -vE '^(grub|shim|linux-image|linux-headers|linux-modules|efibootmgr|initramfs)' || true)
+        RC_SKIPPED=$(dpkg -l | awk '/^rc/{print $2}' | \
+                     grep -E '^(grub|shim|linux-image|linux-headers|linux-modules|efibootmgr|initramfs)' || true)
+
+        if [ -n "$RC_SKIPPED" ]; then
+            log_warning "Leaving boot-critical packages alone: $(echo "$RC_SKIPPED" | tr '\n' ' ')"
+            log_warning "  Purging these can remove /boot/grub and make the system unbootable."
+        fi
+
         if [ -n "$RC_PACKAGES" ]; then
             RC_COUNT=$(echo "$RC_PACKAGES" | wc -l)
-            log_info "Found $RC_COUNT packages with residual config files"
-            echo "$RC_PACKAGES" | xargs sudo dpkg --purge 2>/dev/null
+            log_info "Found $RC_COUNT package(s) with residual config files:"
+            echo "$RC_PACKAGES" | sed 's/^/    /'
+            # noninteractive so a stray debconf prompt cannot block or, worse,
+            # be answered by whatever keystroke arrives next.
+            echo "$RC_PACKAGES" | DEBIAN_FRONTEND=noninteractive xargs -r sudo dpkg --purge 2>/dev/null || \
+                log_warning "Some packages could not be purged - not fatal"
             log_info "✓ Purged configuration files from removed packages"
         else
-            log_info "✓ No residual configuration files found"
+            log_info "✓ No residual configuration files to purge"
         fi
 
         if [ $REMOVED_COUNT -gt 0 ]; then
