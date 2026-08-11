@@ -590,6 +590,44 @@ else
 fi
 
 ###############################################################################
+section "Alerting is able to alert"
+###############################################################################
+# The credential file lives with the project checkout. That makes it easy to
+# find and impossible to commit, but it also means moving or re-cloning the
+# checkout silently detaches every scheduled alert from its credentials.
+#
+# This check is what makes that survivable: a detached alerting stack shows up
+# here within a day, instead of as permanent silence that reads exactly like
+# "nothing to report".
+
+# Resolve the same way the installed scripts do: read back the path they
+# recorded, rather than assuming a location.
+ALERT_ENV=""
+if [ -f /usr/local/bin/security-watchdog.sh ]; then
+    ALERT_ENV=$(/bin/grep -oP '^ENV_FILE_DEFAULT="\K[^"]+' /usr/local/bin/security-watchdog.sh 2>/dev/null | head -1)
+fi
+[ -z "$ALERT_ENV" ] && [ -r /etc/server-baseline/selfcheck.env ] && ALERT_ENV=/etc/server-baseline/selfcheck.env
+
+if [ ! -f /usr/local/bin/security-watchdog.sh ]; then
+    warn "Security watchdog is not installed - no state-change alerting on this host"
+elif [ -z "$ALERT_ENV" ]; then
+    fail "The watchdog has no credential file recorded - it can never alert"
+    warn "  Re-run update-baseline.sh; section 0 records the path."
+elif [ ! -r "$ALERT_ENV" ]; then
+    fail "Alert credentials are missing: $ALERT_ENV does not exist"
+    warn "  The watchdog and the daily reports run but send nothing."
+    warn "  Usually means the project checkout moved or was re-cloned without .env."
+elif ! /bin/grep -q 'TELEGRAM_BOT_TOKEN=.' "$ALERT_ENV" 2>/dev/null; then
+    fail "$ALERT_ENV exists but holds no bot token - alerting is silent"
+else
+    pass "Alert credentials resolve ($ALERT_ENV)"
+    PERMS=$(/usr/bin/stat -c %a "$ALERT_ENV" 2>/dev/null)
+    if [ "$PERMS" != "600" ] && [ "$PERMS" != "400" ]; then
+        warn "  $ALERT_ENV is mode $PERMS - should be 600"
+    fi
+fi
+
+###############################################################################
 section "Secrets exposure"
 ###############################################################################
 # Tokens on a command line are readable by anything that can read /proc,

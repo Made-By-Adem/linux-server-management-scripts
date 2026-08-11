@@ -18,7 +18,28 @@
 # Single source of truth for credentials. No token is ever written into this
 # script: one copy in one root-only file is one place to rotate and one place
 # to leak.
-[ -r /etc/server-baseline/selfcheck.env ] && . /etc/server-baseline/selfcheck.env
+# Credentials live with the project checkout, not in /etc. Resolution order:
+#   1. $CONFIG_FILE                        explicit override
+#   2. $ENV_FILE_DEFAULT                   absolute path recorded at install time
+#   3. .env near this script                for running straight from the checkout
+#   4. /etc/server-baseline/selfcheck.env  legacy location, still honoured
+#
+# The recorded path is the fragile part: move or re-clone the project and it
+# stops resolving, which would make every alert silently stop. That is why
+# security-selfcheck fails outright when no credentials resolve anywhere - the
+# breakage shows up within a day instead of as permanent silence.
+ENV_FILE_DEFAULT=""   # replaced with an absolute path at install time
+
+resolve_env_file() {
+    local self_dir c
+    self_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" 2>/dev/null && pwd)" || self_dir=""
+    for c in "${CONFIG_FILE:-}" "$ENV_FILE_DEFAULT"              "$self_dir/.env" "$self_dir/../.env" "$self_dir/../../.env"              /etc/server-baseline/selfcheck.env; do
+        if [ -n "$c" ] && [ -r "$c" ]; then echo "$c"; return 0; fi
+    done
+    return 1
+}
+CONFIG_FILE="$(resolve_env_file || true)"
+[ -n "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 

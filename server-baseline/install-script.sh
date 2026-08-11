@@ -5139,17 +5139,21 @@ if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT
     log_info "Configuring Telegram integration for security scans..."
 
     # Write the credentials ONCE, here, before anything that needs them.
-    # Every alerting component on this host reads this file: the three
-    # reporters, the watchdog, the daily self-check and aide-refresh. Nothing
-    # carries its own copy - a token in five places is five places to rotate
-    # and five chances for one of them to be silently wrong.
-    sudo mkdir -p /etc/server-baseline
-    sudo chmod 700 /etc/server-baseline
+    # Every alerting component reads this one file: the three reporters, the
+    # watchdog, the daily self-check and aide-refresh. Nothing carries its own
+    # copy - a token in five places is five places to rotate and five chances
+    # for one of them to be silently wrong.
+    #
+    # It lives with the project checkout, not in /etc. '.env' is already
+    # gitignored, so it cannot be committed by accident.
+    PROJECT_ENV="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)/.env"
     printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' \
         "$SECURITY_TELEGRAM_BOT_TOKEN" "$SECURITY_TELEGRAM_CHAT_ID" | \
-        sudo tee /etc/server-baseline/selfcheck.env >/dev/null
-    sudo chmod 600 /etc/server-baseline/selfcheck.env
-    log_info "Alert credentials written to /etc/server-baseline/selfcheck.env (root only)"
+        sudo tee "$PROJECT_ENV" >/dev/null
+    sudo chmod 600 "$PROJECT_ENV"
+    log_info "Alert credentials written to $PROJECT_ENV (mode 600)"
+    log_warning "If you move or re-clone this checkout, copy .env across."
+    log_warning "Otherwise every alert goes silent - the daily self-check fails when it is gone."
 
     # Create rkhunter Telegram wrapper script (only if installed)
     if [ "$RKHUNTER_INSTALLED" = true ]; then
@@ -5159,6 +5163,7 @@ if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT
     RKH_SRC="$(dirname "$(readlink -f "$0")")/reporters/rkhunter-telegram.sh"
     if [ -f "$RKH_SRC" ]; then
         sudo install -m 700 -o root -g root "$RKH_SRC" /usr/local/bin/rkhunter-telegram.sh
+        sudo sed -i "s|^ENV_FILE_DEFAULT=.*|ENV_FILE_DEFAULT=\\"${PROJECT_ENV:-}\\"|" /usr/local/bin/rkhunter-telegram.sh 2>/dev/null || true
     else
         log_warning "reporters/rkhunter-telegram.sh not found - skipping rkhunter reporter"
     fi
@@ -5178,6 +5183,7 @@ if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT
     LYN_SRC="$(dirname "$(readlink -f "$0")")/reporters/lynis-telegram.sh"
     if [ -f "$LYN_SRC" ]; then
         sudo install -m 700 -o root -g root "$LYN_SRC" /usr/local/bin/lynis-telegram.sh
+        sudo sed -i "s|^ENV_FILE_DEFAULT=.*|ENV_FILE_DEFAULT=\\"${PROJECT_ENV:-}\\"|" /usr/local/bin/lynis-telegram.sh 2>/dev/null || true
     else
         log_warning "reporters/lynis-telegram.sh not found - skipping Lynis reporter"
     fi
@@ -5288,6 +5294,7 @@ Run it any time with: sudo security-selfcheck" \
             AIDE_REFRESH_SRC="$(dirname "$(readlink -f "$0")")/aide-refresh.sh"
             if [ -f "$AIDE_REFRESH_SRC" ]; then
                 sudo install -m 700 -o root -g root "$AIDE_REFRESH_SRC" /usr/local/bin/aide-refresh.sh
+        sudo sed -i "s|^ENV_FILE_DEFAULT=.*|ENV_FILE_DEFAULT=\\"${PROJECT_ENV:-}\\"|" /usr/local/bin/aide-refresh.sh 2>/dev/null || true
                 sudo ln -sf /usr/local/bin/aide-refresh.sh /usr/local/bin/aide-refresh
                 log_info "Installed /usr/local/bin/aide-refresh.sh"
                 log_info "  Run it after a deliberate change: sudo aide-refresh --reason 'post upgrade'"
@@ -5298,6 +5305,7 @@ Run it any time with: sudo security-selfcheck" \
 
             if [ -f "$SELFCHECK_SRC" ]; then
                 sudo install -m 700 -o root -g root "$SELFCHECK_SRC" /usr/local/bin/security-selfcheck.sh
+        sudo sed -i "s|^ENV_FILE_DEFAULT=.*|ENV_FILE_DEFAULT=\\"${PROJECT_ENV:-}\\"|" /usr/local/bin/security-selfcheck.sh 2>/dev/null || true
                 sudo ln -sf /usr/local/bin/security-selfcheck.sh /usr/local/bin/security-selfcheck
                 log_info "Installed /usr/local/bin/security-selfcheck.sh"
 
@@ -5402,6 +5410,7 @@ deployed inside a single minute. A once-a-day check reports that far too late." 
 
             if [ -f "$WATCHDOG_SRC" ]; then
                 sudo install -m 700 -o root -g root "$WATCHDOG_SRC" /usr/local/bin/security-watchdog.sh
+        sudo sed -i "s|^ENV_FILE_DEFAULT=.*|ENV_FILE_DEFAULT=\\"${PROJECT_ENV:-}\\"|" /usr/local/bin/security-watchdog.sh 2>/dev/null || true
                 sudo ln -sf /usr/local/bin/security-watchdog.sh /usr/local/bin/security-watchdog
                 log_info "Installed /usr/local/bin/security-watchdog.sh"
 
@@ -5757,6 +5766,7 @@ EOF
                     AIDE_SRC="$(dirname "$(readlink -f "$0")")/reporters/aide-telegram.sh"
                     if [ -f "$AIDE_SRC" ]; then
                         sudo install -m 700 -o root -g root "$AIDE_SRC" /usr/local/bin/aide-telegram.sh
+        sudo sed -i "s|^ENV_FILE_DEFAULT=.*|ENV_FILE_DEFAULT=\\"${PROJECT_ENV:-}\\"|" /usr/local/bin/aide-telegram.sh 2>/dev/null || true
                     else
                         log_warning "reporters/aide-telegram.sh not found - skipping AIDE reporter"
                     fi

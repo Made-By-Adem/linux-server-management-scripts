@@ -131,11 +131,26 @@ header "0. Alert credentials"
 # One file now. If the old reporters already hold working credentials, they are
 # lifted from there rather than asked for again.
 
-CRED_FILE="/etc/server-baseline/selfcheck.env"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+CRED_FILE="$PROJECT_ROOT/.env"
+
+# Every script installed into /usr/local/bin loses its link to the checkout, so
+# the absolute path to the credential file is recorded inside it at install
+# time. This runs after each install below.
+bake_env_path() {
+    local target="$1"
+    [ -f "$target" ] || return 0
+    sed -i "s|^ENV_FILE_DEFAULT=.*|ENV_FILE_DEFAULT=\"$CRED_FILE\"   # recorded at install time|" "$target"
+}
 
 if [ -r "$CRED_FILE" ] && grep -q 'TELEGRAM_BOT_TOKEN=.' "$CRED_FILE" 2>/dev/null; then
     ok "Alert credentials are configured ($CRED_FILE)"
     CLEAN+=("alert-credentials")
+    for t in /usr/local/bin/security-watchdog.sh /usr/local/bin/security-selfcheck.sh \
+             /usr/local/bin/aide-refresh.sh /usr/local/bin/aide-telegram.sh \
+             /usr/local/bin/rkhunter-telegram.sh /usr/local/bin/lynis-telegram.sh; do
+        bake_env_path "$t"
+    done
 else
     # Recover them from whichever generated reporter still has them
     FOUND_TOKEN=""; FOUND_CHAT=""
@@ -146,39 +161,77 @@ else
         [ -z "$FOUND_CHAT" ]  && FOUND_CHAT=$(grep -oP '^TELEGRAM_CHAT_ID="\K[^"]+' "$f" 2>/dev/null | grep -v REPLACE_ | head -1)
     done
 
+    # Also honour the legacy /etc location as a source
+    if [ -z "$FOUND_TOKEN" ] && [ -r /etc/server-baseline/selfcheck.env ]; then
+        FOUND_TOKEN=$(grep -oP '^TELEGRAM_BOT_TOKEN=\K.+' /etc/server-baseline/selfcheck.env 2>/dev/null | head -1)
+        FOUND_CHAT=$(grep -oP '^TELEGRAM_CHAT_ID=\K.+' /etc/server-baseline/selfcheck.env 2>/dev/null | head -1)
+    fi
+
+    write_creds() {
+        printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' "$1" "$2" > "$CRED_FILE"
+        chmod 600 "$CRED_FILE"
+        ok "Wrote $CRED_FILE (mode 600)"
+
+        for t in /usr/local/bin/security-watchdog.sh /usr/local/bin/security-selfcheck.sh \
+                 /usr/local/bin/aide-refresh.sh /usr/local/bin/aide-telegram.sh \
+                 /usr/local/bin/rkhunter-telegram.sh /usr/local/bin/lynis-telegram.sh; do
+            bake_env_path "$t"
+        done
+        ok "Recorded that path in the installed scripts"
+        note "'.env' is already in .gitignore, so it cannot be committed."
+        note "If you move or re-clone this checkout, copy .env across - otherwise"
+        note "alerting goes quiet. The daily self-check fails when it cannot find it."
+        return 0
+    }
+
     if [ -n "$FOUND_TOKEN" ] && [ -n "$FOUND_CHAT" ]; then
-        echo "    Found working credentials baked into an existing reporter script."
+        echo "    Found working credentials in an existing script on this host."
         echo "    Chat ID: $FOUND_CHAT   Token: ${FOUND_TOKEN:0:12}…(withheld)"
 
-        creds_fix() {
-            mkdir -p /etc/server-baseline
-            chmod 700 /etc/server-baseline
-            printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' \
-                "$FOUND_TOKEN" "$FOUND_CHAT" > "$CRED_FILE"
-            chmod 600 "$CRED_FILE"
-            ok "Wrote $CRED_FILE (root only)"
-            note "The watchdog, the daily self-check and aide-refresh all read this file."
-            note "Verify the alert path now with: security-watchdog --test"
-            return 0
-        }
+        creds_fix() { write_creds "$FOUND_TOKEN" "$FOUND_CHAT"; }
 
-        offer "alert-credentials" "Alerting has no credentials where the new tooling looks" \
-"Credentials exist, but only inside the old generated reporter scripts. The
-watchdog, the daily self-check and aide-refresh read
-/etc/server-baseline/selfcheck.env, which is absent - so they install, run, and
-say nothing. An alerting system that is silent for a configuration reason looks
-exactly like one with nothing to report.
+        offer "alert-credentials" "Alerting has no credentials where the tooling looks" \
+"Credentials exist on this host, but only inside the old generated reporter
+scripts. The watchdog, the daily self-check and aide-refresh look for
+$CRED_FILE, which is absent - so they install, run, and say nothing. An alerting
+system that is silent for a configuration reason looks exactly like one with
+nothing to report.
 
-Fix: copy the existing credentials into that file. Nothing is retyped and no
-new token is needed." \
+Fix: copy the existing credentials into the project .env. Nothing is retyped and
+no new token is needed." \
             creds_fix
+
+    elif [ "$MODE" = "check" ] || [ "$DRY_RUN" = true ] || [ "$ASSUME_YES" = true ]; then
+        bad "No alert credentials found anywhere - every alert will be silent"
+        ADVISORY+=("No Telegram credentials in $CRED_FILE - run this script interactively to enter them")
+
     else
-        bad "No alert credentials anywhere - every alert will be silent"
-        note "Create them, then re-run this script:"
-        note "  mkdir -p /etc/server-baseline && chmod 700 /etc/server-baseline"
-        note "  printf 'TELEGRAM_BOT_TOKEN=...\\nTELEGRAM_CHAT_ID=...\\n' > $CRED_FILE"
-        note "  chmod 600 $CRED_FILE"
-        ADVISORY+=("No Telegram credentials in $CRED_FILE - the watchdog and self-check cannot alert")
+        # Nothing to recover, so ask. Silent alerting is the failure mode this
+        # whole branch exists to remove; it should not be the default outcome
+        # of not having a file.
+        bad "No alert credentials found anywhere on this host"
+        echo ""
+        echo "    Without them the watchdog and the daily self-check run but stay silent."
+        echo "    Enter them now, or leave blank to skip."
+        echo ""
+        read -r -p "    Telegram bot token: " NEW_TOKEN </dev/tty
+        if [ -n "$NEW_TOKEN" ]; then
+            read -r -p "    Telegram chat ID:   " NEW_CHAT </dev/tty
+        fi
+
+        if [ -n "$NEW_TOKEN" ] && [ -n "${NEW_CHAT:-}" ]; then
+            if write_creds "$NEW_TOKEN" "$NEW_CHAT"; then
+                APPLIED+=("alert-credentials")
+                if [ -x /usr/local/bin/security-watchdog.sh ]; then
+                    note "Sending a test alert to confirm they work..."
+                    /usr/local/bin/security-watchdog.sh --test || \
+                        bad "Test alert failed - check the token and chat ID"
+                fi
+            fi
+        else
+            SKIPPED+=("alert-credentials (declined)")
+            ADVISORY+=("No Telegram credentials in $CRED_FILE - the watchdog and self-check cannot alert")
+        fi
     fi
 fi
 

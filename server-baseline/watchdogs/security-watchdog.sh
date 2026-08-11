@@ -60,13 +60,29 @@
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 set -u
 
-CONFIG_FILE="${CONFIG_FILE:-/etc/server-baseline/selfcheck.env}"
-STATE_DIR="/var/lib/server-baseline"
+# Credentials live with the project checkout, not in /etc. Resolution order:
+#   1. $CONFIG_FILE                        explicit override
+#   2. $ENV_FILE_DEFAULT                   absolute path recorded at install time
+#   3. .env near this script                for running straight from the checkout
+#   4. /etc/server-baseline/selfcheck.env  legacy location, still honoured
+#
+# The recorded path is the fragile part: move or re-clone the project and it
+# stops resolving, which would make every alert silently stop. That is why
+# security-selfcheck fails outright when no credentials resolve anywhere - the
+# breakage shows up within a day instead of as permanent silence.
+ENV_FILE_DEFAULT=""   # replaced with an absolute path at install time
 
-if [ -r "$CONFIG_FILE" ]; then
-    # shellcheck disable=SC1090
-    . "$CONFIG_FILE"
-fi
+resolve_env_file() {
+    local self_dir c
+    self_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" 2>/dev/null && pwd)" || self_dir=""
+    for c in "${CONFIG_FILE:-}" "$ENV_FILE_DEFAULT"              "$self_dir/.env" "$self_dir/../.env" "$self_dir/../../.env"              /etc/server-baseline/selfcheck.env; do
+        if [ -n "$c" ] && [ -r "$c" ]; then echo "$c"; return 0; fi
+    done
+    return 1
+}
+CONFIG_FILE="$(resolve_env_file || true)"
+[ -n "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+STATE_DIR="/var/lib/server-baseline"
 
 # Accept the alternative variable names some setups already use
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${SECRET_TOKEN:-}}"
