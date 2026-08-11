@@ -148,6 +148,15 @@ f2b_fix() {
     rm -f /etc/fail2ban/jail.d/server-baseline.conf
     mkdir -p /etc/fail2ban/jail.d
 
+    # backend = systemd needs the python3-systemd bindings. They are only a
+    # Recommends of fail2ban, so on a minimal image the jail would fail to
+    # initialise - the same silent failure this fix is meant to remove.
+    if ! python3 -c "import systemd.journal" >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y python3-systemd >/dev/null 2>&1 && \
+            ok "Installed python3-systemd (required for backend = systemd)" || \
+            bad "Could not install python3-systemd - the jail will not start"
+    fi
+
     cat > /etc/fail2ban/jail.d/zz-server-baseline.local <<'EOF'
 # Server Baseline Fail2ban Configuration
 # Read order: jail.conf -> jail.d/*.conf -> jail.local -> jail.d/*.local
@@ -180,6 +189,18 @@ EOF
 
     if [ "$up" = true ]; then
         ok "sshd jail is active"
+
+        # Confirm the read order came out right by asking fail2ban what it
+        # resolved, not by trusting the files we just wrote.
+        if fail2ban-client get sshd journalmatch 2>/dev/null | grep -q '_SYSTEMD_UNIT'; then
+            ok "Jail resolved to the systemd backend (journalmatch is set)"
+        else
+            bad "Jail is up but did NOT resolve to the systemd backend"
+            note "Something later in the read order is overriding it."
+            note "Inspect with: fail2ban-client -d | grep sshd"
+            return 1
+        fi
+
         fail2ban-client status sshd | sed 's/^/    /'
 
         local attempts

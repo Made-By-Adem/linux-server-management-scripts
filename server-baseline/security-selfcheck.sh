@@ -141,6 +141,24 @@ else
         pass "sshd jail log source exists"
     fi
 
+    # Ask fail2ban what it actually RESOLVED, not what the files say. The read
+    # order is jail.conf -> jail.d/*.conf -> jail.local -> jail.d/*.local, so a
+    # jail.local can silently override everything in jail.d/*.conf. A set
+    # journalmatch is proof that the systemd backend survived that resolution.
+    if fail2ban-client get sshd journalmatch 2>/dev/null | /bin/grep -q '_SYSTEMD_UNIT'; then
+        pass "sshd jail resolved to the systemd backend (journalmatch is set)"
+    else
+        fail "sshd jail did NOT resolve to the systemd backend - it is reading a file, not the journal"
+        if [ -f /etc/fail2ban/jail.local ] && /bin/grep -q '^\[sshd\]' /etc/fail2ban/jail.local 2>/dev/null; then
+            warn "  /etc/fail2ban/jail.local defines [sshd] and is read AFTER jail.d/*.conf - it wins"
+        fi
+        if ! python3 -c "import systemd.journal" >/dev/null 2>&1; then
+            warn "  python3-systemd is missing; the systemd backend cannot initialise"
+            warn "  Fix: apt-get install -y python3-systemd && systemctl restart fail2ban"
+        fi
+        warn "  Inspect the resolved config with: fail2ban-client -d | grep sshd"
+    fi
+
     # Compare bans against actual failed logins. Zero bans while the journal is
     # full of failures is a fault, not quiet.
     # Note: `grep -c` prints 0 AND exits 1 on no match, so `|| echo 0` would

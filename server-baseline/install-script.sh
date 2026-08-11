@@ -4070,6 +4070,18 @@ Benefits:
         # Create jail.d directory if it doesn't exist
         sudo mkdir -p /etc/fail2ban/jail.d
 
+        # backend = systemd requires the python3-systemd bindings. It is only a
+        # Recommends of the fail2ban package, so a minimal image or an install
+        # done with --no-install-recommends leaves it out - and then the jail
+        # fails to initialise with "Failed to initialize any backend". That is
+        # the exact silent-failure mode this section exists to eliminate, so the
+        # dependency is made explicit rather than assumed.
+        if ! python3 -c "import systemd.journal" >/dev/null 2>&1; then
+            log_info "Installing python3-systemd (required for backend = systemd)..."
+            DEBIAN_FRONTEND=noninteractive sudo apt-get install -y python3-systemd || \
+                log_warning "Failed to install python3-systemd - the jail may not start"
+        fi
+
         # Ubuntu 24.04 and Debian 12 no longer write /var/log/auth.log; sshd logs
         # to the journal only. A jail pointed at auth.log starts, reports "enabled"
         # and never bans anything. backend=systemd reads the journal directly.
