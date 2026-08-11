@@ -321,6 +321,12 @@ section "File integrity (AIDE)"
 
 if ! command -v aide >/dev/null 2>&1; then
     warn "AIDE is not installed"
+elif ! /usr/bin/aide --config-check >/dev/null 2>&1; then
+    # A broken config means every scheduled run aborts. Reported here because
+    # the failure is otherwise invisible: an aborted check produces no findings,
+    # which reads exactly like a clean result.
+    fail "aide --config-check fails - the configuration is broken, no scan can run"
+    warn "  See: sudo aide --config-check"
 elif [ ! -f /var/lib/aide/aide.db ]; then
     fail "AIDE is installed but has no database - it has never had a baseline"
 else
@@ -341,6 +347,62 @@ else
         warn "aide --check reports differences (exit ${AIDE_RC}) - review them"
     else
         pass "aide --check completes cleanly"
+    fi
+fi
+
+###############################################################################
+section "Rootkit scanning (rkhunter)"
+###############################################################################
+# The failure this catches: rkhunter installed, cron job firing daily, and every
+# report green - because the scan aborts on a configuration error before it
+# checks anything. No warnings in the log is not the same as no findings.
+
+if ! command -v rkhunter >/dev/null 2>&1; then
+    warn "rkhunter is not installed"
+else
+    if /usr/bin/rkhunter --config-check >/dev/null 2>&1; then
+        pass "rkhunter configuration is valid"
+    else
+        fail "rkhunter --config-check fails - scans abort before checking anything"
+        warn "  See: sudo rkhunter --config-check"
+    fi
+
+    # Did the most recent scan actually run to completion? The summary line is
+    # the evidence; its absence means the log holds errors, not results.
+    RK_LOG=""
+    for f in /var/log/rkhunter.log /var/log/rkhunter/rkhunter.log; do
+        [ -f "$f" ] && RK_LOG="$f" && break
+    done
+
+    if [ -z "$RK_LOG" ]; then
+        warn "No rkhunter log found - it may never have run"
+    else
+        RK_AGE_DAYS=$(( ( $(/bin/date +%s) - $(/usr/bin/stat -c %Y "$RK_LOG") ) / 86400 ))
+        if [ "$RK_AGE_DAYS" -gt 8 ]; then
+            fail "rkhunter last wrote its log ${RK_AGE_DAYS} days ago - it is not running on schedule"
+        else
+            pass "rkhunter log is ${RK_AGE_DAYS} days old"
+        fi
+
+        if /bin/grep -q "System checks summary" "$RK_LOG" 2>/dev/null; then
+            RK_WARN=$(/bin/grep -c "^Warning:" "$RK_LOG" 2>/dev/null || true)
+            if [ "${RK_WARN:-0}" -gt 0 ]; then
+                warn "Last rkhunter scan completed with ${RK_WARN} warning(s) - review $RK_LOG"
+            else
+                pass "Last rkhunter scan ran to completion with no warnings"
+            fi
+        else
+            fail "The rkhunter log contains no completed scan - only errors or partial output"
+            warn "  This host is NOT being scanned for rootkits. Check: sudo rkhunter --config-check"
+        fi
+    fi
+
+    # An installed reporter with the counting bug reports green on an aborted scan.
+    if [ -f /usr/local/bin/rkhunter-telegram.sh ] && \
+       /bin/grep -q -- '--report-warnings-only' /usr/local/bin/rkhunter-telegram.sh 2>/dev/null && \
+       ! /bin/grep -q 'System checks summary' /usr/local/bin/rkhunter-telegram.sh 2>/dev/null; then
+        fail "rkhunter-telegram.sh cannot distinguish an aborted scan from a clean one"
+        warn "  It reports '✅ All Clear' when the scan never ran. Re-run the installer's security section."
     fi
 fi
 

@@ -5017,44 +5017,65 @@ if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT
     if [ "$RKHUNTER_INSTALLED" = true ]; then
     cat <<'RKHUNTER_SCRIPT' | sudo tee /usr/local/bin/rkhunter-telegram.sh
 #!/bin/bash
-# Rkhunter scan with Telegram notifications - ALWAYS send status
+# Rkhunter scan with Telegram notifications
+#
+# "No warnings in the log" is NOT the same as "the scan found nothing". If
+# rkhunter aborts on a configuration error it writes that error and stops - no
+# warnings, no results. An earlier version of this script tested only for the
+# presence of "Warning" lines, so an aborted scan produced a daily
+# "✅ All Clear" message. That is precisely how a security tool goes quiet for
+# months without anyone noticing.
+#
+# The scan is therefore only trusted when the log proves it ran to completion.
+# --report-warnings-only is deliberately NOT used: it suppresses the summary
+# line that is the evidence of completion.
 
 TELEGRAM_BOT_TOKEN="REPLACE_BOT_TOKEN"
 TELEGRAM_CHAT_ID="REPLACE_CHAT_ID"
 SCAN_LOG="/var/log/rkhunter-scan-$(date +%Y%m%d).log"
 
-# Run rkhunter scan
-/usr/bin/rkhunter --check --skip-keypress --report-warnings-only > "$SCAN_LOG" 2>&1
+send_telegram() {
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHAT_ID}" \
+        -d text="$1" \
+        -d parse_mode="Markdown" >/dev/null 2>&1
+}
 
-# Check if warnings were found
-if grep -q "Warning" "$SCAN_LOG"; then
-    # Extract warnings
-    WARNINGS=$(grep "Warning" "$SCAN_LOG" | head -10)
-    WARNING_COUNT=$(grep -c "Warning" "$SCAN_LOG")
+/usr/bin/rkhunter --check --skip-keypress --nocolors > "$SCAN_LOG" 2>&1
+SCAN_RC=$?
 
-    # Send Telegram message with warnings
+# Evidence that the scan actually ran end to end
+COMPLETED=$(grep -c "System checks summary" "$SCAN_LOG" 2>/dev/null)
+
+if [ "${COMPLETED:-0}" -eq 0 ]; then
+    MESSAGE="🚨 *RKHUNTER SCAN FAILED*%0A%0A"
+    MESSAGE+="Server: $(hostname)%0A"
+    MESSAGE+="Date: $(date '+%Y-%m-%d %H:%M')%0A%0A"
+    MESSAGE+="The scan did not run to completion (exit ${SCAN_RC}).%0A"
+    MESSAGE+="*This host is currently NOT being scanned for rootkits.*%0A%0A"
+    MESSAGE+="Last output:%0A\`\`\`%0A$(tail -8 "$SCAN_LOG" | cut -c1-200)%0A\`\`\`%0A%0A"
+    MESSAGE+="Check the config with: \`rkhunter --config-check\`%0A"
+    MESSAGE+="Full log: $SCAN_LOG"
+    send_telegram "$MESSAGE"
+
+elif grep -q "^Warning:" "$SCAN_LOG"; then
+    WARNINGS=$(grep "^Warning:" "$SCAN_LOG" | head -10)
+    WARNING_COUNT=$(grep -c "^Warning:" "$SCAN_LOG")
+
     MESSAGE="🔍 *Rkhunter Daily Scan*%0A%0A"
     MESSAGE+="⚠️ Found $WARNING_COUNT warning(s) on $(hostname)%0A%0A"
     MESSAGE+="*Top warnings:*%0A\`\`\`%0A${WARNINGS}%0A\`\`\`%0A%0A"
     MESSAGE+="Full log: $SCAN_LOG"
+    send_telegram "$MESSAGE"
 
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d text="${MESSAGE}" \
-        -d parse_mode="Markdown" >/dev/null 2>&1
 else
-    # No warnings - send success message
     MESSAGE="✅ *Rkhunter Daily Scan*%0A%0A"
     MESSAGE+="Server: $(hostname)%0A"
     MESSAGE+="Status: *All Clear*%0A"
     MESSAGE+="Date: $(date '+%Y-%m-%d %H:%M')%0A%0A"
-    MESSAGE+="No security warnings detected.%0A"
+    MESSAGE+="Scan completed, no warnings.%0A"
     MESSAGE+="Full log: $SCAN_LOG"
-
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d text="${MESSAGE}" \
-        -d parse_mode="Markdown" >/dev/null 2>&1
+    send_telegram "$MESSAGE"
 fi
 
 # Keep scan logs for 30 days

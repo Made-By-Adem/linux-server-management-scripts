@@ -460,6 +460,92 @@ if command -v aide >/dev/null 2>&1 && [ -f /var/lib/aide/aide.db ]; then
 fi
 
 ###############################################################################
+header "5b. Rootkit scanning (rkhunter)"
+###############################################################################
+
+if ! command -v rkhunter >/dev/null 2>&1; then
+    note "rkhunter is not installed"
+else
+    RK_CONFIG_OK=true
+    rkhunter --config-check >/dev/null 2>&1 || RK_CONFIG_OK=false
+
+    RK_LOG=""
+    for f in /var/log/rkhunter.log /var/log/rkhunter/rkhunter.log; do
+        [ -f "$f" ] && RK_LOG="$f" && break
+    done
+
+    RK_COMPLETED=false
+    [ -n "$RK_LOG" ] && grep -q "System checks summary" "$RK_LOG" 2>/dev/null && RK_COMPLETED=true
+
+    # The installed reporter has the same class of bug as the AIDE one: it tests
+    # for the presence of "Warning" lines and ignores whether the scan ran at
+    # all, so an aborted scan produces "✅ All Clear".
+    RK_REPORTER_BUGGY=false
+    if [ -f /usr/local/bin/rkhunter-telegram.sh ] && \
+       grep -q -- '--report-warnings-only' /usr/local/bin/rkhunter-telegram.sh 2>/dev/null && \
+       ! grep -q 'System checks summary' /usr/local/bin/rkhunter-telegram.sh 2>/dev/null; then
+        RK_REPORTER_BUGGY=true
+    fi
+
+    if [ "$RK_CONFIG_OK" = true ] && [ "$RK_COMPLETED" = true ] && [ "$RK_REPORTER_BUGGY" = false ]; then
+        ok "rkhunter config is valid and the last scan ran to completion"
+        CLEAN+=("rkhunter")
+    else
+        [ "$RK_CONFIG_OK" = false ]    && bad "rkhunter --config-check fails"
+        [ "$RK_COMPLETED" = false ]    && bad "No completed scan in the rkhunter log"
+        [ "$RK_REPORTER_BUGGY" = true ] && bad "rkhunter-telegram.sh reports 'All Clear' on an aborted scan"
+
+        rkhunter_fix() {
+            if [ "$RK_CONFIG_OK" = false ]; then
+                note "Configuration errors, which must be resolved first:"
+                rkhunter --config-check 2>&1 | head -10 | sed 's/^/      /'
+                note "Common cause on Ubuntu: obsolete options left behind by a package upgrade."
+                note "Fix /etc/rkhunter.conf, then re-run this script."
+                return 1
+            fi
+
+            if [ "$RK_REPORTER_BUGGY" = true ]; then
+                # Do not leave a reporter running that can only say "all clear"
+                if [ -f /etc/cron.d/security-scans ]; then
+                    sed -i 's|^\([^#].*rkhunter-telegram\.sh\)|# DISABLED - cannot detect an aborted scan: \1|' \
+                        /etc/cron.d/security-scans
+                    ok "Disabled the broken rkhunter-telegram cron entry"
+                fi
+                note "Re-run the installer's security section for the corrected reporter:"
+                echo "      sudo bash $SCRIPT_DIR/install-script.sh --section   # choose 17"
+            fi
+
+            note "Refreshing the file property database and running one scan..."
+            rkhunter --propupd >/dev/null 2>&1 || note "rkhunter --propupd reported a problem"
+
+            # The exit code alone is not the signal here - the summary line is
+            # the evidence that the scan reached the end.
+            rkhunter --check --skip-keypress --nocolors >/tmp/rkhunter-verify.log 2>&1 || true
+
+            if grep -q "System checks summary" /tmp/rkhunter-verify.log 2>/dev/null; then
+                local warns
+                warns=$(grep -c "^Warning:" /tmp/rkhunter-verify.log 2>/dev/null || true)
+                ok "Scan ran to completion (${warns:-0} warnings) - see /tmp/rkhunter-verify.log"
+                return 0
+            fi
+
+            bad "The scan still does not complete - see /tmp/rkhunter-verify.log"
+            return 1
+        }
+
+        offer "rkhunter" "rkhunter is not producing scan results" \
+"An aborted scan writes its error and stops: no warnings, no findings. The
+installed reporter tests only for the presence of 'Warning' lines, so it sends
+'✅ All Clear' for a scan that never ran. A rootkit scanner that has been quiet
+for months looks identical to one that keeps finding nothing.
+
+Fix: disable the broken reporter, refresh the property database, and run one
+scan to verify it reaches the 'System checks summary' line." \
+            rkhunter_fix
+    fi
+fi
+
+###############################################################################
 header "6. Writable filesystem hardening"
 ###############################################################################
 

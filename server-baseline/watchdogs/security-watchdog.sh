@@ -16,6 +16,8 @@
 #   Units (WATCH_UNITS)           systemd state, alerting on stop and on return
 #     auditd                      stopping it is the first move of this attack class
 #     fail2ban                    if it stops, SSH accepts unlimited attempts
+#     acct                        process accounting; it was found off AFTER a reboot,
+#                                 losing the command history for the window that mattered
 #     fail2ban-jail               synthetic: is the sshd jail actually reachable?
 #
 #   Monitors (WATCH_MONITORS)     content snapshots, alerting on what changed
@@ -44,7 +46,7 @@
 # Config, from /etc/server-baseline/selfcheck.env:
 #   TELEGRAM_BOT_TOKEN=...
 #   TELEGRAM_CHAT_ID=...
-#   WATCH_UNITS="auditd fail2ban"
+#   WATCH_UNITS="auditd fail2ban acct"
 #   WATCH_JAIL="sshd"                   # "" disables the jail check
 #   WATCH_MONITORS="listeners root-keys path-hijack ld-preload ufw docker-daemons container-images boot-id"
 #
@@ -66,7 +68,7 @@ fi
 # Accept the alternative variable names some setups already use
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${SECRET_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-${CHAT_ID_PERSON1:-}}"
-WATCH_UNITS="${WATCH_UNITS:-auditd fail2ban}"
+WATCH_UNITS="${WATCH_UNITS:-auditd fail2ban acct}"
 WATCH_JAIL="${WATCH_JAIL-sshd}"
 WATCH_MONITORS="${WATCH_MONITORS:-listeners root-keys path-hijack ld-preload ufw docker-daemons container-images boot-id}"
 
@@ -140,6 +142,8 @@ impact_of() {
             echo "Syscall auditing is off. Changes to shell profiles, cron, systemd units and SSH keys are no longer recorded. Stopping auditd is a normal part of a reboot - and also the first step of a compromise." ;;
         fail2ban)
             echo "Brute-force protection is off. SSH is now accepting unlimited authentication attempts without banning anything." ;;
+        acct)
+            echo "Process accounting is off. No record is being kept of which commands ran. This has been observed to fail silently after a reboot, leaving no command history for exactly the window an investigation needs." ;;
         fail2ban-jail)
             echo "The fail2ban service is running but the sshd jail is not reachable. This is the dangerous case: the service reports healthy while banning nothing at all." ;;
         *)
@@ -151,6 +155,7 @@ recovery_of() {
     case "$1" in
         auditd)        echo "Audit logging is running again." ;;
         fail2ban)      echo "Brute-force protection is running again." ;;
+        acct)          echo "Process accounting is recording again." ;;
         fail2ban-jail) echo "The sshd jail is reachable again." ;;
         *)             echo "The control is running again." ;;
     esac
