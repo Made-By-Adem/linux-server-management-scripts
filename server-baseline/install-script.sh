@@ -764,6 +764,40 @@ fi
 echo "=========================================================================="
 echo ""
 
+# Privilege check.
+#
+# Running as root does not guarantee that `sudo` works. On a freshly rebuilt
+# server reached over an SSH key, the root account often has no usable password,
+# and sudo then tries to authenticate, fails, and asks to change the password -
+# "Authentication token manipulation error". Demanding sudo from a root shell
+# turns a working situation into a blocked one.
+#
+# When already root, replace sudo with a shim so the script never depends on it.
+if [ "$(id -u)" -eq 0 ] && ! sudo -n true 2>/dev/null; then
+    echo -e "${YELLOW}[INFO]${NC} Running as root; sudo is unusable on this host, bypassing it"
+
+    sudo() {
+        local run_as=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -u) run_as="$2"; shift 2 ;;
+                -u*) run_as="${1#-u}"; shift ;;
+                -E|-H|-n) shift ;;   # meaningless when already root
+                --) shift; break ;;
+                *) break ;;
+            esac
+        done
+
+        if [ -n "$run_as" ]; then
+            # runuser is util-linux, always present, and needs no authentication
+            runuser -u "$run_as" -- "$@"
+        else
+            "$@"
+        fi
+    }
+    export -f sudo 2>/dev/null || true
+fi
+
 # Check if running with sudo privileges
 if ! sudo -n true 2>/dev/null; then
     echo -e "${RED}Error: This script requires sudo privileges${NC}" >&2
