@@ -648,20 +648,23 @@ saying 'no changes detected' was reporting on a scan that never started.
 Fix: install aide-common and build the initial database. Takes 10-20 minutes." \
             aide_bootstrap_fix
     else
-        echo "    Running $AIDE_BIN --check (this can take a while)..."
-        $AIDE_BIN --check >/tmp/aide-update-check.log 2>&1
-        rc=$?
+        # A full `aide --check` takes 10-20 minutes. Running it here would make
+        # every pass of this script - including --check mode, and including
+        # runs where the operator declined the AIDE fix - block for that long.
+        # The evidence that AIDE completes lives in its last run's log instead.
+        ok "AIDE resolves to: $AIDE_BIN"
 
-        # Only meaningful when a check actually ran. In the bootstrap branch
-        # above there is no exit code to interpret, and referencing an unset
-        # rc under `set -u` would abort the whole script.
-        if [ "$rc" -ge 14 ]; then
-            bad "aide --check fails with exit $rc - file integrity is UNVERIFIED"
-            ADVISORY+=("aide --check fails (exit $rc). Rebuild the database once the host is known clean: aideinit -y -f && mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db")
-        elif [ "$rc" -ne 0 ]; then
-            note "aide --check reports differences (exit $rc) - review /tmp/aide-update-check.log"
+        local_last=$(ls -1t /var/log/aide-check-*.log /var/log/aide-refresh-*.log 2>/dev/null | head -1)
+        if [ -z "$local_last" ]; then
+            note "No AIDE run has ever produced a log on this host."
+            note "Verify once, when you have the time:  aide-refresh --check-only"
+            ADVISORY+=("AIDE has never produced a run log - verify with: aide-refresh --check-only")
+        elif grep -qE 'missing configuration|Invalid|error' "$local_last" 2>/dev/null; then
+            bad "The last AIDE run ended in an error - integrity is UNVERIFIED"
+            note "See: $local_last"
+            ADVISORY+=("Last AIDE run errored ($local_last)")
         else
-            ok "aide --check completes cleanly"
+            ok "Last AIDE run completed: $local_last"
         fi
     fi
 fi

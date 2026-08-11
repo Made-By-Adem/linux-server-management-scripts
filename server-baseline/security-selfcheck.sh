@@ -18,6 +18,7 @@
 #   sudo bash security-selfcheck.sh              # human-readable report
 #   sudo bash security-selfcheck.sh --quiet      # only output when something is wrong
 #   sudo bash security-selfcheck.sh --telegram   # send failures to Telegram
+#   sudo bash security-selfcheck.sh --deep       # also run a full aide --check (10-20 min)
 #
 # Telegram credentials are read from /etc/server-baseline/selfcheck.env:
 #   TELEGRAM_BOT_TOKEN=...
@@ -36,11 +37,13 @@ set -u
 
 QUIET=false
 TELEGRAM=false
+DEEP=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --quiet)    QUIET=true; shift ;;
         --telegram) TELEGRAM=true; shift ;;
+        --deep)     DEEP=true; shift ;;
         --help|-h)
             /bin/sed -n '2,30p' "$0"
             exit 0
@@ -420,16 +423,39 @@ else
         pass "AIDE database is ${DB_AGE_DAYS} days old"
     fi
 
-    # Does --check actually run? An AIDE that errors out is not an AIDE that
-    # found nothing.
-    $AIDE_CMD --check >/dev/null 2>&1
-    AIDE_RC=$?
-    if [ "$AIDE_RC" -ge 14 ]; then
-        fail "aide --check fails with exit ${AIDE_RC} - file integrity is UNVERIFIED"
-    elif [ "$AIDE_RC" -ne 0 ]; then
-        warn "aide --check reports differences (exit ${AIDE_RC}) - review them"
+    # Deliberately NOT running a full `aide --check` here. It takes 10-20
+    # minutes, and a daily check that costs twenty minutes gets switched off
+    # within a week - at which point this whole script stops running too.
+    #
+    # The evidence that AIDE completes is in the last scheduled run's log,
+    # which is the same reasoning applied to rkhunter. --deep forces a real
+    # check for when you want one.
+    LAST_AIDE_LOG=$(/bin/ls -1t /var/log/aide-check-*.log /var/log/aide-refresh-*.log 2>/dev/null | /usr/bin/head -1)
+
+    if [ "$DEEP" = true ]; then
+        echo "  ---- running a full aide --check (10-20 minutes)..."
+        $AIDE_CMD --check >/dev/null 2>&1
+        AIDE_RC=$?
+        if [ "$AIDE_RC" -ge 14 ]; then
+            fail "aide --check fails with exit ${AIDE_RC} - file integrity is UNVERIFIED"
+        elif [ "$AIDE_RC" -ne 0 ]; then
+            warn "aide --check reports differences (exit ${AIDE_RC}) - review them"
+        else
+            pass "aide --check completes cleanly"
+        fi
+    elif [ -z "$LAST_AIDE_LOG" ]; then
+        warn "No AIDE run has ever produced a log - the scheduled check may not be running"
+        warn "  Verify once with: sudo security-selfcheck --deep   (takes 10-20 minutes)"
     else
-        pass "aide --check completes cleanly"
+        LOG_AGE_DAYS=$(( ( $(/bin/date +%s) - $(/usr/bin/stat -c %Y "$LAST_AIDE_LOG") ) / 86400 ))
+        if [ "$LOG_AGE_DAYS" -gt 3 ]; then
+            fail "The last AIDE run was ${LOG_AGE_DAYS} days ago - the scheduled check is not running"
+        elif /bin/grep -qE 'missing configuration|Invalid|error' "$LAST_AIDE_LOG" 2>/dev/null; then
+            fail "The last AIDE run ended in an error - integrity is UNVERIFIED"
+            warn "  See: $LAST_AIDE_LOG"
+        else
+            pass "AIDE ran ${LOG_AGE_DAYS} day(s) ago and completed"
+        fi
     fi
 fi
 
