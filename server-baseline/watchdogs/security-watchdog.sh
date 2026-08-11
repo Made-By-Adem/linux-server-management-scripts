@@ -23,6 +23,8 @@
 #   Monitors (WATCH_MONITORS)     content snapshots, alerting on what changed
 #     listeners                   a new port bound to 0.0.0.0 / ::
 #     root-keys                   authorized_keys for root and admin users
+#     persistence-files           /etc/profile, /root/.profile, /etc/cron* contents
+#     tmpfs-exec                  executable files appearing in /tmp, /var/tmp, /dev/shm
 #     path-hijack                 .local/bin under a system path, shim directories
 #     ld-preload                  /etc/ld.so.preload is non-empty
 #     ufw                         firewall disabled or default policy changed
@@ -48,7 +50,7 @@
 #   TELEGRAM_CHAT_ID=...
 #   WATCH_UNITS="auditd fail2ban acct"
 #   WATCH_JAIL="sshd"                   # "" disables the jail check
-#   WATCH_MONITORS="listeners root-keys path-hijack ld-preload ufw docker-daemons container-images boot-id"
+#   WATCH_MONITORS="listeners root-keys persistence-files tmpfs-exec path-hijack ld-preload ufw docker-daemons container-images boot-id"
 #
 # Drop any monitor from WATCH_MONITORS that turns out to be too noisy for your
 # environment. Each one is independent.
@@ -70,7 +72,7 @@ TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${SECRET_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-${CHAT_ID_PERSON1:-}}"
 WATCH_UNITS="${WATCH_UNITS:-auditd fail2ban acct}"
 WATCH_JAIL="${WATCH_JAIL-sshd}"
-WATCH_MONITORS="${WATCH_MONITORS:-listeners root-keys path-hijack ld-preload ufw docker-daemons container-images boot-id}"
+WATCH_MONITORS="${WATCH_MONITORS:-listeners root-keys persistence-files tmpfs-exec path-hijack ld-preload ufw docker-daemons container-images boot-id}"
 
 MODE="check"
 case "${1:-}" in
@@ -185,8 +187,10 @@ state_of() {
 # Human-readable title per monitor
 monitor_title() {
     case "$1" in
-        listeners)        echo "PUBLIC LISTENERS CHANGED" ;;
-        root-keys)        echo "AUTHORIZED SSH KEYS CHANGED" ;;
+        listeners)         echo "PUBLIC LISTENERS CHANGED" ;;
+        root-keys)         echo "AUTHORIZED SSH KEYS CHANGED" ;;
+        persistence-files) echo "STARTUP OR CRON FILE CHANGED" ;;
+        tmpfs-exec)        echo "EXECUTABLE IN A TEMPORARY DIRECTORY" ;;
         path-hijack)      echo "PATH HIJACK DETECTED" ;;
         ld-preload)       echo "LD_PRELOAD HIJACK DETECTED" ;;
         ufw)              echo "FIREWALL STATE CHANGED" ;;
@@ -203,6 +207,10 @@ monitor_impact() {
             echo "A port bound to all interfaces is reachable from the internet unless a firewall stops it - and for container ports, UFW does not. In the incident this watchdog was built for, a management API came back online after a reboot and was exploited 25 seconds later." ;;
         root-keys)
             echo "An added key grants permanent access and survives password changes and reboots. Verify you made this change." ;;
+        persistence-files)
+            echo "A file that runs automatically changed - a login shell profile or a cron entry. This is where persistence is installed: one appended line survives every reboot. Package upgrades legitimately touch /etc/cron.daily, so check whether an upgrade ran." ;;
+        tmpfs-exec)
+            echo "An executable file appeared in a world-writable directory. This is the standard staging pattern: write the payload somewhere anyone can write, then run it. If these directories are mounted noexec it cannot execute, but its presence still needs explaining." ;;
         path-hijack)
             echo "A directory under a system path now precedes /usr/bin in PATH. This is how top, htop, lsof, crontab, df and mount get replaced with versions that filter their own output. Treat every observation made through those tools as unreliable." ;;
         ld-preload)
@@ -225,6 +233,7 @@ monitor_impact() {
 monitor_level() {
     case "$1" in
         path-hijack|ld-preload|docker-daemons) echo "crit" ;;
+        persistence-files|tmpfs-exec)          echo "warn" ;;
         boot-id)                               echo "info" ;;
         *)                                     echo "warn" ;;
     esac
@@ -235,7 +244,7 @@ monitor_level() {
 # that state silently accepted as the baseline.
 monitor_expects_empty() {
     case "$1" in
-        path-hijack|ld-preload) return 0 ;;
+        path-hijack|ld-preload|tmpfs-exec) return 0 ;;
         *)                      return 1 ;;
     esac
 }
@@ -259,6 +268,30 @@ monitor_snapshot() {
             proc=$(echo "$line" | grep -oE 'users:\(\("[^"]+"' | grep -oE '"[^"]+"' | tr -d '"' | head -1)
             echo "${port} ${proc:-unknown}"
         done | sort -u
+        ;;
+
+    persistence-files)
+        # Hash the contents, so ANY change is caught - not only the .local/bin
+        # signature that path-hijack looks for. These are the files that run
+        # automatically: one appended line survives every reboot.
+        # sha256sum marks binary-mode reads with a leading '*' on the filename;
+        # strip it so the snapshot is identical however the tool was invoked.
+        for f in /etc/profile /etc/bash.bashrc /etc/environment \
+                 /root/.profile /root/.bashrc /etc/crontab; do
+            [ -f "$f" ] && sha256sum "$f" 2>/dev/null | awk '{sub(/^\*/,"",$2); print $2" "$1}'
+        done
+        for d in /etc/profile.d /etc/cron.d /etc/cron.hourly /etc/cron.daily \
+                 /etc/cron.weekly /etc/cron.monthly /var/spool/cron/crontabs; do
+            [ -d "$d" ] || continue
+            find "$d" -maxdepth 1 -type f -exec sha256sum {} + 2>/dev/null | \
+                awk '{sub(/^\*/,"",$2); print $2" "$1}'
+        done
+        true
+        ;;
+
+    tmpfs-exec)
+        find /tmp /var/tmp /dev/shm -maxdepth 3 -type f -executable 2>/dev/null | head -50
+        true
         ;;
 
     root-keys)

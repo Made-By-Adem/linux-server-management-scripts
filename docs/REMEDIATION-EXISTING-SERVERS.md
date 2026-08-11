@@ -260,10 +260,50 @@ ausearch -k persist -i | less
 - Local audit logs can be wiped by whoever gets root. Ship them off-host
   (remote syslog, Loki, or `audisp-remote`) if you want them to survive.
 
-Optionally make the rules immutable until reboot by appending `-e 2` in a file
-that sorts last (`/etc/audit/rules.d/99-finalize.rules`). Do this only once you
-are happy with the rules — after loading, they cannot be changed without a
-reboot.
+### Making the rules immutable
+
+```bash
+echo '-e 2' > /etc/audit/rules.d/99-finalize.rules
+augenrules --load     # takes full effect at the next reboot
+```
+
+The `99-` prefix matters: `-e 2` has to be the last rule loaded. After this,
+nothing — including root — can add, remove or flush audit rules until a reboot.
+That is the point: an attacker with root can otherwise just flush them first.
+
+The cost is that *you* cannot change them either without rebooting. Do this once
+the rule set is settled. To undo: delete the file and reboot.
+
+### Getting the logs off the host
+
+Local audit logs are only as trustworthy as the host. Whoever gets root can wipe
+them, and on AC2 that is exactly what the rest of the kit was built to do.
+
+This is **not** scripted, because it needs a receiver that has to exist first and
+an untested log pipeline is worse than a known-absent one. The minimal version,
+once you have somewhere to send to:
+
+```bash
+# On the sender, forward the journal (which carries the audit events)
+cat > /etc/rsyslog.d/60-remote.conf <<'EOF'
+*.*  @@log-collector.internal:6514      # @@ = TCP; @ would be lossy UDP
+$ActionQueueType LinkedList
+$ActionQueueFileName remotefwd
+$ActionResumeRetryCount -1
+$ActionQueueSaveOnShutdown on
+EOF
+systemctl restart rsyslog
+
+# Verify it actually arrives - a forwarder that silently drops is the same
+# failure class as everything else in this document
+logger -t remote-test "forwarding check $(date +%s)"
+```
+
+The queue settings are the part people leave out: without them a collector
+outage loses the events instead of buffering them.
+
+Whatever you send to must not be a machine that this host can reach as root,
+otherwise the same compromise takes both.
 
 ---
 

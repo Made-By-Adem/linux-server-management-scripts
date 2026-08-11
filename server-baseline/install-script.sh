@@ -4705,6 +4705,38 @@ EOF
             log_warning "✗ Process accounting (acct) is NOT active - no command history will be kept"
         fi
 
+        # Immutable rules (-e 2). Once loaded, the rule set cannot be changed
+        # without a reboot - which is the point: an attacker with root can
+        # otherwise simply flush the rules before doing anything else.
+        # Opt-in, because it also blocks YOUR next change until a reboot.
+        echo ""
+        echo "══════════════════════════════════════════════════════════════════"
+        echo "IMMUTABLE AUDIT RULES (-e 2)"
+        echo "══════════════════════════════════════════════════════════════════"
+        echo ""
+        echo "With -e 2 the audit configuration is locked until the next reboot."
+        echo "Nothing - including root - can add, remove or flush audit rules."
+        echo ""
+        echo "  ✅ An attacker who gains root cannot silently disable auditing"
+        echo "  ⚠️  You cannot change the rules either without rebooting"
+        echo ""
+        echo "Recommended once the rules above are settled. Skip it on a machine"
+        echo "you are still tuning."
+        echo ""
+        read -p "Make audit rules immutable? (y/N): " audit_immutable
+        audit_immutable=${audit_immutable:-n}
+
+        if [[ $audit_immutable =~ ^[Yy]$ ]]; then
+            # 99- prefix so augenrules places it last; -e 2 must be the final rule.
+            echo "-e 2" | sudo tee /etc/audit/rules.d/99-finalize.rules >/dev/null
+            sudo augenrules --load 2>/dev/null || true
+            log_info "✓ Audit rules will be immutable from the next reboot"
+            log_info "  To undo: remove /etc/audit/rules.d/99-finalize.rules and reboot"
+        else
+            log_info "Audit rules remain changeable (no -e 2)"
+            log_info "  Enable later: echo '-e 2' > /etc/audit/rules.d/99-finalize.rules && reboot"
+        fi
+
         log_info "Audit logging configured successfully"
         log_info "View all persistence events: sudo ausearch -k persist"
         log_info "Or per category:             sudo ausearch -k profile_tampering"

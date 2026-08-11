@@ -412,6 +412,8 @@ alert says *what* changed, not merely that something did.
 | `fail2ban-jail` | The service is up but the sshd jail is unreachable. Tracked separately because "fail2ban is active" was true throughout the incident while it banned nothing |
 | `listeners` | A port appears on `0.0.0.0`. In the incident a management API came back after a reboot and was exploited 25 seconds later |
 | `root-keys` | `authorized_keys` changes for root or an admin user |
+| `persistence-files` | Any change to `/etc/profile`, `/root/.profile`, `/etc/crontab` or any `/etc/cron.*` entry — not just the hijack signature |
+| `tmpfs-exec` | An executable file appears in `/tmp`, `/var/tmp` or `/dev/shm` |
 | `path-hijack` | `.local/bin` under a system path, or a replaced `top`/`crontab`/`lsof` |
 | `ld-preload` | `/etc/ld.so.preload` becomes non-empty |
 | `ufw` | The firewall is disabled or a default policy changes |
