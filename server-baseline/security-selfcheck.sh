@@ -453,7 +453,16 @@ else
     # every earlier log irrelevant: they describe a baseline that no longer
     # exists, and judging the present by them reports failures that were
     # already fixed.
-    LAST_AIDE_LOG=$(/usr/bin/find /var/log -maxdepth 1                         \( -name 'aide-check-*.log' -o -name 'aide-refresh-*.log' \)                         -newer /var/lib/aide/aide.db 2>/dev/null |                     /usr/bin/xargs -r /bin/ls -1t 2>/dev/null | /usr/bin/head -1)
+    # A log only says something about the present if it was written BOTH after
+    # the current database AND by the current reporter. A log from the old
+    # broken reporter post-dates the database on any host where the database
+    # was never rebuilt, and reporting its error describes a defect that has
+    # since been fixed.
+    AIDE_CUTOFF=/var/lib/aide/aide.db
+    if [ -f /usr/local/bin/aide-telegram.sh ] &&        [ /usr/local/bin/aide-telegram.sh -nt /var/lib/aide/aide.db ]; then
+        AIDE_CUTOFF=/usr/local/bin/aide-telegram.sh
+    fi
+    LAST_AIDE_LOG=$(/usr/bin/find /var/log -maxdepth 1                         \( -name 'aide-check-*.log' -o -name 'aide-refresh-*.log' \)                         -newer "$AIDE_CUTOFF" 2>/dev/null |                     /usr/bin/xargs -r /bin/ls -1t 2>/dev/null | /usr/bin/head -1)
 
     if [ "$DEEP" = true ]; then
         echo "  ---- running a full aide --check (10-20 minutes)..."
@@ -467,7 +476,7 @@ else
             pass "aide --check completes cleanly"
         fi
     elif [ -z "$LAST_AIDE_LOG" ]; then
-        warn "No AIDE run since the database was built - the first scheduled check has not run yet"
+        warn "No AIDE run since the current setup was put in place - the first scheduled check is pending"
         warn "  Verify once with: sudo security-selfcheck --deep   (takes 10-20 minutes)"
     else
         LOG_AGE_DAYS=$(( ( $(/bin/date +%s) - $(/usr/bin/stat -c %Y "$LAST_AIDE_LOG") ) / 86400 ))

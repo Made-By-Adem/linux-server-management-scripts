@@ -688,7 +688,16 @@ Fix: install aide-common and build the initial database. Takes 10-20 minutes." \
         # Only logs written AFTER the current database say anything about the
         # present. Earlier ones describe a baseline that no longer exists, so
         # judging by them reports failures that a rebuild already resolved.
-        local_last=$(find /var/log -maxdepth 1                         \( -name 'aide-check-*.log' -o -name 'aide-refresh-*.log' \)                         -newer /var/lib/aide/aide.db 2>/dev/null |                      xargs -r ls -1t 2>/dev/null | head -1)
+        # A log only says something about the present if it was written BOTH after
+        # the current database AND by the current reporter. A log from the old
+        # broken reporter post-dates the database on any host where the database
+        # was never rebuilt, and reporting its error describes a defect that has
+        # since been fixed.
+        AIDE_CUTOFF=/var/lib/aide/aide.db
+        if [ -f /usr/local/bin/aide-telegram.sh ] &&                [ /usr/local/bin/aide-telegram.sh -nt /var/lib/aide/aide.db ]; then
+                AIDE_CUTOFF=/usr/local/bin/aide-telegram.sh
+        fi
+        local_last=$(find /var/log -maxdepth 1                         \( -name 'aide-check-*.log' -o -name 'aide-refresh-*.log' \)                         -newer "$AIDE_CUTOFF" 2>/dev/null |                      xargs -r ls -1t 2>/dev/null | head -1)
         if [ -z "$local_last" ]; then
             note "No AIDE run since the database was built - the first scheduled run is pending."
         elif grep -qE '^(ERROR|.*missing configuration|.*Invalid configure|.*Configuration error)' "$local_last" 2>/dev/null; then
