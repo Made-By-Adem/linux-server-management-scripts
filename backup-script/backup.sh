@@ -10,7 +10,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # --- Determine config file ---
+# The argument is restricted to a plain name. It is used to build a path that
+# gets sourced, so anything path-like ("../../tmp/evil") would mean this script
+# executes an arbitrary file.
 if [[ -n "${1:-}" ]]; then
+    if [[ ! "$1" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        echo "[ERROR] Invalid config name: '$1'"
+        echo "        Only letters, digits, '_' and '-' are allowed."
+        exit 1
+    fi
     ENV_FILE="${SCRIPT_DIR}/.env.${1}"
 else
     ENV_FILE="${SCRIPT_DIR}/.env"
@@ -72,6 +80,26 @@ fi
 BACKUP_DIR="${BACKUP_DEST:-${SCRIPT_DIR}}/backup-${REMOTE_NAME:-${REMOTE_HOST}}"
 mkdir -p "$BACKUP_DIR"
 
+# --- Retention -------------------------------------------------------------
+# rsync --delete mirrors the source. Without retention, one run after the source
+# is compromised (or after an accidental deletion) overwrites the last good copy
+# and there is nothing left to restore from. Files that rsync would delete or
+# overwrite are moved into a dated directory first, so every run leaves the
+# previous state recoverable.
+#
+# Set RETENTION_DAYS=0 in the .env to opt out and get the old mirror-only
+# behaviour.
+RETENTION_DAYS="${RETENTION_DAYS:-30}"
+RUN_STAMP="$(date '+%Y-%m-%d_%H%M%S')"
+ATTIC_ROOT="${BACKUP_DIR}/.attic"
+ATTIC_DIR="${ATTIC_ROOT}/${RUN_STAMP}"
+
+RSYNC_RETENTION_ARGS=()
+if [[ "$RETENTION_DAYS" -gt 0 ]]; then
+    mkdir -p "$ATTIC_DIR"
+    RSYNC_RETENTION_ARGS=(--backup --backup-dir="$ATTIC_DIR")
+fi
+
 echo "======================================"
 echo " Remote Backup"
 echo "======================================"
@@ -82,11 +110,25 @@ echo "======================================"
 echo ""
 
 # --- Run rsync (single SSH connection via multiplexing) ---
-SOCKET="/tmp/backup-ssh-${REMOTE_HOST}"
+# The control socket lives under the user's own ~/.ssh, not in /tmp. A socket at
+# a predictable path in a world-writable directory can be pre-created by another
+# local account; anything that then connects through it is talking over a
+# session that account controls.
+SOCKET_DIR="${HOME}/.ssh/cm"
+mkdir -p "$SOCKET_DIR"
+chmod 700 "$SOCKET_DIR"
+SOCKET="${SOCKET_DIR}/backup-${REMOTE_USER}@${REMOTE_HOST}:${SSH_PORT}"
+
+# Host key policy: 'accept-new' trusts the key of any host not yet in
+# known_hosts. For a scheduled job that is a blind first-contact trust decision,
+# and it matters when a provider IP is released and re-issued to someone else.
+# Set STRICT_HOST_KEY=yes in the .env once known_hosts is seeded (recommended
+# for anything running from cron).
+STRICT_HOST_KEY="${STRICT_HOST_KEY:-accept-new}"
 
 # Open persistent SSH connection
 echo "[*] Opening SSH connection to ${REMOTE_HOST}..."
-if ! ssh -o StrictHostKeyChecking=accept-new \
+if ! ssh -o "StrictHostKeyChecking=${STRICT_HOST_KEY}" \
     -i "$SSH_KEY" \
     -p "$SSH_PORT" \
     -M -S "$SOCKET" \
@@ -117,6 +159,8 @@ for folder in "${BACKUP_FOLDERS[@]}"; do
     echo "[*] Syncing ${folder} ..."
     if rsync -az --delete \
         --exclude='node_modules' \
+        --exclude='.attic' \
+        "${RSYNC_RETENTION_ARGS[@]+"${RSYNC_RETENTION_ARGS[@]}"}" \
         -e "ssh -i '$SSH_KEY' -p $SSH_PORT -S '$SOCKET'" \
         "${REMOTE_USER}@${REMOTE_HOST}:${folder}" \
         "$LOCAL_PATH"; then
@@ -126,6 +170,20 @@ for folder in "${BACKUP_FOLDERS[@]}"; do
         FAILED=$((FAILED + 1))
     fi
 done
+
+# --- Prune retention ---
+if [[ "$RETENTION_DAYS" -gt 0 ]]; then
+    # Drop the run directory again if nothing was superseded this run
+    rmdir "$ATTIC_DIR" 2>/dev/null || true
+
+    if [[ -d "$ATTIC_ROOT" ]]; then
+        find "$ATTIC_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime "+${RETENTION_DAYS}" \
+            -exec rm -rf {} + 2>/dev/null || true
+    fi
+    if [[ -d "$ATTIC_DIR" ]]; then
+        echo "[*] Superseded files from this run kept in: ${ATTIC_DIR}"
+    fi
+fi
 
 echo ""
 HOSTNAME=$(hostname)

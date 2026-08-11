@@ -289,6 +289,37 @@ perform_system_update() {
     log_success "System update complete"
 
     SYSTEM_UPDATED=true
+
+    # A package upgrade is exactly the moment the AIDE baseline goes stale: the
+    # files it fingerprinted have legitimately changed. Refreshing it here means
+    # the diff is attributable to something you just did, instead of piling up
+    # into noise that eventually gets ignored.
+    #
+    # Never triggered automatically in unattended mode. `aide --update` takes
+    # 10-20 minutes, and more importantly a baseline refresh should be a
+    # decision, not a side effect of a cron job.
+    if [ -x /usr/local/bin/aide-refresh.sh ]; then
+        echo ""
+        log_info "AIDE baseline is now out of date - the upgrade changed files it tracks."
+        if [ "$MODE" = "interactive" ]; then
+            echo ""
+            echo "  Refreshing it now reports exactly which files are absorbed, so this"
+            echo "  upgrade's changes are recorded rather than silently accepted."
+            echo -e "  ${YELLOW}Takes 10-20 minutes.${NC}"
+            echo ""
+            read -p "Refresh the AIDE baseline now? (y/N): " refresh_aide
+            if [[ "${refresh_aide:-n}" =~ ^[Yy]$ ]]; then
+                /usr/local/bin/aide-refresh.sh --reason "after apt upgrade via update-containers" \
+                    || log_warning "AIDE refresh reported a problem - check its output"
+            else
+                log_info "Skipped. Run later: sudo aide-refresh.sh --reason 'post upgrade'"
+            fi
+        else
+            log_info "Unattended mode - not refreshing automatically."
+            log_info "Run when convenient: sudo aide-refresh.sh --reason 'post upgrade'"
+        fi
+    fi
+
     return 0
 }
 
@@ -370,21 +401,39 @@ find_compose_dir() {
         "/srv/docker"
     )
 
+    # Match the container name literally. Docker container names are limited to
+    # [a-zA-Z0-9_.-], so '.' is the only regex metacharacter that can occur -
+    # escaping it is enough, and avoids the delimiter problems a general-purpose
+    # escape expression runs into.
+    #
+    # This matters because the previous version grepped for the bare container
+    # name anywhere in any compose file on the host, first match wins. A name
+    # that happens to be a substring of an unrelated compose file makes root run
+    # `docker compose down` in the wrong directory and take that stack offline.
+    local container_re
+    container_re=$(printf '%s' "$container" | sed 's/\./\\./g')
+    local service_re=""
+    if [ -n "$service_name" ] && [ "$service_name" != "<no value>" ]; then
+        service_re=$(printf '%s' "$service_name" | sed 's/\./\\./g')
+    fi
+
     for base_dir in "${common_dirs[@]}"; do
         for dir in $base_dir/*/; do
             if [ -f "$dir/docker-compose.yml" ] || [ -f "$dir/docker-compose.yaml" ]; then
                 local compose_file="$dir/docker-compose.yml"
                 [ ! -f "$compose_file" ] && compose_file="$dir/docker-compose.yaml"
 
-                # Check for container name, service name, or image name
-                if grep -q "$container" "$compose_file" 2>/dev/null; then
+                # Match an explicit container_name: declaration, not any
+                # occurrence of the string anywhere in the file.
+                if grep -qE "^[[:space:]]*container_name:[[:space:]]+[\"']?${container_re}[\"']?[[:space:]]*$" \
+                        "$compose_file" 2>/dev/null; then
                     echo "$dir"
                     return 0
                 fi
 
-                # Also try matching on the service name from Docker labels
-                if [ -n "$service_name" ] && [ "$service_name" != "<no value>" ]; then
-                    if grep -qE "^\s+${service_name}:" "$compose_file" 2>/dev/null; then
+                # Fall back to the service key from the Docker labels
+                if [ -n "$service_re" ]; then
+                    if grep -qE "^[[:space:]]+${service_re}:[[:space:]]*$" "$compose_file" 2>/dev/null; then
                         echo "$dir"
                         return 0
                     fi
@@ -513,20 +562,41 @@ update_container() {
     log_info "${ARROW} Getting current image info..."
     local old_image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null || echo "Unknown")
     local old_image_id=$(docker inspect --format='{{.Image}}' "$container" 2>/dev/null || echo "Unknown")
+    # Record the exact digest running before and after. Tags like :latest move;
+    # without the digest there is no way to answer "which image was actually
+    # deployed on day X" after the fact - which is exactly what an incident
+    # investigation needs.
+    local old_digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$old_image" 2>/dev/null || echo "none")
 
     # DRY-RUN MODE: Just show what would be done
     if [ "$DRY_RUN" = true ]; then
-        log_dry_run "Would stop container: docker compose down"
-        log_dry_run "Would remove old image: $old_image_id"
         log_dry_run "Would pull new image: docker compose pull"
+        log_dry_run "Would stop container: docker compose down"
         log_dry_run "Would start container: docker compose up -d"
         log_dry_run "Would verify container is running"
+        log_dry_run "Would remove the now-unused old image: $old_image_id"
         UPDATE_SUCCESS["$container"]="[DRY-RUN] Would update from $old_image"
         return 0
     fi
 
     # ACTUAL UPDATE PROCESS (not dry-run)
-    # Step 2: Docker Compose Down
+    #
+    # Order matters. The old image is removed LAST, after the new one is running.
+    # Removing it before the pull (as this script used to) means a failed pull
+    # leaves nothing to roll back to: the "restart with the old image" fallback
+    # has no old image left locally and the service stays down.
+
+    # Step 2: Pull the new image while the old one is still running and intact
+    log_info "${ARROW} Downloading new image..."
+    if ! (cd "$compose_dir" && docker compose -f "$compose_file" pull 2>&1 | tee -a "$LOG_FILE"); then
+        log_error "Failed to download new image"
+        log_info "Container left running on the current image - nothing was changed"
+        UPDATE_FAILED["$container"]="Download failed (container untouched)"
+        return 1
+    fi
+    log_success "New image downloaded"
+
+    # Step 3: Recreate the container on the new image
     log_info "${ARROW} Stopping container..."
     if ! (cd "$compose_dir" && docker compose -f "$compose_file" down 2>&1 | tee -a "$LOG_FILE"); then
         log_error "Failed to stop container"
@@ -535,51 +605,50 @@ update_container() {
     fi
     log_success "Container stopped"
 
-    # Step 3: Remove old image
-    log_info "${ARROW} Removing old image..."
-    if [ "$old_image_id" != "Unknown" ]; then
-        if docker rmi "$old_image_id" 2>&1 | tee -a "$LOG_FILE"; then
-            log_success "Old image removed"
-        else
-            log_warning "Could not remove old image (possibly used by other containers)"
-        fi
-    fi
-
-    # Step 4: Pull new image
-    log_info "${ARROW} Downloading new image..."
-    if ! (cd "$compose_dir" && docker compose -f "$compose_file" pull 2>&1 | tee -a "$LOG_FILE"); then
-        log_error "Failed to download new image"
-        UPDATE_FAILED["$container"]="Download failed"
-
-        # Try to restart container with old image
-        log_warning "Attempting to restart container..."
-        (cd "$compose_dir" && docker compose -f "$compose_file" up -d 2>&1 | tee -a "$LOG_FILE") || true
-        return 1
-    fi
-    log_success "New image downloaded"
-
-    # Step 5: Start container (docker compose up -d will only start previously running containers)
     log_info "${ARROW} Starting container..."
     if ! (cd "$compose_dir" && docker compose -f "$compose_file" up -d 2>&1 | tee -a "$LOG_FILE"); then
         log_error "Failed to start container"
+        log_warning "The previous image is still available locally as: $old_image_id"
+        log_warning "Roll back with: docker tag $old_image_id $old_image && docker compose -f $compose_file up -d"
         UPDATE_FAILED["$container"]="Start failed"
         return 1
     fi
     log_success "Container started"
 
-    # Step 6: Verify
+    # Step 4: Verify
     log_info "${ARROW} Verifying container status..."
     sleep 3  # Give container time to start
 
     if docker ps --filter "name=$container" --format '{{.Names}}' | grep -q "^${container}$"; then
         local new_image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null || echo "Unknown")
+        local new_image_id=$(docker inspect --format='{{.Image}}' "$container" 2>/dev/null || echo "Unknown")
+        local new_digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$new_image" 2>/dev/null || echo "none")
+
         log_success "Container running successfully"
         log_info "Old image: $old_image"
         log_info "New image: $new_image"
-        UPDATE_SUCCESS["$container"]="$old_image → $new_image"
+        log_info "Old digest: $old_digest"
+        log_info "New digest: $new_digest"
+
+        # Step 5: Only now is it safe to reclaim the old image
+        if [ "$old_image_id" != "Unknown" ] && [ "$old_image_id" != "$new_image_id" ]; then
+            log_info "${ARROW} Removing the superseded image..."
+            if docker rmi "$old_image_id" >>"$LOG_FILE" 2>&1; then
+                log_success "Old image removed"
+            else
+                log_warning "Could not remove old image (still referenced by another container)"
+            fi
+        fi
+
+        if [ "$old_digest" = "$new_digest" ]; then
+            UPDATE_SUCCESS["$container"]="$old_image (unchanged, $new_digest)"
+        else
+            UPDATE_SUCCESS["$container"]="$old_image → $new_image ($new_digest)"
+        fi
         return 0
     else
         log_error "Container not active after update!"
+        log_warning "The previous image is still available locally as: $old_image_id"
         UPDATE_FAILED["$container"]="Not active after update"
         return 1
     fi

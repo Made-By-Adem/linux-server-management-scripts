@@ -1,0 +1,718 @@
+# Remediating servers that were already provisioned
+
+## The short version
+
+```bash
+sudo bash server-baseline/update-baseline.sh
+```
+
+That is the whole thing. It checks this host for each known problem, reports
+what is already correct, and prompts you only about what is genuinely wrong
+here. Every fix verifies its own result afterwards.
+
+```bash
+sudo bash server-baseline/update-baseline.sh --check     # detect only, change nothing
+sudo bash server-baseline/update-baseline.sh --dry-run   # show what each fix would do
+sudo bash server-baseline/update-baseline.sh --yes       # accept every default
+```
+
+Safe to run repeatedly. **Nothing in it closes SSH access** — port 22 is
+reported as advice only, never changed automatically.
+
+Start with `--check` if you want to see the state of a server before touching
+it. If it reports compromise indicators, stop and go to
+[If the self-check reports a compromise](#if-the-self-check-reports-a-compromise).
+
+Afterwards — and monthly from then on — verify that the controls actually
+produce a result:
+
+```bash
+sudo bash server-baseline/install-script.sh --verify
+```
+
+That is the check that was missing: is fail2ban **banning** (not just running),
+is sshd listening on the expected port only, does auditd have rules loaded, is
+anything on `0.0.0.0` that does not belong there, does `aide --check` complete,
+has `PATH` been hijacked. Read-only, safe on production.
+
+## The long version
+
+The rest of this document is the same fixes as standalone commands, for when you
+want to apply one thing by hand, understand what the update script is doing, or
+work on a host without a checkout of this repo.
+
+Everything below is copy-pasteable as root and safe to run more than once.
+
+---
+
+## Why these specific fixes
+
+Each one corresponds to a control that was installed on a production server,
+reported healthy, and did nothing:
+
+| Control | What it reported | What was actually true |
+| ------- | ---------------- | ---------------------- |
+| fail2ban | `active (running)`, jail enabled | 467 failed logins per hour, 0 bans, for months |
+| AIDE | `✅ No changes detected` daily | The check itself was failing; the baseline was being overwritten |
+| auditd | `active (running)` | Stopped by malware in one second, no alert, no rule covering the paths used |
+| UFW | `Status: active`, no rule for the exposed port | The port was reachable from the internet anyway — Docker bypasses UFW |
+
+The common thread is not missing tooling. It is that nothing ever verified that
+the tooling produced a result. That is what step 0 is for.
+
+---
+
+## 0. Check what you are dealing with first
+
+```bash
+sudo bash server-baseline/security-selfcheck.sh
+```
+
+This runs read-only. It resets `PATH` to system directories before doing
+anything and calls its tools by absolute path, so it stays usable on a host
+where `top`, `crontab` and `lsof` have been replaced.
+
+Exit codes: `0` all passed, `1` at least one FAIL, `2` warnings only.
+
+If you have no checkout on the machine, copy just that one file across — it has
+no dependencies beyond coreutils.
+
+---
+
+## 1. Fail2ban — make the SSH jail actually work
+
+**Symptom:** `fail2ban-client status sshd` shows `Total banned: 0` while the
+journal is full of failed logins.
+
+**Two independent causes, both need fixing:**
+
+1. The jail reads `/var/log/auth.log`, which Ubuntu 24.04 and Debian 12 no
+   longer write. sshd logs to the journal only.
+2. If a `jail.local` exists that is a copy of `jail.conf`, it overrides
+   everything in `jail.d/*.conf`. Fail2ban's read order is
+   `jail.conf` → `jail.d/*.conf` → `jail.local` → `jail.d/*.local`, so a
+   verbatim copy of the defaults silently wins over your configuration —
+   including the port list and the log backend.
+
+```bash
+# 1. Remove a jail.local that is just a copy of jail.conf
+if cmp -s /etc/fail2ban/jail.local /etc/fail2ban/jail.conf; then
+    cp /etc/fail2ban/jail.local /etc/fail2ban/jail.local.bak.$(date +%F)
+    rm /etc/fail2ban/jail.local
+fi
+
+# 2. Drop the old config file, it is superseded by the .local below
+rm -f /etc/fail2ban/jail.d/server-baseline.conf
+
+# 3. Write the config where it is read LAST
+cat > /etc/fail2ban/jail.d/zz-server-baseline.local <<'EOF'
+[DEFAULT]
+backend  = systemd
+bantime  = 3600
+findtime = 600
+maxretry = 5
+
+[sshd]
+enabled      = true
+port         = 22,888
+filter       = sshd
+backend      = systemd
+journalmatch = _SYSTEMD_UNIT=ssh.service
+maxretry     = 3
+bantime      = 7200
+findtime     = 600
+EOF
+
+systemctl restart fail2ban
+```
+
+**Verify — this is the part that was missing before:**
+
+```bash
+sleep 15
+fail2ban-client status sshd
+```
+
+You want a non-zero `Total failed`. If the server has been up for a while and
+`Total banned` is still 0 while the journal shows failures, the jail is still
+not working:
+
+```bash
+# How many failures does the journal actually have?
+journalctl -u ssh --since "-7 days" | grep -ciE 'Failed password|Invalid user'
+
+# What does fail2ban think it is reading?
+fail2ban-client get sshd logpath
+fail2ban-client -d | grep sshd
+```
+
+---
+
+## 2. AIDE — stop it reporting green while it fails
+
+**Symptom:** a daily `✅ AIDE Daily Check — No changes detected` message that
+arrives even when files have changed.
+
+The old reporting script counted lines matching `^Added:`. AIDE writes
+`Added entries:`, so the counter was always zero, the alert branch never ran,
+and every execution fell through to the "all clear" branch — which also ran
+`aide --update`, folding any tampering into the new baseline.
+
+```bash
+# Does the check even complete?
+aide --check >/tmp/aide-verify.log 2>&1; echo "exit=$?"
+```
+
+- exit `0` — clean
+- exit `1`–`7` — differences found (1 new, 2 removed, 4 changed, OR'd together)
+- exit `>= 14` — **AIDE itself failed**; integrity is unverified, not unchanged
+
+If you are running the Telegram variant, replace it. The corrected script is
+generated by `install-script.sh`; to patch in place, the decision must be driven
+by the exit code and the database must never be refreshed on a non-zero exit:
+
+```bash
+# Confirm your installed copy has the bug
+grep -n 'grep "\^Added:"' /usr/local/bin/aide-telegram.sh && \
+    echo ">>> BUGGY - this script can never report a change"
+```
+
+Re-run the AIDE section of the installer to get the fixed version:
+
+```bash
+sudo bash server-baseline/install-script.sh --section
+# select 17 (rkhunter/security tooling section, which includes AIDE)
+```
+
+If the database is stale or was polluted by an auto-update, rebuild the baseline
+**after** you are satisfied the host is clean:
+
+```bash
+aideinit -y -f
+mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+```
+
+### Keeping it current without going blind
+
+A stale baseline produces so much noise that it gets ignored. The obvious fix —
+a cron job that refreshes it — is worse: it absorbs any tampering into the
+baseline within one cycle. That is precisely the bug that made the old reporter
+useless. **Do not put `aide --update` on a timer.**
+
+`aide-refresh.sh` is the safe middle. It checks first, reports exactly which
+files it is about to accept, and only then refreshes:
+
+```bash
+sudo aide-refresh --reason "post apt upgrade"   # check, report, then refresh
+sudo aide-refresh --check-only                  # report only, never touch the db
+```
+
+- If `aide --check` itself fails, it refreshes **nothing** and says integrity is
+  unverified. A broken checker is not a clean result.
+- If there are differences, the full list goes out *before* the refresh happens,
+  so there is a record of what was accepted even if the update is interrupted.
+
+Run it after a deliberate change — a package upgrade, a deployment — when the
+diff is attributable to something you did. `update-containers.sh --update-system`
+offers to run it in interactive mode for exactly that reason, and never does so
+unattended: a 10-20 minute baseline refresh should be a decision, not a side
+effect of a cron job.
+
+### The one-time rebuild
+
+`update-baseline.sh` section 12 offers this at the **end** of its run, and the
+order matters. Rebuilding declares "this filesystem is now the truth", which is
+only defensible once the fixes have been applied and the host shows no
+compromise indicators. It refuses if it finds a PATH injection, a shim or `wbin`
+directory, a non-empty `ld.so.preload`, a second Docker daemon or a proxyware
+container — baking any of those into the reference would be worse than a stale
+database.
+
+It also refuses if any fix earlier in the run failed. Fix those first.
+
+This is deliberately *not* in `update-containers.sh`: that runs on a schedule,
+often unattended, at an hour when nobody is looking. After the one-time rebuild,
+`aide-refresh` keeps it current at each change instead.
+
+---
+
+## 3. auditd — cover the paths that persistence actually uses
+
+The original rule set watched `sshd_config`, `/home`, root `execve` and
+`/var/log/auth.log`. None of those catch a PATH hijack in `/etc/profile`, a cron
+entry, a self-deleting systemd unit or a dropped SSH key.
+
+```bash
+apt-get install -y auditd audispd-plugins acct
+
+cat > /etc/audit/rules.d/10-persistence.rules <<'EOF'
+-w /etc/profile -p wa -k profile_tampering -k persist
+-w /etc/profile.d/ -p wa -k profile_tampering -k persist
+-w /etc/bash.bashrc -p wa -k profile_tampering -k persist
+-w /etc/environment -p wa -k profile_tampering -k persist
+-w /root/.profile -p wa -k profile_tampering -k persist
+-w /root/.bashrc -p wa -k profile_tampering -k persist
+
+-w /etc/crontab -p wa -k cron_tampering -k persist
+-w /etc/cron.d/ -p wa -k cron_tampering -k persist
+-w /etc/cron.hourly/ -p wa -k cron_tampering -k persist
+-w /etc/cron.daily/ -p wa -k cron_tampering -k persist
+-w /etc/cron.weekly/ -p wa -k cron_tampering -k persist
+-w /etc/cron.monthly/ -p wa -k cron_tampering -k persist
+-w /var/spool/cron/crontabs/ -p wa -k cron_tampering -k persist
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/crontab -k cron_tampering -k persist
+
+-w /etc/systemd/system/ -p wa -k systemd_tampering -k persist
+-w /lib/systemd/system/ -p wa -k systemd_tampering -k persist
+-w /usr/lib/systemd/system/ -p wa -k systemd_tampering -k persist
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/systemctl -k systemd_tampering -k persist
+
+-w /etc/ld.so.preload -p wa -k preload_tampering -k persist
+-w /etc/ld.so.conf -p wa -k preload_tampering -k persist
+-w /etc/ld.so.conf.d/ -p wa -k preload_tampering -k persist
+
+-w /root/.ssh/ -p wa -k ssh_key_tampering -k persist
+-w /etc/passwd -p wa -k identity_tampering -k persist
+-w /etc/shadow -p wa -k identity_tampering -k persist
+-w /etc/sudoers -p wa -k identity_tampering -k persist
+-w /etc/sudoers.d/ -p wa -k identity_tampering -k persist
+
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/touch -F uid=0 -k timestomp -k persist
+
+-a always,exit -F arch=b64 -S execve -F dir=/tmp -k exec_from_tmp -k persist
+-a always,exit -F arch=b64 -S execve -F dir=/var/tmp -k exec_from_tmp -k persist
+-a always,exit -F arch=b64 -S execve -F dir=/dev/shm -k exec_from_tmp -k persist
+EOF
+
+augenrules --load
+auditctl -l | wc -l          # expect 30+
+systemctl enable --now acct  # process accounting; 'enable' alone is not enough
+```
+
+Search everything in one go:
+
+```bash
+ausearch -k persist -i | less
+```
+
+**Two things auditd will not do for you:**
+
+- It does not alert when it is stopped. That was the clearest signal in the
+  incident and nothing reported it. The daily self-check (step 7) covers this.
+- Local audit logs can be wiped by whoever gets root. Ship them off-host
+  (remote syslog, Loki, or `audisp-remote`) if you want them to survive.
+
+### Making the rules immutable
+
+```bash
+echo '-e 2' > /etc/audit/rules.d/99-finalize.rules
+augenrules --load     # takes full effect at the next reboot
+```
+
+The `99-` prefix matters: `-e 2` has to be the last rule loaded. After this,
+nothing — including root — can add, remove or flush audit rules until a reboot.
+That is the point: an attacker with root can otherwise just flush them first.
+
+The cost is that *you* cannot change them either without rebooting. Do this once
+the rule set is settled. To undo: delete the file and reboot.
+
+### Getting the logs off the host
+
+Local audit logs are only as trustworthy as the host. Whoever gets root can wipe
+them, and on AC2 that is exactly what the rest of the kit was built to do.
+
+This is **not** scripted, because it needs a receiver that has to exist first and
+an untested log pipeline is worse than a known-absent one. The minimal version,
+once you have somewhere to send to:
+
+```bash
+# On the sender, forward the journal (which carries the audit events)
+cat > /etc/rsyslog.d/60-remote.conf <<'EOF'
+*.*  @@log-collector.internal:6514      # @@ = TCP; @ would be lossy UDP
+$ActionQueueType LinkedList
+$ActionQueueFileName remotefwd
+$ActionResumeRetryCount -1
+$ActionQueueSaveOnShutdown on
+EOF
+systemctl restart rsyslog
+
+# Verify it actually arrives - a forwarder that silently drops is the same
+# failure class as everything else in this document
+logger -t remote-test "forwarding check $(date +%s)"
+```
+
+The queue settings are the part people leave out: without them a collector
+outage loses the events instead of buffering them.
+
+Whatever you send to must not be a machine that this host can reach as root,
+otherwise the same compromise takes both.
+
+---
+
+## 4. Mount `/tmp`, `/var/tmp` and `/dev/shm` noexec
+
+Dropper malware writes a payload to a world-writable directory and executes it.
+`noexec` removes the second half. This blocks the staging path directly rather
+than detecting it afterwards.
+
+```bash
+cp /etc/fstab /etc/fstab.bak.$(date +%F)
+
+grep -qE '^[^#]*\s/tmp\s'     /etc/fstab || echo '/tmp     /tmp     none  rw,noexec,nosuid,nodev,bind  0 0' >> /etc/fstab
+grep -qE '^[^#]*\s/var/tmp\s' /etc/fstab || echo '/var/tmp /var/tmp none  rw,noexec,nosuid,nodev,bind  0 0' >> /etc/fstab
+grep -qE '^[^#]*\s/dev/shm\s' /etc/fstab || echo 'tmpfs    /dev/shm tmpfs rw,noexec,nosuid,nodev       0 0' >> /etc/fstab
+
+# Apply now. /tmp and /var/tmp normally live on the root filesystem, so they
+# need a self bind mount before the flags can be set.
+for m in /tmp /var/tmp; do
+    mountpoint -q "$m" || mount --bind "$m" "$m"
+    mount -o remount,noexec,nosuid,nodev "$m"
+done
+mount -o remount,noexec,nosuid,nodev /dev/shm
+
+findmnt -no TARGET,OPTIONS /tmp /var/tmp /dev/shm
+```
+
+**What this breaks:** installers that extract to `/tmp` and exec directly. Note
+that `bash /tmp/script.sh` still works — `noexec` blocks `execve()`, not an
+interpreter reading a file. `/dev/shm` noexec breaks Chromium and Electron
+applications; it is safe on a headless server.
+
+To undo: `mount -o remount,exec /tmp` and remove the line from `/etc/fstab`.
+
+---
+
+## 5. Close the Docker firewall gap
+
+Docker inserts its own DNAT and FORWARD rules and does **not** traverse UFW's
+`INPUT` chain. Every port published with `-p` is reachable from the internet
+regardless of what `ufw status` shows. "I never opened that port in UFW" is not
+a defence.
+
+**Check what is actually exposed:**
+
+```bash
+docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '0\.0\.0\.0:|:::'
+ss -tlnp | grep -vE '127\.0\.0\.1|::1'
+```
+
+> **Before you close port 22 anywhere:** find out which mechanism owns it.
+> On Ubuntu 22.10+ and Debian 12 sshd is socket-activated, and the `Port`
+> directive in `sshd_config` is **ignored** — systemd opens the socket and hands
+> it to sshd. Deleting `Port 22` from `sshd_config` on such a host looks like it
+> worked and changes nothing.
+>
+> ```bash
+> systemctl is-active ssh.socket        # active  -> ssh.socket owns the port
+> ```
+>
+> | Owner | Where to change the port | Reload with |
+> | --- | --- | --- |
+> | `ssh.socket` active | `/etc/systemd/system/ssh.socket.d/ports.conf` | `systemctl daemon-reload && systemctl restart ssh.socket` |
+> | otherwise | `/etc/ssh/sshd_config` | `systemctl restart ssh` |
+>
+> Confirm either way with `ss -tlnp | grep ':22 '` — it must print nothing.
+> `update-baseline.sh` detects which applies and prints the right command.
+
+**Option A — bind to localhost (preferred).** Change the port mappings in each
+compose file from `"9443:9443"` to `"127.0.0.1:9443:9443"` and reach the service
+through Cloudflare Tunnel or a VPN. Then `docker compose up -d`.
+
+**Option B — filter in `DOCKER-USER`.** Keeps the services on the host
+interface but drops external inbound by default:
+
+```bash
+EXT_IF=$(ip -4 route show default | awk '{print $5; exit}')
+cp /etc/ufw/after.rules /etc/ufw/after.rules.bak.$(date +%F)
+
+cat >> /etc/ufw/after.rules <<EOF
+
+# BEGIN SERVER-BASELINE DOCKER-USER
+*filter
+:DOCKER-USER - [0:0]
+-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A DOCKER-USER -s 10.0.0.0/8 -j RETURN
+-A DOCKER-USER -s 172.16.0.0/12 -j RETURN
+-A DOCKER-USER -s 192.168.0.0/16 -j RETURN
+-A DOCKER-USER -i $EXT_IF -p tcp --dport 80 -j RETURN
+-A DOCKER-USER -i $EXT_IF -p tcp --dport 443 -j RETURN
+-A DOCKER-USER -i $EXT_IF -j DROP
+-A DOCKER-USER -j RETURN
+COMMIT
+# END SERVER-BASELINE DOCKER-USER
+EOF
+
+ufw reload
+iptables -L DOCKER-USER -n -v
+```
+
+Verify from **outside** the host — from the machine itself everything looks
+reachable either way:
+
+```bash
+# from your laptop
+nc -zv <server-ip> 9443    # should now fail
+curl -sS --max-time 5 http://<server-ip>:19999   # should now fail
+```
+
+Also check the provider firewall (Hetzner Cloud Firewall, AWS security groups).
+It sits above both UFW and Docker and is the one layer neither can bypass.
+
+---
+
+## 6. Get the tunnel token off the command line
+
+```bash
+ps -eo args | grep -i 'cloudflared.*--token'
+```
+
+If that prints anything, the tunnel token is in the process argv and readable by
+anything that can read `/proc` — including any container running with
+`pid: host`. Fix the compose file:
+
+```yaml
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run      # <- no --token here
+    environment:
+      - TUNNEL_TOKEN=${CF_TOKEN}             # <- read from .env instead
+    network_mode: host
+    restart: unless-stopped
+```
+
+```bash
+cd ~/docker/cloudflare && docker compose up -d
+ps -eo args | grep -i cloudflared    # token should be gone
+```
+
+Rotate the token afterwards — it has been readable for as long as it was on the
+command line.
+
+While you are here, check for other secrets in argv:
+
+```bash
+ps -eo args | grep -iE -- '--token[= ]|--password[= ]|apikey=|api_key='
+```
+
+---
+
+## 7. Install the daily self-check
+
+This is the piece that was missing everywhere else: something that verifies the
+controls produce a result, instead of trusting that they are installed.
+
+```bash
+install -m 700 -o root -g root \
+    server-baseline/security-selfcheck.sh /usr/local/bin/security-selfcheck.sh
+ln -sf /usr/local/bin/security-selfcheck.sh /usr/local/bin/security-selfcheck
+
+# Optional: Telegram alerts on failure
+mkdir -p /etc/server-baseline && chmod 700 /etc/server-baseline
+cat > /etc/server-baseline/selfcheck.env <<'EOF'
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+EOF
+chmod 600 /etc/server-baseline/selfcheck.env
+
+cat > /etc/cron.d/security-selfcheck <<'EOF'
+0 6 * * * root /usr/local/bin/security-selfcheck.sh --quiet --telegram
+EOF
+chmod 644 /etc/cron.d/security-selfcheck
+```
+
+Without Telegram credentials, drop `--telegram` and the output goes to cron
+mail. With `--quiet` it stays silent unless something fails.
+
+> Run this somewhere other than the host it watches as well. Alerting that lives
+> on the machine it monitors goes quiet at exactly the moment it matters.
+
+---
+
+## 7b. Install the security watchdog
+
+The self-check above is level-triggered — it reports what is true at 06:00. The
+watchdog is edge-triggered: it fires the moment a control changes state, in
+either direction.
+
+That difference is the point. auditd was stopped in under a second as the first
+step of the compromise, and nothing reported it. A daily check would have said
+so hours later.
+
+It watches three services and eight state snapshots:
+
+| Watched | Why |
+| --- | --- |
+| `auditd` unit state | Stopping it is the first move of this compromise class |
+| `fail2ban` unit state | If it stops, SSH accepts unlimited attempts |
+| `fail2ban-jail` | Tracked separately, because "fail2ban is active" was true throughout the incident **while the jail banned nothing**. A unit being up is not the same as the control working. |
+| `listeners` | A port appearing on `0.0.0.0`. The API on 8120 came back after the reboot and was hit 25 seconds later |
+| `root-keys` | `authorized_keys` changing for root or an admin user |
+| `path-hijack` | `.local/bin` under a system path, or replaced diagnostic tools |
+| `ld-preload` | `/etc/ld.so.preload` becoming non-empty |
+| `ufw` | The firewall being disabled or a default policy changing |
+| `docker-daemons` | A second `dockerd`/`containerd` — the hidden daemon from evidence item 3 |
+| `container-images` | A container image never seen on this host before |
+| `boot-id` | A reboot, as context for the service alerts that follow it |
+
+Alerts include a diff, so you can see *what* changed rather than only that
+something did. `--reset` re-baselines everything without alerting, for after an
+intentional change.
+
+```bash
+install -m 700 -o root -g root \
+    server-baseline/watchdogs/security-watchdog.sh /usr/local/bin/security-watchdog.sh
+ln -sf /usr/local/bin/security-watchdog.sh /usr/local/bin/security-watchdog
+
+cat > /etc/systemd/system/security-watchdog.service <<'EOF'
+[Unit]
+Description=Alert on auditd state changes
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/security-watchdog.sh
+# Exit 1 means "auditd is down" - that is the alert, not a unit failure
+SuccessExitStatus=0 1
+EOF
+
+cat > /etc/systemd/system/security-watchdog.timer <<'EOF'
+[Unit]
+Description=Check auditd state every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=security-watchdog.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now security-watchdog.timer
+
+# Establish the baseline so the first run does not fire a false alert
+/usr/local/bin/security-watchdog.sh
+
+# Monthly deliberate test - an alert chain that has gone quiet looks exactly
+# like "nothing happened" until you make it speak on purpose
+echo '0 9 1 * * root /usr/local/bin/security-watchdog.sh --test' \
+    > /etc/cron.d/security-watchdog-test
+chmod 644 /etc/cron.d/security-watchdog-test
+```
+
+**Verify the alert path right now — do not assume it works:**
+
+```bash
+security-watchdog --test      # you should receive a Telegram message
+security-watchdog --status    # shows current vs. last recorded state
+```
+
+To prove the transition logic end to end (this will send a real alert):
+
+```bash
+systemctl stop auditd && security-watchdog     # expect the STOPPED alert
+systemctl start auditd && security-watchdog    # expect the RESTORED alert
+```
+
+It reads its credentials from `/etc/server-baseline/selfcheck.env` and also
+accepts `SECRET_TOKEN` / `CHAT_ID_PERSON1` if you already use those names.
+`WATCH_UNITS="auditd fail2ban docker"` in that file extends the unit list;
+`WATCH_JAIL=""` disables the jail check.
+
+> Expect an alert on every reboot — auditd stops and starts. That is correct
+> behaviour, not noise: if you get one you did not expect, that is exactly the
+> signal that was missing.
+
+---
+
+## 8. Backups — make sure a compromise cannot erase the last good copy
+
+`rsync --delete` mirrors the source. One run after the source is compromised
+overwrites the last clean copy, and there is nothing left to restore from.
+
+**Retention is already handled** — nothing to do. `backup.sh` defaults to
+`RETENTION_DAYS=30` and moves anything it would delete or overwrite into
+`<backup-dir>/.attic/<timestamp>/`. Only set it explicitly if you want a
+different window, or `0` to go back to mirror-only behaviour.
+
+**The host key policy is genuinely still open**, and deliberately so. The
+default is `accept-new`, which trusts any host not yet in `known_hosts` on first
+contact. Flipping it to `yes` without seeding `known_hosts` first would break the
+backup on the next run, so it cannot be the default and it cannot be changed
+blind.
+
+`update-baseline.sh` section 8b does both steps for you. By hand:
+
+```bash
+# 1. Seed the key, as the user that runs the backup (not root)
+ssh-keyscan -p "$SSH_PORT" "$REMOTE_HOST" >> ~/.ssh/known_hosts
+
+# 2. Only after that succeeds
+echo 'STRICT_HOST_KEY="yes"' >> backup-script/.env
+```
+
+This matters most when a provider IP is released and re-issued — the open
+action point about OC1's DigitalOcean address going back into the pool.
+
+Retention inside the same directory tree is a floor, not a backup strategy.
+Anything that can reach the backup host can still reach the attic. For a restore
+point that survives a compromise of either end, you want storage the source
+cannot write to: provider snapshots, an append-only borg/restic repository, or
+object storage with versioning and object lock.
+
+---
+
+## 9. Housekeeping the incident surfaced
+
+```bash
+# Stale SSH allowlist entries. An old home IP now belongs to someone else.
+ufw status numbered | grep -i 'whitelist\|trusted'
+# ufw delete <n>
+
+# Is port 22 still open to the world?
+ufw status | grep '22/tcp'
+# Scope it:  ufw delete allow 22/tcp && ufw allow from <your-ip> to any port 22
+
+# Containers with host-level access
+for c in $(docker ps --format '{{.Names}}'); do
+    printf '%-24s privileged=%s pid=%s\n' "$c" \
+        "$(docker inspect -f '{{.HostConfig.Privileged}}' "$c")" \
+        "$(docker inspect -f '{{.HostConfig.PidMode}}' "$c")"
+done
+```
+
+---
+
+## If the self-check reports a compromise
+
+**Do not start cleaning up.** Kits of this family watch for administrator logins
+(`who | wc -l` on a short loop) and remove their artefacts as soon as someone
+logs in. You lose evidence faster than you collect it.
+
+1. **Isolate at the provider firewall, inbound *and* outbound.** Existing
+   connections survive in conntrack — kill those processes separately, or the
+   payload keeps talking after the firewall is in place.
+2. **Preserve evidence, then power off, then snapshot.** In that order. Power
+   off rather than shutting down from a shell, so nothing gets a chance to
+   clean up. A snapshot of a powered-off disk also preserves deleted inodes.
+3. **Rebuild, do not clean.** If the diagnostic tools themselves have been
+   replaced, you cannot demonstrate the absence of leftovers. Rebuild from a
+   fresh image, deploy application containers from git rather than from existing
+   images, and treat every secret the host could read as leaked.
+4. **Assume secrets are gone.** Tunnel tokens, bot tokens, API keys, `.env`
+   contents, anything in the journal. Rotate all of it.
+
+For unfiltered output on a host with a PATH hijack, call the real binaries
+directly:
+
+```bash
+/usr/bin/crontab -l
+/usr/bin/lsof +L1 | /bin/grep -i deleted
+/usr/bin/top -bn1
+```
+
+Note that this only defeats userland PATH tricks. Against a kernel-level rootkit
+no userland command is trustworthy, and the only reliable analysis is offline
+from a snapshot.

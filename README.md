@@ -37,6 +37,9 @@ A comprehensive script for setting up and securing new Ubuntu/Debian servers and
 - Backwards compatibility (safe re-run on existing installations)
 - Dry-run mode for testing
 - **Desktop mode** (`--desktop`): adapted security for Ubuntu Desktop (password auth, USB, printing preserved)
+- **Control verification** ([`security-selfcheck.sh`](server-baseline/security-selfcheck.sh)): a daily check that the security controls actually produce a result, rather than merely being installed. Runs standalone on any host.
+- **Security watchdog** ([`watchdogs/security-watchdog.sh`](server-baseline/watchdogs/security-watchdog.sh)): per-minute alert on `auditd`/`fail2ban` stopping, the fail2ban jail going unreachable, a new port on `0.0.0.0`, changed SSH keys, PATH hijacking, `ld.so.preload`, UFW being disabled, a second Docker daemon, or an unknown container image — each with a diff of what changed. Monthly self-test of the alert path.
+- **Verify mode** (`--verify`): read-only check that the controls actually work — is fail2ban banning, is sshd on the right port only, does auditd have rules, is anything on `0.0.0.0` that should not be.
 
 **Use Cases:**
 
@@ -47,6 +50,7 @@ A comprehensive script for setting up and securing new Ubuntu/Debian servers and
 - Automated deployments
 
 [→ Full Documentation](server-baseline/README.md)
+[→ Remediating servers provisioned by an older version](docs/REMEDIATION-EXISTING-SERVERS.md)
 
 ---
 
@@ -120,6 +124,17 @@ cd linux-server-management-scripts/server-baseline
 sudo bash install-script.sh --dry-run
 
 # 3. Run the command for your platform (see table above)
+
+# 4. Afterwards, verify the controls actually work (read-only)
+sudo bash install-script.sh --verify
+```
+
+Already running an older version of these scripts? Use the update script instead
+of a full re-run — it only prompts about what is genuinely wrong on that host:
+
+```bash
+sudo bash server-baseline/update-baseline.sh --check   # detect only
+sudo bash server-baseline/update-baseline.sh           # detect, then fix per prompt
 ```
 
 [→ Full platform-specific instructions](server-baseline/README.md#-quickstart---choose-your-platform)
@@ -300,10 +315,10 @@ The following are conscious trade-offs that follow from the threat model above, 
 
 | Choice | Rationale | What it means for you |
 | ------ | --------- | --------------------- |
-| **Port 22 stays open** alongside the hardened SSH port (888) | Lockout prevention. If the new port, the firewall, or the SSH config turns out to be wrong, you can still get in — especially on a remote VPS with no console access. | Port 888 is rate-limited with `ufw limit`; port 22 is a plain `ufw allow`. Fail2ban monitors both (`port = 22,888`). If you don't need the fallback, remove port 22 from `sshd_config` and UFW once you have verified that 888 works. |
+| **Port 22 stays open** alongside the hardened SSH port (888) | Lockout prevention. If the new port, the firewall, or the SSH config turns out to be wrong, you can still get in — especially on a remote VPS with no console access. | Port 888 is rate-limited with `ufw limit`; port 22 is a plain `ufw allow`. Fail2ban monitors both (`port = 22,888`). This is a fallback that is easy to leave open forever — scope it to your own address with `ufw allow from <your-ip> to any port 22`, or remove port 22 from `sshd_config` and UFW once you have verified that 888 works. |
 | **`PermitRootLogin prohibit-password`** | Key-based root login stays available for rescue and automation. | CIS and Lynis (SSH-7412) recommend `PermitRootLogin no`. Direct root login also bypasses the sudo audit trail. Change it if you don't need root over SSH. |
-| **Docker publishes ports on all interfaces** — Portainer (9443), Portainer Agent (8000), Netdata (19999) | These services are meant to be reachable; that is the point of installing them. | Docker writes its own DNAT rules and **bypasses the UFW `INPUT` chain**. A UFW rule is not what makes these ports reachable, and declining the UFW prompt does *not* close them. To bind everything to localhost instead, answer **yes** to the Cloudflare-only prompt in the Cloudflare Tunnel section — that binds all Docker services to `127.0.0.1` and reaches them through the tunnel. |
-| **Netdata runs without authentication** and mounts the systemd journal, `/etc/passwd`, and `docker.sock` (read-only) | Full host visibility out of the box, no extra configuration. | Combined with the row above, an unauthenticated Netdata on a public IP exposes system logs, usernames, and the process table. Either use Cloudflare-only mode, put it behind a reverse proxy with authentication, or restrict it with `ufw allow from <trusted-ip> to any port 19999`. |
+| **Docker publishes ports on all interfaces** — Portainer (9443), Portainer Agent (8000), Netdata (19999) | These services are meant to be reachable; that is the point of installing them. | Docker writes its own DNAT rules and **bypasses the UFW `INPUT` chain**. A UFW rule is not what makes these ports reachable, and declining the UFW prompt does *not* close them. Two ways to close this: answer **yes** to the Cloudflare-only prompt (binds everything to `127.0.0.1`), or accept the **DOCKER-USER filtering** prompt near the end of the run, which drops external inbound traffic to containers by default. |
+| **Netdata runs without authentication** and mounts the systemd journal, `/etc/passwd`, and `docker.sock` | Full host visibility out of the box, no extra configuration. | Combined with the row above, an unauthenticated Netdata on a public IP exposes system logs, usernames, and the process table — and journald on a server like this routinely contains tokens and API keys. Note that mounting `docker.sock` with `:ro` does **not** make the Docker API read-only: the flag applies to the socket inode, every API verb still works, so the container is root-equivalent on the host. Either use Cloudflare-only mode, put it behind a reverse proxy with authentication, or restrict it with `ufw allow from <trusted-ip> to any port 19999` **plus** a DOCKER-USER rule. |
 | **Config files are written as root** into the admin's home directory, and predictable `/tmp` paths are used for dry-run reports and downloads | Simplicity, and the paths are easy to find afterwards. | Symlink and TOCTOU races against these paths are possible, but they require an unprivileged local user — out of scope by design. |
 | **`update-containers.sh` discovers compose files under `/home/*/docker/`** and runs them as root | Finds your stacks wherever they live, without configuration. | Anyone who can write to those directories can influence what root executes. Fine when you are the only user; not fine on a shared box. |
 | **The admin is added to the `docker` group** | Run Docker without `sudo` for every command. | Docker group membership is functionally equivalent to root (`docker run -v /:/host --privileged`). Treat that account as a root account. |
@@ -311,21 +326,136 @@ The following are conscious trade-offs that follow from the threat model above, 
 ### What the scripts do protect
 
 - **SSH hardening:** password authentication disabled in server mode (kept in `--desktop` mode by design), public-key authentication enforced, non-standard port with rate limiting, `MaxSessions` limits
-- **UFW firewall:** default-deny inbound, explicit rules per service (note the Docker caveat above)
-- **Fail2ban:** intrusion prevention on SSH (ports 22 and 888) and other services
+- **UFW firewall:** default-deny inbound, explicit rules per service, and an optional `DOCKER-USER` filter so container ports are actually covered (see the Docker caveat above)
+- **Fail2ban:** intrusion prevention on SSH (ports 22 and 888), reading the systemd journal, with a post-install check that the jail is genuinely active
 - **Automatic security updates:** unattended-upgrades for security patches
 - **Kernel and system hardening:** 15+ sysctl parameters, USB storage control, core dump protection, `/proc` hardening, PAM and password policies (SHA-512, 65536 rounds)
+- **Writable filesystem hardening:** `/tmp`, `/var/tmp` and `/dev/shm` mounted `noexec,nosuid,nodev`
 - **File integrity monitoring:** AIDE with SHA-512 checksums, plus rkhunter and Lynis scans
+- **Runtime auditing:** auditd rules covering shell profiles, cron, systemd units, the dynamic loader, SSH keys and execution from temporary directories
+- **Control verification:** a daily self-check (`security-selfcheck.sh`) that asserts the controls above actually work, rather than merely being installed
 - **HTTPS-only downloads:** all package sources over TLS; the Docker APT repository is added with a verified `signed-by` keyring
 - **Backups before changes:** critical files such as `sshd_config` are backed up with a timestamp before modification
-- **Audit logging:** every action logged to `/var/log/server_install_[timestamp].log`
+- **Installation logging:** every action logged to `/var/log/server_install_[timestamp].log` (this is the installer's own log, not runtime security auditing — that is auditd, above)
 
 **Known gaps, honestly stated:**
 
 - **Input validation is partial.** Numeric inputs (port numbers, session limits, container selection) and the Netdata Telegram credentials are validated with explicit checks. Free-text inputs — the DNS domain, the MOTD server description, and the security-scan Telegram token — are not. They are interpolated into `sed` expressions and generated scripts as-is. Malformed input can break the run; it is not a remote attack surface, but do not paste untrusted text into these prompts.
-- **Container images are not pinned.** Netdata, Portainer, and cloudflared use `:latest`/`:lts`. A compromised upstream image would be pulled by the next `update-containers.sh` run, and both Portainer and Netdata mount `docker.sock`. Pin to a digest if that matters to you.
+- **Container images are not pinned.** Netdata, Portainer, and cloudflared use `:latest`/`:lts`. A compromised upstream image would be pulled by the next `update-containers.sh` run, and both Portainer and Netdata mount `docker.sock`. Pin to a digest if that matters to you. `update-containers.sh` records the digest it deployed in its log, so you can at least reconstruct after the fact which image was running when.
+- **Egress is unrestricted by default.** `ufw default allow outgoing` means anything that lands on the host can dial out on any port. The installer offers an opt-in egress allowlist; it is not the default because it breaks any service that uses a non-standard outbound port. Note that it governs **host** traffic only — container traffic is forwarded, not output, so it is not covered.
 - **Not every download is integrity-checked.** The Lynis tarball and the NodeSource setup script are fetched over HTTPS but without a checksum or GPG signature.
 - **Rollback is partial.** `sshd_config` always gets a timestamped backup, and interactive mode generates a `rollback.sh`. In `--fresh-install` mode there is no backup of `journald.conf`, `jail.local`, or the sysctl settings.
+
+### Already running an older version of these scripts?
+
+Servers provisioned before this change have a fail2ban jail that cannot ban, an
+AIDE reporter that cannot report, audit rules that miss every common persistence
+path, and container ports that UFW does not actually gate.
+
+Run the update script:
+
+```bash
+sudo bash server-baseline/update-baseline.sh
+```
+
+It checks the host for each known problem, reports what is already correct, and
+prompts you only about what is genuinely wrong there. Every fix verifies its own
+result afterwards. `--check` detects without changing anything, `--dry-run`
+shows what each fix would do, `--yes` accepts every default.
+
+Safe to run repeatedly, and **it never closes SSH access** — port 22 is reported
+as advice only.
+
+[docs/REMEDIATION-EXISTING-SERVERS.md](docs/REMEDIATION-EXISTING-SERVERS.md)
+has the same fixes as standalone commands, for applying one by hand or working
+on a host without a checkout.
+
+### Verifying that the controls work
+
+```bash
+sudo bash server-baseline/install-script.sh --verify
+```
+
+Installs nothing, changes nothing. It asks only whether each control produces a
+result: is fail2ban **banning** (not just running), is sshd listening on the
+expected port only, does auditd have rules loaded, is anything on `0.0.0.0` that
+does not belong there, does `aide --check` complete, has `PATH` been hijacked.
+
+Read-only and safe on production. Run it monthly and after every change. Exit
+codes: `0` all passed, `1` at least one failure, `2` warnings only.
+
+Every check in it exists because the corresponding control was installed,
+reported healthy, and did nothing:
+
+| Check | The failure it catches |
+| ----- | ---------------------- |
+| fail2ban bans vs. journal failures | A jail pointed at `/var/log/auth.log`, which Ubuntu 24.04 no longer writes. Starts fine, reports enabled, bans nothing. |
+| sshd listening ports | Port 22 left open "temporarily" forever, or 888 never actually activating. `sshd_config` is not the authority here — socket activation and `sshd_config.d` drop-ins override it. |
+| Listeners on `0.0.0.0` | A management interface (Portainer 9443, Netdata 19999, a bot API) exposed to the internet — including container ports, which UFW does not gate. |
+| `aide --check` exit code | A check that errors out, reported as "no changes" — and then refreshes its own baseline. |
+| auditd rules loaded, stop events | auditd stopped by malware in one second, with no alert anywhere. |
+| PATH resolution of `top`/`crontab`/`lsof` | A directory prepended to `PATH` in `/etc/profile`, with replacements that filter their own output. |
+| Second `dockerd`/`containerd` | Container workloads on a separate daemon with its own data-root, invisible to `docker ps`. |
+| Executables in `/tmp`, `/dev/shm` | Payloads staged in world-writable directories. |
+| Secrets in process argv | Tokens passed on a container command line, readable through `/proc`. |
+
+It runs daily at 06:00 when installed by the baseline, and stays silent unless
+something fails.
+
+Alongside it, [`watchdogs/security-watchdog.sh`](server-baseline/watchdogs/security-watchdog.sh)
+runs every minute and alerts on **change**, staying silent otherwise. Every
+alert says *what* changed, not merely that something did.
+
+| Watched | Alerts when |
+| --- | --- |
+| `auditd`, `fail2ban` | The unit stops — and again when it returns unexplained |
+| `fail2ban-jail` | The service is up but the sshd jail is unreachable. Tracked separately because "fail2ban is active" was true throughout the incident while it banned nothing |
+| `listeners` | A port appears on `0.0.0.0`. In the incident a management API came back after a reboot and was exploited 25 seconds later |
+| `root-keys` | `authorized_keys` changes for root or an admin user |
+| `persistence-files` | Any change to `/etc/profile`, `/root/.profile`, `/etc/crontab` or any `/etc/cron.*` entry — not just the hijack signature |
+| `tmpfs-exec` | An executable file appears in `/tmp`, `/var/tmp` or `/dev/shm` |
+| `path-hijack` | `.local/bin` under a system path, or a replaced `top`/`crontab`/`lsof` |
+| `hidden-dirs` | A hidden working directory appears: `/usr/bin/wbin`, `/var/.i.*`, `/tmp/.t.*`, `/dev/shm/.config`, `/usr/lib/exi` |
+| `ld-preload` | `/etc/ld.so.preload` becomes non-empty |
+| `ufw` | The firewall is disabled or a default policy changes |
+| `docker-daemons` | A second `dockerd`/`containerd` appears |
+| `container-images` | A container image never seen on this host appears — `docker ps -a`, so short-lived loader containers are still caught after they exit |
+| `boot-id` | The machine rebooted — context for the service alerts that follow |
+
+Drop any of them via `WATCH_MONITORS` in `/etc/server-baseline/selfcheck.env` if
+one proves noisy in your environment. Use `--reset` to re-baseline after an
+intentional change.
+
+Deliberately *not* watched here: new systemd unit files. The self-installing
+unit in the incident existed for 30 seconds, so a per-minute poll would have
+missed it — that is what the auditd watch on `/etc/systemd/system/` is for.
+Outbound connections are also excluded: too noisy to poll, and the short-lived
+ones get missed anyway. That is an egress-policy problem, not an alerting one. The two are complementary: the self-check is level-triggered and
+answers "is everything healthy right now", the watchdog is edge-triggered and
+answers "did something just change". auditd can be stopped and a payload
+deployed inside a single minute, which a daily check reports far too late.
+
+```bash
+sudo security-watchdog --test      # prove the alert path works
+sudo security-watchdog --status    # current vs. last recorded state
+```
+
+It also fires a deliberate test alert monthly, because an alerting chain that
+has gone quiet is indistinguishable from "nothing happened" until you make it
+speak on purpose.
+
+> Run these from somewhere other than the host they watch, too. Alerting that
+> lives on the machine it monitors goes quiet at exactly the moment it matters.
+
+### Optional Docker daemon hardening
+
+Two `daemon.json` settings are worth knowing about but are **not** applied by
+default, because both have real breakage potential on a running host:
+
+| Setting | What it does | Why it is not the default |
+| ------- | ------------ | ------------------------- |
+| `"no-new-privileges": true` | Blocks gaining privileges through setuid binaries and file capabilities, for all containers. | Netdata's plugins rely on file capabilities; this breaks `apps.plugin`. Apply per-container with `security_opt: [no-new-privileges:true]` on the containers that tolerate it. |
+| `"icc": false` | Blocks container-to-container traffic on the default bridge. | Breaks most compose stacks, which rely on services reaching each other by name. Use explicit user-defined networks instead. |
 
 ### Hardening beyond the default
 
