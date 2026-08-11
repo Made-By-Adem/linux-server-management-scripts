@@ -168,8 +168,16 @@ else
     ATTEMPTS=$(/bin/journalctl -u ssh --since "-7 days" --no-pager 2>/dev/null | \
                /bin/grep -iE 'Failed password|Invalid user|authentication failure' | /usr/bin/wc -l)
     ATTEMPTS=${ATTEMPTS:-0}
+    # Zero bans is the obvious failure. A handful of bans against thousands of
+    # attempts is the same failure wearing a disguise: the jail is technically
+    # alive but is not seeing most of what reaches sshd. With maxretry=3, even
+    # allowing for repeat offenders being banned once, the ratio should not be
+    # anywhere near this lopsided.
     if [ "${ATTEMPTS:-0}" -gt 50 ] && [ "${BANS:-0}" -eq 0 ]; then
         fail "$ATTEMPTS failed SSH logins in 7 days but 0 total bans - the jail is not working"
+    elif [ "${ATTEMPTS:-0}" -gt 200 ] && [ "${BANS:-0}" -lt $(( ATTEMPTS / 100 )) ]; then
+        fail "$ATTEMPTS failed logins but only $BANS bans - implausibly low, the jail is missing most attempts"
+        warn "  Usually means it is reading the wrong source. Check: fail2ban-client get sshd logpath"
     elif [ "${ATTEMPTS:-0}" -gt 50 ]; then
         pass "$ATTEMPTS failed logins, $BANS bans - jail is banning"
     else
@@ -553,11 +561,23 @@ section "Secrets exposure"
 # Tokens on a command line are readable by anything that can read /proc,
 # including any container running with pid: host.
 
-CMDLINE_SECRETS=$(/bin/ps -eo args 2>/dev/null | \
-    /bin/grep -iE -- '--token[= ]|--password[= ]|apikey=|api_key=' | \
-    /bin/grep -v grep || true)
+# Report WHICH process and WHICH flag - never the value. This report gets piped
+# to a file and pasted into tickets; printing the secret would copy it to every
+# one of those places, which is the problem it is reporting.
+CMDLINE_SECRETS=$(/bin/ps -eo comm=,args= 2>/dev/null | \
+    /bin/grep -iE -- '--token[= ]|--password[= ]|apikey=|api_key=|--secret[= ]' | \
+    /bin/grep -v grep | \
+    /usr/bin/awk '{proc=$1; flag="unknown";
+                   if ($0 ~ /--token/)    flag="--token";
+                   if ($0 ~ /--password/) flag="--password";
+                   if ($0 ~ /[aA][pP][iI]_?[kK][eE][yY]=/) flag="apikey=";
+                   if ($0 ~ /--secret/)   flag="--secret";
+                   print proc" ("flag")"}' | sort -u | /bin/tr '\n' ' ' || true)
+
 if [ -n "$CMDLINE_SECRETS" ]; then
-    fail "Secret visible in a process command line: $(echo "$CMDLINE_SECRETS" | /usr/bin/head -2 | /usr/bin/cut -c1-120 | /bin/tr '\n' ' ')"
+    fail "Secret on a process command line: $CMDLINE_SECRETS"
+    warn "  Value withheld on purpose. Inspect yourself with: ps -eo args | grep <process>"
+    warn "  Readable via /proc by anything on this host, including a pid:host container."
 else
     pass "No secrets on process command lines"
 fi
