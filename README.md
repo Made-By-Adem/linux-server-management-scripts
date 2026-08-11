@@ -38,6 +38,7 @@ A comprehensive script for setting up and securing new Ubuntu/Debian servers and
 - Dry-run mode for testing
 - **Desktop mode** (`--desktop`): adapted security for Ubuntu Desktop (password auth, USB, printing preserved)
 - **Control verification** ([`security-selfcheck.sh`](server-baseline/security-selfcheck.sh)): a daily check that the security controls actually produce a result, rather than merely being installed. Runs standalone on any host.
+- **auditd watchdog** ([`watchdogs/auditd-watchdog.sh`](server-baseline/watchdogs/auditd-watchdog.sh)): per-minute alert on auditd stopping or restarting, with a monthly self-test of the alert path.
 
 **Use Cases:**
 
@@ -366,8 +367,24 @@ did nothing:
 It runs daily at 06:00 when installed by the baseline, and stays silent unless
 something fails.
 
-> Run it from somewhere other than the host it watches, too. Alerting that lives
-> on the machine it monitors goes quiet at exactly the moment it matters.
+Alongside it, [`watchdogs/auditd-watchdog.sh`](server-baseline/watchdogs/auditd-watchdog.sh)
+runs every minute and alerts on auditd **state transitions**, in either
+direction. The two are complementary: the self-check is level-triggered and
+answers "is everything healthy right now", the watchdog is edge-triggered and
+answers "did something just change". auditd can be stopped and a payload
+deployed inside a single minute, which a daily check reports far too late.
+
+```bash
+sudo auditd-watchdog --test      # prove the alert path works
+sudo auditd-watchdog --status    # current vs. last recorded state
+```
+
+It also fires a deliberate test alert monthly, because an alerting chain that
+has gone quiet is indistinguishable from "nothing happened" until you make it
+speak on purpose.
+
+> Run these from somewhere other than the host they watch, too. Alerting that
+> lives on the machine it monitors goes quiet at exactly the moment it matters.
 
 ### Optional Docker daemon hardening
 

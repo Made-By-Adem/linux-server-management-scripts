@@ -5283,6 +5283,130 @@ Run it any time with: sudo security-selfcheck" \
 fi
 
 ###############################################################################
+# AUDITD WATCHDOG
+###############################################################################
+#
+# The self-check above is level-triggered: it reports what is true at 06:00.
+# This is edge-triggered: it fires the moment auditd changes state.
+#
+# That difference matters. auditd being stopped is the first move in this class
+# of compromise, and it happens in under a second. A daily check reports it
+# hours later; a state-change watchdog reports it within the minute.
+
+if skip_if_completed "AUDITD_WATCHDOG"; then
+    log_info "auditd watchdog already installed, skipping"
+else
+    if ask_component_install \
+        "AUDITD WATCHDOG" \
+        "audit-logging" \
+        "Alert immediately when auditd stops or comes back." \
+        "What it does:
+• Checks every minute whether auditd changed state
+• Alerts on transition only - silent while nothing changes
+• Reports both directions (a stop AND an unexplained restart)
+• Includes the number of logged-in sessions and the last journal line
+• Logs to syslog as well, so there is a trace even if Telegram fails
+
+Installed to: /usr/local/bin/auditd-watchdog.sh
+Schedule:     systemd timer, every minute
+Test alert:   sudo auditd-watchdog.sh --test  (also runs monthly on its own)
+
+Why separate from the daily self-check: auditd can be stopped and the payload
+deployed inside a single minute. A once-a-day check reports that far too late." \
+        "$([ "$DESKTOP_MODE" = true ] && echo 'n' || echo 'y')"; then
+
+        if [ "$DRY_RUN" = true ]; then
+            log_dry_run "Would install /usr/local/bin/auditd-watchdog.sh"
+            log_dry_run "Would create auditd-watchdog.service and .timer (every minute)"
+            log_dry_run "Would schedule a monthly test alert to verify the alert path"
+        else
+            WATCHDOG_SRC="$(dirname "$(readlink -f "$0")")/watchdogs/auditd-watchdog.sh"
+
+            if [ -f "$WATCHDOG_SRC" ]; then
+                sudo install -m 700 -o root -g root "$WATCHDOG_SRC" /usr/local/bin/auditd-watchdog.sh
+                sudo ln -sf /usr/local/bin/auditd-watchdog.sh /usr/local/bin/auditd-watchdog
+                log_info "Installed /usr/local/bin/auditd-watchdog.sh"
+
+                # Credentials live in the same file as the self-check
+                if [[ ! -z "${SECURITY_TELEGRAM_BOT_TOKEN:-}" ]] && [[ ! -z "${SECURITY_TELEGRAM_CHAT_ID:-}" ]]; then
+                    sudo mkdir -p /etc/server-baseline
+                    sudo chmod 700 /etc/server-baseline
+                    if [ ! -f /etc/server-baseline/selfcheck.env ]; then
+                        printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' \
+                            "$SECURITY_TELEGRAM_BOT_TOKEN" "$SECURITY_TELEGRAM_CHAT_ID" | \
+                            sudo tee /etc/server-baseline/selfcheck.env >/dev/null
+                        sudo chmod 600 /etc/server-baseline/selfcheck.env
+                    fi
+                else
+                    log_warning "No Telegram credentials - the watchdog will only log to syslog"
+                    log_warning "Add them later to /etc/server-baseline/selfcheck.env"
+                fi
+
+                cat <<'EOF' | sudo tee /etc/systemd/system/auditd-watchdog.service >/dev/null
+[Unit]
+Description=Alert on auditd state changes
+Documentation=https://github.com/Made-By-Adem/linux-server-management-scripts
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/auditd-watchdog.sh
+# A non-zero exit means "auditd is down", which is the alert itself, not a
+# failure of this unit. Without this, the timer would be marked failed every
+# run while auditd stays stopped.
+SuccessExitStatus=0 1
+EOF
+
+                cat <<'EOF' | sudo tee /etc/systemd/system/auditd-watchdog.timer >/dev/null
+[Unit]
+Description=Check auditd state every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=auditd-watchdog.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+                sudo systemctl daemon-reload
+                sudo systemctl enable --now auditd-watchdog.timer || \
+                    log_warning "Failed to enable auditd-watchdog.timer"
+
+                # Establish the baseline state now, so the first real run
+                # compares against reality instead of firing a false alert.
+                sudo /usr/local/bin/auditd-watchdog.sh >/dev/null 2>&1 || true
+
+                # Monthly deliberate test. An alerting chain that has gone quiet
+                # is indistinguishable from "nothing happened" until you make it
+                # speak on purpose.
+                {
+                    echo "# Monthly watchdog test - proves the alert path still works"
+                    echo "0 9 1 * * root /usr/local/bin/auditd-watchdog.sh --test"
+                } | sudo tee /etc/cron.d/auditd-watchdog-test >/dev/null
+                sudo chmod 644 /etc/cron.d/auditd-watchdog-test
+
+                if systemctl is-active auditd-watchdog.timer >/dev/null 2>&1; then
+                    log_info "✓ auditd watchdog timer is active (checks every minute)"
+                    log_info "  Verify the alert path now with: sudo auditd-watchdog --test"
+                    log_info "  Current state:                  sudo auditd-watchdog --status"
+                else
+                    log_warning "✗ auditd-watchdog.timer did not start"
+                fi
+            else
+                log_warning "watchdogs/auditd-watchdog.sh not found next to the install script - skipping"
+                log_warning "Expected at: $WATCHDOG_SRC"
+            fi
+        fi
+        mark_completed "AUDITD_WATCHDOG"
+    else
+        log_info "auditd watchdog skipped"
+        mark_completed "AUDITD_WATCHDOG"
+    fi
+fi
+
+###############################################################################
 # SYSSTAT PERFORMANCE MONITORING
 ###############################################################################
 

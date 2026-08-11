@@ -397,6 +397,83 @@ mail. With `--quiet` it stays silent unless something fails.
 
 ---
 
+## 7b. Install the auditd watchdog
+
+The self-check above is level-triggered — it reports what is true at 06:00. The
+watchdog is edge-triggered: it fires the moment auditd changes state, in either
+direction.
+
+That difference is the point. auditd was stopped in under a second as the first
+step of the compromise, and nothing reported it. A daily check would have said
+so hours later.
+
+```bash
+install -m 700 -o root -g root \
+    server-baseline/watchdogs/auditd-watchdog.sh /usr/local/bin/auditd-watchdog.sh
+ln -sf /usr/local/bin/auditd-watchdog.sh /usr/local/bin/auditd-watchdog
+
+cat > /etc/systemd/system/auditd-watchdog.service <<'EOF'
+[Unit]
+Description=Alert on auditd state changes
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/auditd-watchdog.sh
+# Exit 1 means "auditd is down" - that is the alert, not a unit failure
+SuccessExitStatus=0 1
+EOF
+
+cat > /etc/systemd/system/auditd-watchdog.timer <<'EOF'
+[Unit]
+Description=Check auditd state every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=auditd-watchdog.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now auditd-watchdog.timer
+
+# Establish the baseline so the first run does not fire a false alert
+/usr/local/bin/auditd-watchdog.sh
+
+# Monthly deliberate test - an alert chain that has gone quiet looks exactly
+# like "nothing happened" until you make it speak on purpose
+echo '0 9 1 * * root /usr/local/bin/auditd-watchdog.sh --test' \
+    > /etc/cron.d/auditd-watchdog-test
+chmod 644 /etc/cron.d/auditd-watchdog-test
+```
+
+**Verify the alert path right now — do not assume it works:**
+
+```bash
+auditd-watchdog --test      # you should receive a Telegram message
+auditd-watchdog --status    # shows current vs. last recorded state
+```
+
+To prove the transition logic end to end (this will send a real alert):
+
+```bash
+systemctl stop auditd && auditd-watchdog     # expect the STOPPED alert
+systemctl start auditd && auditd-watchdog    # expect the RESTORED alert
+```
+
+It reads its credentials from `/etc/server-baseline/selfcheck.env` and also
+accepts `SECRET_TOKEN` / `CHAT_ID_PERSON1` if you already use those names. Set
+`WATCH_UNITS="auditd fail2ban docker"` in that file to watch more units.
+
+> Expect an alert on every reboot — auditd stops and starts. That is correct
+> behaviour, not noise: if you get one you did not expect, that is exactly the
+> signal that was missing.
+
+---
+
 ## 8. Backups — make sure a compromise cannot erase the last good copy
 
 `rsync --delete` mirrors the source. One run after the source is compromised
