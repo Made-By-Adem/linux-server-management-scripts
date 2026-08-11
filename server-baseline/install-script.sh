@@ -3696,7 +3696,16 @@ else
         sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
     fi
     sudo sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-    sudo sed -i 's/^#\?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+    # ChallengeResponseAuthentication was renamed to KbdInteractiveAuthentication
+    # in OpenSSH 8.7. Ubuntu 24.04 ships 9.6, where the old name is only a
+    # deprecated alias: sshd accepts it but logs a deprecation warning on every
+    # config parse, and it will stop working at some point. The stock 24.04
+    # sshd_config does not contain the old directive at all, so the sed below
+    # used to match nothing and the setting was silently never applied.
+    sudo sed -i '/^#\?ChallengeResponseAuthentication /d' /etc/ssh/sshd_config
+    sudo sed -i 's/^#\?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication no/' /etc/ssh/sshd_config
+    grep -q "^KbdInteractiveAuthentication " /etc/ssh/sshd_config || \
+        echo "KbdInteractiveAuthentication no" | sudo tee -a /etc/ssh/sshd_config >/dev/null
 
     # Configure AddressFamily based on IPv6 choice
     if [ "$IPV6_DISABLED" = true ]; then
@@ -3780,8 +3789,13 @@ else
         log_info "No socket activation: sshd_config is the single source of truth for ports"
     fi
 
-    # Add additional SSH hardening if not present (already idempotent)
-    grep -q "^Protocol 2" /etc/ssh/sshd_config || echo "Protocol 2" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+    # 'Protocol 2' was removed from OpenSSH in 7.6 (2017). SSH protocol 1 no
+    # longer exists in the codebase, so the directive secures nothing - it only
+    # makes sshd log "Deprecated option Protocol" on every config parse, which
+    # is noise in the `sshd -t` output this script relies on for validation.
+    # Remove it rather than add it, including on hosts where an earlier run
+    # already wrote it.
+    sudo sed -i '/^#\?Protocol [0-9]/d' /etc/ssh/sshd_config
 
     # MaxSessions configuration with user prompt (Lynis SSH-7408)
     echo ""
