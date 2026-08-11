@@ -714,6 +714,34 @@ else
                 return 1
             fi
 
+            # Published container ports that are in use right now. Offering them
+            # as the default means the common case - "keep what already works" -
+            # does not require the operator to retype anything, while still
+            # forcing a conscious decision about each one.
+            local suggested extra
+            suggested=$(docker ps --format '{{.Ports}}' 2>/dev/null | \
+                        grep -oE '0\.0\.0\.0:[0-9]+' | cut -d: -f2 | sort -un | tr '\n' ' ')
+            suggested=$(echo "$suggested" | sed 's/ *$//')
+
+            echo ""
+            echo "    Ports 80 and 443 stay reachable by default."
+            echo "    Currently published on all interfaces: ${suggested:-none}"
+            echo "    Anything you leave out here becomes unreachable from the internet."
+            echo ""
+            read -r -p "    Additional ports to keep reachable [${suggested:-none}]: " extra </dev/tty
+            extra=${extra:-$suggested}
+
+            local allow_lines=""
+            for p in $extra; do
+                case "$p" in
+                    ''|none) continue ;;
+                    *[!0-9]*) note "Ignoring invalid port '$p'"; continue ;;
+                esac
+                allow_lines="${allow_lines}-A DOCKER-USER -i $ext_if -p tcp --dport $p -j RETURN
+"
+                ok "Keeping port $p reachable"
+            done
+
             cp /etc/ufw/after.rules "/etc/ufw/after.rules.bak.$(date +%Y%m%d_%H%M%S)"
             sed -i '/# BEGIN SERVER-BASELINE DOCKER-USER/,/# END SERVER-BASELINE DOCKER-USER/d' \
                 /etc/ufw/after.rules
@@ -730,6 +758,7 @@ else
                 echo "-A DOCKER-USER -s 192.168.0.0/16 -j RETURN"
                 echo "-A DOCKER-USER -i $ext_if -p tcp --dport 80 -j RETURN"
                 echo "-A DOCKER-USER -i $ext_if -p tcp --dport 443 -j RETURN"
+                [ -n "$allow_lines" ] && printf '%s' "$allow_lines"
                 echo "-A DOCKER-USER -i $ext_if -j DROP"
                 echo "-A DOCKER-USER -j RETURN"
                 echo "COMMIT"
