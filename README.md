@@ -38,7 +38,8 @@ A comprehensive script for setting up and securing new Ubuntu/Debian servers and
 - Dry-run mode for testing
 - **Desktop mode** (`--desktop`): adapted security for Ubuntu Desktop (password auth, USB, printing preserved)
 - **Control verification** ([`security-selfcheck.sh`](server-baseline/security-selfcheck.sh)): a daily check that the security controls actually produce a result, rather than merely being installed. Runs standalone on any host.
-- **auditd watchdog** ([`watchdogs/auditd-watchdog.sh`](server-baseline/watchdogs/auditd-watchdog.sh)): per-minute alert on auditd stopping or restarting, with a monthly self-test of the alert path.
+- **Security watchdog** ([`watchdogs/security-watchdog.sh`](server-baseline/watchdogs/security-watchdog.sh)): per-minute alert when `auditd`, `fail2ban`, or the fail2ban sshd jail stops or comes back, with a monthly self-test of the alert path.
+- **Verify mode** (`--verify`): read-only check that the controls actually work — is fail2ban banning, is sshd on the right port only, does auditd have rules, is anything on `0.0.0.0` that should not be.
 
 **Use Cases:**
 
@@ -123,6 +124,17 @@ cd linux-server-management-scripts/server-baseline
 sudo bash install-script.sh --dry-run
 
 # 3. Run the command for your platform (see table above)
+
+# 4. Afterwards, verify the controls actually work (read-only)
+sudo bash install-script.sh --verify
+```
+
+Already running an older version of these scripts? Use the update script instead
+of a full re-run — it only prompts about what is genuinely wrong on that host:
+
+```bash
+sudo bash server-baseline/update-baseline.sh --check   # detect only
+sudo bash server-baseline/update-baseline.sh           # detect, then fix per prompt
 ```
 
 [→ Full platform-specific instructions](server-baseline/README.md#-quickstart---choose-your-platform)
@@ -340,23 +352,46 @@ Servers provisioned before this change have a fail2ban jail that cannot ban, an
 AIDE reporter that cannot report, audit rules that miss every common persistence
 path, and container ports that UFW does not actually gate.
 
-**[docs/REMEDIATION-EXISTING-SERVERS.md](docs/REMEDIATION-EXISTING-SERVERS.md)**
-walks through fixing each of those in place, with a verification step for every
-fix. Start with the self-check:
+Run the update script:
 
 ```bash
-sudo bash server-baseline/security-selfcheck.sh
+sudo bash server-baseline/update-baseline.sh
 ```
+
+It checks the host for each known problem, reports what is already correct, and
+prompts you only about what is genuinely wrong there. Every fix verifies its own
+result afterwards. `--check` detects without changing anything, `--dry-run`
+shows what each fix would do, `--yes` accepts every default.
+
+Safe to run repeatedly, and **it never closes SSH access** — port 22 is reported
+as advice only.
+
+[docs/REMEDIATION-EXISTING-SERVERS.md](docs/REMEDIATION-EXISTING-SERVERS.md)
+has the same fixes as standalone commands, for applying one by hand or working
+on a host without a checkout.
 
 ### Verifying that the controls work
 
-Installed is not the same as working. Every check in `security-selfcheck.sh`
-exists because the corresponding control was installed, reported healthy, and
-did nothing:
+```bash
+sudo bash server-baseline/install-script.sh --verify
+```
+
+Installs nothing, changes nothing. It asks only whether each control produces a
+result: is fail2ban **banning** (not just running), is sshd listening on the
+expected port only, does auditd have rules loaded, is anything on `0.0.0.0` that
+does not belong there, does `aide --check` complete, has `PATH` been hijacked.
+
+Read-only and safe on production. Run it monthly and after every change. Exit
+codes: `0` all passed, `1` at least one failure, `2` warnings only.
+
+Every check in it exists because the corresponding control was installed,
+reported healthy, and did nothing:
 
 | Check | The failure it catches |
 | ----- | ---------------------- |
 | fail2ban bans vs. journal failures | A jail pointed at `/var/log/auth.log`, which Ubuntu 24.04 no longer writes. Starts fine, reports enabled, bans nothing. |
+| sshd listening ports | Port 22 left open "temporarily" forever, or 888 never actually activating. `sshd_config` is not the authority here — socket activation and `sshd_config.d` drop-ins override it. |
+| Listeners on `0.0.0.0` | A management interface (Portainer 9443, Netdata 19999, a bot API) exposed to the internet — including container ports, which UFW does not gate. |
 | `aide --check` exit code | A check that errors out, reported as "no changes" — and then refreshes its own baseline. |
 | auditd rules loaded, stop events | auditd stopped by malware in one second, with no alert anywhere. |
 | PATH resolution of `top`/`crontab`/`lsof` | A directory prepended to `PATH` in `/etc/profile`, with replacements that filter their own output. |
@@ -367,16 +402,18 @@ did nothing:
 It runs daily at 06:00 when installed by the baseline, and stays silent unless
 something fails.
 
-Alongside it, [`watchdogs/auditd-watchdog.sh`](server-baseline/watchdogs/auditd-watchdog.sh)
-runs every minute and alerts on auditd **state transitions**, in either
-direction. The two are complementary: the self-check is level-triggered and
+Alongside it, [`watchdogs/security-watchdog.sh`](server-baseline/watchdogs/security-watchdog.sh)
+runs every minute and alerts on **state transitions**, in either direction, of
+`auditd`, `fail2ban`, and — separately — whether the fail2ban **sshd jail** is
+actually reachable. That last one is tracked on its own because "fail2ban is
+active" was true throughout the incident while the jail banned nothing. The two are complementary: the self-check is level-triggered and
 answers "is everything healthy right now", the watchdog is edge-triggered and
 answers "did something just change". auditd can be stopped and a payload
 deployed inside a single minute, which a daily check reports far too late.
 
 ```bash
-sudo auditd-watchdog --test      # prove the alert path works
-sudo auditd-watchdog --status    # current vs. last recorded state
+sudo security-watchdog --test      # prove the alert path works
+sudo security-watchdog --status    # current vs. last recorded state
 ```
 
 It also fires a deliberate test alert monthly, because an alerting chain that

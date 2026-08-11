@@ -1,15 +1,47 @@
 # Remediating servers that were already provisioned
 
-Re-running `install-script.sh` on an existing server is safe — every section is
-idempotent and guarded by a state file — but it is interactive and it touches a
-lot. If you would rather apply only the security fixes from this change, this
-document lists them as standalone commands.
+## The short version
+
+```bash
+sudo bash server-baseline/update-baseline.sh
+```
+
+That is the whole thing. It checks this host for each known problem, reports
+what is already correct, and prompts you only about what is genuinely wrong
+here. Every fix verifies its own result afterwards.
+
+```bash
+sudo bash server-baseline/update-baseline.sh --check     # detect only, change nothing
+sudo bash server-baseline/update-baseline.sh --dry-run   # show what each fix would do
+sudo bash server-baseline/update-baseline.sh --yes       # accept every default
+```
+
+Safe to run repeatedly. **Nothing in it closes SSH access** — port 22 is
+reported as advice only, never changed automatically.
+
+Start with `--check` if you want to see the state of a server before touching
+it. If it reports compromise indicators, stop and go to
+[If the self-check reports a compromise](#if-the-self-check-reports-a-compromise).
+
+Afterwards — and monthly from then on — verify that the controls actually
+produce a result:
+
+```bash
+sudo bash server-baseline/install-script.sh --verify
+```
+
+That is the check that was missing: is fail2ban **banning** (not just running),
+is sshd listening on the expected port only, does auditd have rules loaded, is
+anything on `0.0.0.0` that does not belong there, does `aide --check` complete,
+has `PATH` been hijacked. Read-only, safe on production.
+
+## The long version
+
+The rest of this document is the same fixes as standalone commands, for when you
+want to apply one thing by hand, understand what the update script is doing, or
+work on a host without a checkout of this repo.
 
 Everything below is copy-pasteable as root and safe to run more than once.
-
-**Order matters for exactly one thing:** run the self-check (step 0) *before*
-you change anything. If it reports a compromise, do not start fixing
-configuration — go to [If the self-check reports a compromise](#if-the-self-check-reports-a-compromise).
 
 ---
 
@@ -397,33 +429,41 @@ mail. With `--quiet` it stays silent unless something fails.
 
 ---
 
-## 7b. Install the auditd watchdog
+## 7b. Install the security watchdog
 
 The self-check above is level-triggered — it reports what is true at 06:00. The
-watchdog is edge-triggered: it fires the moment auditd changes state, in either
-direction.
+watchdog is edge-triggered: it fires the moment a control changes state, in
+either direction.
 
 That difference is the point. auditd was stopped in under a second as the first
 step of the compromise, and nothing reported it. A daily check would have said
 so hours later.
 
+It watches three things:
+
+| Watched | Why |
+| --- | --- |
+| `auditd` unit state | Stopping it is the first move of this compromise class |
+| `fail2ban` unit state | If it stops, SSH accepts unlimited attempts |
+| `fail2ban-jail` | Tracked separately, because "fail2ban is active" was true throughout the incident **while the jail banned nothing**. A unit being up is not the same as the control working. |
+
 ```bash
 install -m 700 -o root -g root \
-    server-baseline/watchdogs/auditd-watchdog.sh /usr/local/bin/auditd-watchdog.sh
-ln -sf /usr/local/bin/auditd-watchdog.sh /usr/local/bin/auditd-watchdog
+    server-baseline/watchdogs/security-watchdog.sh /usr/local/bin/security-watchdog.sh
+ln -sf /usr/local/bin/security-watchdog.sh /usr/local/bin/security-watchdog
 
-cat > /etc/systemd/system/auditd-watchdog.service <<'EOF'
+cat > /etc/systemd/system/security-watchdog.service <<'EOF'
 [Unit]
 Description=Alert on auditd state changes
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/auditd-watchdog.sh
+ExecStart=/usr/local/bin/security-watchdog.sh
 # Exit 1 means "auditd is down" - that is the alert, not a unit failure
 SuccessExitStatus=0 1
 EOF
 
-cat > /etc/systemd/system/auditd-watchdog.timer <<'EOF'
+cat > /etc/systemd/system/security-watchdog.timer <<'EOF'
 [Unit]
 Description=Check auditd state every minute
 
@@ -431,42 +471,43 @@ Description=Check auditd state every minute
 OnBootSec=2min
 OnUnitActiveSec=1min
 AccuracySec=10s
-Unit=auditd-watchdog.service
+Unit=security-watchdog.service
 
 [Install]
 WantedBy=timers.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now auditd-watchdog.timer
+systemctl enable --now security-watchdog.timer
 
 # Establish the baseline so the first run does not fire a false alert
-/usr/local/bin/auditd-watchdog.sh
+/usr/local/bin/security-watchdog.sh
 
 # Monthly deliberate test - an alert chain that has gone quiet looks exactly
 # like "nothing happened" until you make it speak on purpose
-echo '0 9 1 * * root /usr/local/bin/auditd-watchdog.sh --test' \
-    > /etc/cron.d/auditd-watchdog-test
-chmod 644 /etc/cron.d/auditd-watchdog-test
+echo '0 9 1 * * root /usr/local/bin/security-watchdog.sh --test' \
+    > /etc/cron.d/security-watchdog-test
+chmod 644 /etc/cron.d/security-watchdog-test
 ```
 
 **Verify the alert path right now — do not assume it works:**
 
 ```bash
-auditd-watchdog --test      # you should receive a Telegram message
-auditd-watchdog --status    # shows current vs. last recorded state
+security-watchdog --test      # you should receive a Telegram message
+security-watchdog --status    # shows current vs. last recorded state
 ```
 
 To prove the transition logic end to end (this will send a real alert):
 
 ```bash
-systemctl stop auditd && auditd-watchdog     # expect the STOPPED alert
-systemctl start auditd && auditd-watchdog    # expect the RESTORED alert
+systemctl stop auditd && security-watchdog     # expect the STOPPED alert
+systemctl start auditd && security-watchdog    # expect the RESTORED alert
 ```
 
 It reads its credentials from `/etc/server-baseline/selfcheck.env` and also
-accepts `SECRET_TOKEN` / `CHAT_ID_PERSON1` if you already use those names. Set
-`WATCH_UNITS="auditd fail2ban docker"` in that file to watch more units.
+accepts `SECRET_TOKEN` / `CHAT_ID_PERSON1` if you already use those names.
+`WATCH_UNITS="auditd fail2ban docker"` in that file extends the unit list;
+`WATCH_JAIL=""` disables the jail check.
 
 > Expect an alert on every reboot — auditd stops and starts. That is correct
 > behaviour, not noise: if you get one you did not expect, that is exactly the

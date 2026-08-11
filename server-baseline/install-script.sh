@@ -129,6 +129,7 @@ Modes:
   --interactive      Ask confirmation for each component (for existing servers)
   --section          Select specific sections to run (shows interactive menu)
   --dry-run          Show what would be done without making changes
+  --verify           Change nothing; only check whether the controls WORK
 
 Options:
   --desktop            Adapt for Ubuntu Desktop (keeps password auth, USB, printing)
@@ -140,13 +141,38 @@ Examples:
   sudo bash $0 --section
   sudo bash $0 --section --dry-run
   sudo bash $0 --dry-run
+  sudo bash $0 --verify
   sudo bash $0 --fresh-install --desktop
   sudo bash $0 --interactive --desktop --dry-run
+
+About --verify:
+  Installing a control and having it work are different things. This mode
+  installs nothing and asks only whether each control produces a result:
+  is fail2ban banning (not just running), is sshd listening on the expected
+  port only, does auditd have rules loaded, is anything on 0.0.0.0 that does
+  not belong there, does 'aide --check' complete, has PATH been hijacked.
+
+  Read-only and safe on production. Run it monthly, and after every change.
+  Exit codes: 0 = all passed, 1 = at least one failure, 2 = warnings only.
 
 Note: If no mode is specified, the script will auto-detect based on existing installations.
 Desktop mode skips server-only features (Telegram, Cloudflare, AIDE) and uses desktop-friendly defaults.
 EOF
     exit 0
+}
+
+# --verify delegates to security-selfcheck.sh so there is exactly one
+# implementation of "does this control actually work". Kept next to this script.
+run_verify_mode() {
+    local selfcheck="$(dirname "$(readlink -f "$0")")/security-selfcheck.sh"
+
+    if [ ! -f "$selfcheck" ]; then
+        echo -e "${RED}Error: security-selfcheck.sh not found at $selfcheck${NC}" >&2
+        echo "It ships alongside this script; re-clone or copy it across." >&2
+        exit 1
+    fi
+
+    exec sudo bash "$selfcheck" "$@"
 }
 
 # Function to parse command-line arguments
@@ -169,6 +195,12 @@ parse_arguments() {
             --dry-run)
                 DRY_RUN=true
                 shift
+                ;;
+            --verify)
+                # Handled immediately: this mode changes nothing and must not
+                # fall through into the installation flow.
+                shift
+                run_verify_mode "$@"
                 ;;
             --desktop)
                 DESKTOP_MODE=true
@@ -3519,11 +3551,43 @@ else
         echo "  2. Apply security hardening (disable root, password auth, etc.)"
         echo "  3. Restart SSH with BOTH ports 22 and 888 active"
         echo ""
-        echo "After the script completes:"
-        echo "  1. Test SSH connection on port 888: ssh -p 888 user@server"
-        echo "  2. If port 888 works, manually disable port 22 with these commands:"
-        echo "     sudo sed -i '/^Port 22$/d' /etc/ssh/sshd_config"
-        echo "     sudo systemctl restart ssh"
+        echo "Port 22 stays open deliberately, as your way back in if something"
+        echo "about port 888 turns out to be wrong. Closing it is a separate,"
+        echo "manual step - and one you should only take after proving 888 works."
+        echo ""
+        echo "══════════════════════════════════════════════════════════════════"
+        echo "  HOW TO CLOSE PORT 22 WITHOUT LOCKING YOURSELF OUT"
+        echo "══════════════════════════════════════════════════════════════════"
+        echo ""
+        echo "  The rule: NEVER close port 22 from the only session you have."
+        echo "  If the new port does not work, that session is your only way"
+        echo "  back in - and you will have just cut it."
+        echo ""
+        echo "  1. KEEP THIS TERMINAL OPEN. Do not log out. Do not close it."
+        echo ""
+        echo "  2. Open a SECOND terminal and connect on the new port:"
+        echo ""
+        echo "        ssh -p 888 $ACTUAL_USER@$SERVER_IP"
+        echo ""
+        echo "  3. Only if that second session works, run IN THAT SESSION:"
+        echo ""
+        echo "        sudo sed -i '/^Port 22\$/d' /etc/ssh/sshd_config"
+        echo "        sudo systemctl restart ssh"
+        echo "        sudo ufw delete allow 22/tcp"
+        echo ""
+        echo "  4. Now open a THIRD terminal and confirm you can still get in"
+        echo "     on 888. Only then close the first terminal."
+        echo ""
+        echo "  If step 2 fails: change nothing. You still have this session."
+        echo "  Check 'sudo ss -tlnp | grep 888' and 'sudo ufw status'."
+        echo ""
+        echo "  On a VPS, check the provider firewall too (Hetzner Cloud"
+        echo "  Firewall, AWS security groups). It sits above UFW and can block"
+        echo "  888 while everything on the host looks correct."
+        echo ""
+        echo "  Rescue route if you do lock yourself out: the provider's web"
+        echo "  console. Make sure you know where it is BEFORE you need it."
+        echo "══════════════════════════════════════════════════════════════════"
     fi
     echo ""
     read -p "Do you want to proceed with SSH hardening? (y/n): " ssh_harden
@@ -3733,47 +3797,27 @@ else
     SSH_PORT_OLD=22
 
     if [ "$DESKTOP_MODE" = true ]; then
-        log_info "Desktop mode: SSH stays on port 22 only, skipping trusted IP and rate limiting config"
+        log_info "Desktop mode: SSH stays on port 22 only, skipping rate limiting config"
     else
         SSH_PORT_NEW=888
 
-        # Add SSH firewall rules with dual-layer protection
         log_info "Configuring SSH firewall rules..."
 
-        # Ask user for trusted home IP for whitelist
-        echo ""
-        echo "═══════════════════════════════════════════════════════════"
-        echo "SSH TRUSTED IP CONFIGURATION"
-        echo "═══════════════════════════════════════════════════════════"
-        echo "You can whitelist your home/office IP for guaranteed SSH access."
-        echo "This IP will bypass rate limiting on port $SSH_PORT_NEW."
-        echo ""
-        echo "Benefits:"
-        echo "  - No rate limiting from this IP (unlimited connection attempts)"
-        echo "  - Guaranteed access even if rate limits are triggered"
-        echo "  - Recommended for your main work location"
-        echo ""
-        echo "Note: You can find your public IP at: https://icanhazip.com"
-        echo ""
-        read -p "Enter your trusted IP address (or press Enter to skip): " TRUSTED_IP
-
-        # Layer 1: Whitelist trusted home IP if provided (no rate limiting)
-        if [[ ! -z "$TRUSTED_IP" ]]; then
-            # Validate IP format (basic check)
-            if [[ $TRUSTED_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-                sudo ufw allow from "$TRUSTED_IP" to any port "$SSH_PORT_NEW" comment 'SSH whitelist - trusted home IP' || \
-                    log_warning "Failed to add SSH whitelist rule"
-                log_info "Trusted IP $TRUSTED_IP whitelisted for SSH access on port $SSH_PORT_NEW"
-            else
-                log_warning "Invalid IP format: $TRUSTED_IP - skipping whitelist"
-                log_warning "Expected format: xxx.xxx.xxx.xxx (e.g., 192.168.1.1)"
-            fi
-        else
-            log_info "No trusted IP configured - all IPs will use rate limiting"
-        fi
-
-        # Layer 2: Rate limiting for all other IPs already configured earlier (ufw limit 888/tcp)
-        log_info "SSH firewall: Rate limiting active for all non-whitelisted IPs"
+        # No trusted-IP allowlist is created here, on purpose.
+        #
+        # Earlier versions prompted for a "trusted home IP" and wrote a
+        # permanent `ufw allow from <ip>` rule. Home and mobile addresses are
+        # not permanent: the rule outlives the address, and the address gets
+        # reassigned to someone else. A stale allowlist entry is a standing
+        # grant to a stranger, and nothing ever prompts you to review it.
+        #
+        # Rate limiting on 888 (`ufw limit`, configured earlier) protects
+        # everyone equally and needs no maintenance. If you genuinely need an
+        # exemption, add it yourself and put the date in the comment:
+        #
+        #   sudo ufw allow from <ip> to any port 888 comment "SSH exemption 2026-08-11 - review quarterly"
+        log_info "SSH firewall: rate limiting active on port $SSH_PORT_NEW for all sources"
+        log_info "No permanent IP allowlist is created - stale entries outlive the address"
     fi
 
     # Configure IPv6 in UFW based on user choice
@@ -5283,49 +5327,57 @@ Run it any time with: sudo security-selfcheck" \
 fi
 
 ###############################################################################
-# AUDITD WATCHDOG
+# SECURITY WATCHDOG
 ###############################################################################
 #
 # The self-check above is level-triggered: it reports what is true at 06:00.
-# This is edge-triggered: it fires the moment auditd changes state.
+# This is edge-triggered: it fires the moment a security control changes state.
 #
 # That difference matters. auditd being stopped is the first move in this class
 # of compromise, and it happens in under a second. A daily check reports it
 # hours later; a state-change watchdog reports it within the minute.
 
-if skip_if_completed "AUDITD_WATCHDOG"; then
-    log_info "auditd watchdog already installed, skipping"
+if skip_if_completed "SECURITY_WATCHDOG"; then
+    log_info "security watchdog already installed, skipping"
 else
     if ask_component_install \
-        "AUDITD WATCHDOG" \
+        "SECURITY WATCHDOG" \
         "audit-logging" \
-        "Alert immediately when auditd stops or comes back." \
-        "What it does:
-• Checks every minute whether auditd changed state
+        "Alert immediately when a security control stops or comes back." \
+        "What it watches, every minute:
+• auditd         - systemd unit state
+• fail2ban       - systemd unit state
+• fail2ban-jail  - whether the sshd jail is actually reachable
+
+That last one exists because 'fail2ban is active' was true throughout the
+incident this was written for, while the jail banned nothing. A unit being up
+is not the same as the control working, so the jail is tracked separately.
+
+Behaviour:
 • Alerts on transition only - silent while nothing changes
 • Reports both directions (a stop AND an unexplained restart)
-• Includes the number of logged-in sessions and the last journal line
+• Each alert states the impact, the logged-in session count and the last log line
 • Logs to syslog as well, so there is a trace even if Telegram fails
 
-Installed to: /usr/local/bin/auditd-watchdog.sh
+Installed to: /usr/local/bin/security-watchdog.sh
 Schedule:     systemd timer, every minute
-Test alert:   sudo auditd-watchdog.sh --test  (also runs monthly on its own)
+Test alert:   sudo security-watchdog --test  (also runs monthly on its own)
 
-Why separate from the daily self-check: auditd can be stopped and the payload
+Why separate from the daily self-check: a control can be stopped and the payload
 deployed inside a single minute. A once-a-day check reports that far too late." \
         "$([ "$DESKTOP_MODE" = true ] && echo 'n' || echo 'y')"; then
 
         if [ "$DRY_RUN" = true ]; then
-            log_dry_run "Would install /usr/local/bin/auditd-watchdog.sh"
-            log_dry_run "Would create auditd-watchdog.service and .timer (every minute)"
+            log_dry_run "Would install /usr/local/bin/security-watchdog.sh"
+            log_dry_run "Would create security-watchdog.service and .timer (every minute)"
             log_dry_run "Would schedule a monthly test alert to verify the alert path"
         else
-            WATCHDOG_SRC="$(dirname "$(readlink -f "$0")")/watchdogs/auditd-watchdog.sh"
+            WATCHDOG_SRC="$(dirname "$(readlink -f "$0")")/watchdogs/security-watchdog.sh"
 
             if [ -f "$WATCHDOG_SRC" ]; then
-                sudo install -m 700 -o root -g root "$WATCHDOG_SRC" /usr/local/bin/auditd-watchdog.sh
-                sudo ln -sf /usr/local/bin/auditd-watchdog.sh /usr/local/bin/auditd-watchdog
-                log_info "Installed /usr/local/bin/auditd-watchdog.sh"
+                sudo install -m 700 -o root -g root "$WATCHDOG_SRC" /usr/local/bin/security-watchdog.sh
+                sudo ln -sf /usr/local/bin/security-watchdog.sh /usr/local/bin/security-watchdog
+                log_info "Installed /usr/local/bin/security-watchdog.sh"
 
                 # Credentials live in the same file as the self-check
                 if [[ ! -z "${SECURITY_TELEGRAM_BOT_TOKEN:-}" ]] && [[ ! -z "${SECURITY_TELEGRAM_CHAT_ID:-}" ]]; then
@@ -5342,21 +5394,21 @@ deployed inside a single minute. A once-a-day check reports that far too late." 
                     log_warning "Add them later to /etc/server-baseline/selfcheck.env"
                 fi
 
-                cat <<'EOF' | sudo tee /etc/systemd/system/auditd-watchdog.service >/dev/null
+                cat <<'EOF' | sudo tee /etc/systemd/system/security-watchdog.service >/dev/null
 [Unit]
 Description=Alert on auditd state changes
 Documentation=https://github.com/Made-By-Adem/linux-server-management-scripts
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/auditd-watchdog.sh
+ExecStart=/usr/local/bin/security-watchdog.sh
 # A non-zero exit means "auditd is down", which is the alert itself, not a
 # failure of this unit. Without this, the timer would be marked failed every
 # run while auditd stays stopped.
 SuccessExitStatus=0 1
 EOF
 
-                cat <<'EOF' | sudo tee /etc/systemd/system/auditd-watchdog.timer >/dev/null
+                cat <<'EOF' | sudo tee /etc/systemd/system/security-watchdog.timer >/dev/null
 [Unit]
 Description=Check auditd state every minute
 
@@ -5364,45 +5416,45 @@ Description=Check auditd state every minute
 OnBootSec=2min
 OnUnitActiveSec=1min
 AccuracySec=10s
-Unit=auditd-watchdog.service
+Unit=security-watchdog.service
 
 [Install]
 WantedBy=timers.target
 EOF
 
                 sudo systemctl daemon-reload
-                sudo systemctl enable --now auditd-watchdog.timer || \
-                    log_warning "Failed to enable auditd-watchdog.timer"
+                sudo systemctl enable --now security-watchdog.timer || \
+                    log_warning "Failed to enable security-watchdog.timer"
 
                 # Establish the baseline state now, so the first real run
                 # compares against reality instead of firing a false alert.
-                sudo /usr/local/bin/auditd-watchdog.sh >/dev/null 2>&1 || true
+                sudo /usr/local/bin/security-watchdog.sh >/dev/null 2>&1 || true
 
                 # Monthly deliberate test. An alerting chain that has gone quiet
                 # is indistinguishable from "nothing happened" until you make it
                 # speak on purpose.
                 {
                     echo "# Monthly watchdog test - proves the alert path still works"
-                    echo "0 9 1 * * root /usr/local/bin/auditd-watchdog.sh --test"
-                } | sudo tee /etc/cron.d/auditd-watchdog-test >/dev/null
-                sudo chmod 644 /etc/cron.d/auditd-watchdog-test
+                    echo "0 9 1 * * root /usr/local/bin/security-watchdog.sh --test"
+                } | sudo tee /etc/cron.d/security-watchdog-test >/dev/null
+                sudo chmod 644 /etc/cron.d/security-watchdog-test
 
-                if systemctl is-active auditd-watchdog.timer >/dev/null 2>&1; then
-                    log_info "✓ auditd watchdog timer is active (checks every minute)"
-                    log_info "  Verify the alert path now with: sudo auditd-watchdog --test"
-                    log_info "  Current state:                  sudo auditd-watchdog --status"
+                if systemctl is-active security-watchdog.timer >/dev/null 2>&1; then
+                    log_info "✓ security watchdog timer is active (checks every minute)"
+                    log_info "  Verify the alert path now with: sudo security-watchdog --test"
+                    log_info "  Current state:                  sudo security-watchdog --status"
                 else
-                    log_warning "✗ auditd-watchdog.timer did not start"
+                    log_warning "✗ security-watchdog.timer did not start"
                 fi
             else
-                log_warning "watchdogs/auditd-watchdog.sh not found next to the install script - skipping"
+                log_warning "watchdogs/security-watchdog.sh not found next to the install script - skipping"
                 log_warning "Expected at: $WATCHDOG_SRC"
             fi
         fi
-        mark_completed "AUDITD_WATCHDOG"
+        mark_completed "SECURITY_WATCHDOG"
     else
-        log_info "auditd watchdog skipped"
-        mark_completed "AUDITD_WATCHDOG"
+        log_info "security watchdog skipped"
+        mark_completed "SECURITY_WATCHDOG"
     fi
 fi
 
@@ -7363,10 +7415,27 @@ if [ "$DESKTOP_MODE" = true ]; then
 else
     if [ "$SSH_HARDENED" = true ]; then
         echo "  1. ⚠️  SSH: Currently on BOTH port 22 AND 888"
-        echo "     - Test connection: ssh -p 888 user@$SERVER_IP"
-        echo "     - After confirming 888 works, disable 22 with:"
-        echo "       sudo sed -i '/^Port 22$/d' /etc/ssh/sshd_config"
-        echo "       sudo systemctl restart ssh"
+        echo ""
+        echo "     ┌──────────────────────────────────────────────────────────┐"
+        echo "     │ DO NOT CLOSE THIS TERMINAL until 888 is proven to work.  │"
+        echo "     │ It is your only way back in if something is wrong.       │"
+        echo "     └──────────────────────────────────────────────────────────┘"
+        echo ""
+        echo "     a) Open a SECOND terminal (leave this one open):"
+        echo "          ssh -p 888 $ACTUAL_USER@$SERVER_IP"
+        echo ""
+        echo "     b) Only if that works, run IN THAT SECOND SESSION:"
+        echo "          sudo sed -i '/^Port 22\$/d' /etc/ssh/sshd_config"
+        echo "          sudo systemctl restart ssh"
+        echo "          sudo ufw delete allow 22/tcp"
+        echo ""
+        echo "     c) Open a THIRD terminal, confirm 888 still works,"
+        echo "        and only then close this one."
+        echo ""
+        echo "     If (a) fails, change nothing - you still have this session."
+        echo "     Check: sudo ss -tlnp | grep 888   and   sudo ufw status"
+        echo "     On a VPS, also check the provider firewall (it sits above UFW)."
+        echo ""
         echo "  2. Password authentication is DISABLED"
         echo "  3. Make sure your SSH key is authorized before disconnecting!"
     else

@@ -160,6 +160,110 @@ else
 fi
 
 ###############################################################################
+section "SSH listening ports"
+###############################################################################
+# Port 22 is kept open on purpose as a lockout fallback, but it is meant to be
+# temporary and it is easy to leave open forever. This reports what sshd is
+# actually bound to, which is not always what sshd_config appears to say -
+# socket activation, drop-in files under sshd_config.d and a stale ssh.socket
+# all override it.
+
+SSH_PORTS=$(/bin/ss -tlnp 2>/dev/null | /bin/grep -i sshd | \
+            /bin/grep -oE ':[0-9]+ ' | /bin/tr -d ': ' | sort -u | /bin/tr '\n' ' ')
+SSH_PORTS=${SSH_PORTS:-none}
+
+if [ "$SSH_PORTS" = "none" ]; then
+    warn "Could not determine which ports sshd is listening on"
+elif echo "$SSH_PORTS" | /bin/grep -qw 22; then
+    if echo "$SSH_PORTS" | /bin/grep -qw 888; then
+        warn "sshd listens on: $SSH_PORTS - port 22 is still open alongside 888"
+        warn "  Close it only from a SECOND session after verifying 888 works:"
+        warn "  sudo sed -i '/^Port 22\$/d' /etc/ssh/sshd_config && sudo systemctl restart ssh"
+    else
+        warn "sshd listens on port 22 only - the hardened port 888 is not active"
+    fi
+else
+    pass "sshd listens on: $SSH_PORTS (port 22 is closed)"
+fi
+
+if [ -n "${SSH_PORTS##*none*}" ]; then
+    UNEXPECTED_SSH=""
+    for p in $SSH_PORTS; do
+        case "$p" in
+            22|888) : ;;
+            *) UNEXPECTED_SSH="$UNEXPECTED_SSH $p" ;;
+        esac
+    done
+    if [ -n "$UNEXPECTED_SSH" ]; then
+        fail "sshd listens on unexpected port(s):$UNEXPECTED_SSH"
+    fi
+fi
+
+###############################################################################
+section "Listeners on all interfaces"
+###############################################################################
+# Everything bound to 0.0.0.0 or :: is reachable from the internet unless a
+# firewall stops it - and for container ports, UFW does not. This inventories
+# what is exposed and flags anything outside the expected set.
+#
+# Expected: SSH (22, 888) and, when not in Cloudflare-only mode, HTTP/HTTPS.
+# Everything else is worth a second look, especially management interfaces:
+# 9443 Portainer, 8000 Portainer agent, 19999 Netdata, 8120 the bot API.
+
+EXPECTED_PUBLIC="22 888 80 443"
+MGMT_PORTS="9443 8000 19999 8120 2375 2376 5432 3306 6379 27017"
+
+PUBLIC_LISTENERS=$(/bin/ss -tlnH 2>/dev/null | \
+    /usr/bin/awk '{print $4}' | \
+    /bin/grep -E '^(0\.0\.0\.0|\*|\[::\]):' | \
+    /bin/grep -oE '[0-9]+$' | sort -un)
+
+if [ -z "$PUBLIC_LISTENERS" ]; then
+    pass "Nothing is listening on all interfaces"
+else
+    UNEXPECTED=""
+    MGMT_EXPOSED=""
+    for p in $PUBLIC_LISTENERS; do
+        case " $EXPECTED_PUBLIC " in *" $p "*) continue ;; esac
+        case " $MGMT_PORTS " in
+            *" $p "*) MGMT_EXPOSED="$MGMT_EXPOSED $p"; continue ;;
+        esac
+        UNEXPECTED="$UNEXPECTED $p"
+    done
+
+    # Informational, not a verdict - the verdicts follow below.
+    [ "$QUIET" = false ] && \
+        echo "  ---- open on all interfaces: $(echo "$PUBLIC_LISTENERS" | /bin/tr '\n' ' ')"
+
+    if [ -z "$MGMT_EXPOSED" ] && [ -z "$UNEXPECTED" ]; then
+        pass "Only expected ports (SSH, HTTP/HTTPS) are open on all interfaces"
+    fi
+
+    if [ -n "$MGMT_EXPOSED" ]; then
+        fail "Management interface exposed on all interfaces:$MGMT_EXPOSED"
+        for p in $MGMT_EXPOSED; do
+            OWNER=$(/bin/ss -tlnpH "sport = :$p" 2>/dev/null | \
+                    /bin/grep -oE 'users:\(\("[^"]+"' | /bin/grep -oE '"[^"]+"' | /bin/tr -d '"' | head -1)
+            warn "  port $p -> ${OWNER:-unknown}. Bind it to 127.0.0.1 and reach it through a tunnel."
+        done
+    fi
+
+    if [ -n "$UNEXPECTED" ]; then
+        warn "Other ports open on all interfaces:$UNEXPECTED (verify each is intended)"
+    fi
+
+    # Container-published ports are the ones UFW does not gate.
+    if command -v docker >/dev/null 2>&1; then
+        if ! /usr/sbin/iptables -L DOCKER-USER -n 2>/dev/null | /bin/grep -q DROP; then
+            if docker ps --format '{{.Ports}}' 2>/dev/null | /bin/grep -qE '0\.0\.0\.0:|:::'; then
+                fail "Containers publish on all interfaces and DOCKER-USER has no DROP rule"
+                warn "  UFW does not filter these. Verify from ANOTHER machine, not from here."
+            fi
+        fi
+    fi
+fi
+
+###############################################################################
 section "auditd and process accounting"
 ###############################################################################
 # auditd being stopped was the clearest signal in the AC2 incident and nothing
