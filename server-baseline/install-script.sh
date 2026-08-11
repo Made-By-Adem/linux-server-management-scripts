@@ -5138,83 +5138,32 @@ fi
 if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT_ID" ]]; then
     log_info "Configuring Telegram integration for security scans..."
 
+    # Write the credentials ONCE, here, before anything that needs them.
+    # Every alerting component on this host reads this file: the three
+    # reporters, the watchdog, the daily self-check and aide-refresh. Nothing
+    # carries its own copy - a token in five places is five places to rotate
+    # and five chances for one of them to be silently wrong.
+    sudo mkdir -p /etc/server-baseline
+    sudo chmod 700 /etc/server-baseline
+    printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' \
+        "$SECURITY_TELEGRAM_BOT_TOKEN" "$SECURITY_TELEGRAM_CHAT_ID" | \
+        sudo tee /etc/server-baseline/selfcheck.env >/dev/null
+    sudo chmod 600 /etc/server-baseline/selfcheck.env
+    log_info "Alert credentials written to /etc/server-baseline/selfcheck.env (root only)"
+
     # Create rkhunter Telegram wrapper script (only if installed)
     if [ "$RKHUNTER_INSTALLED" = true ]; then
-    cat <<'RKHUNTER_SCRIPT' | sudo tee /usr/local/bin/rkhunter-telegram.sh
-#!/bin/bash
-# Rkhunter scan with Telegram notifications
-#
-# "No warnings in the log" is NOT the same as "the scan found nothing". If
-# rkhunter aborts on a configuration error it writes that error and stops - no
-# warnings, no results. An earlier version of this script tested only for the
-# presence of "Warning" lines, so an aborted scan produced a daily
-# "✅ All Clear" message. That is precisely how a security tool goes quiet for
-# months without anyone noticing.
-#
-# The scan is therefore only trusted when the log proves it ran to completion.
-# --report-warnings-only is deliberately NOT used: it suppresses the summary
-# line that is the evidence of completion.
-
-# Credentials live in one place. The values below are only a fallback for
-# hosts provisioned before that file existed - a script that holds its own
-# copy of a token is one more place to rotate and one more place to leak.
-[ -r /etc/server-baseline/selfcheck.env ] && . /etc/server-baseline/selfcheck.env
-TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-REPLACE_BOT_TOKEN}"
-TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-REPLACE_CHAT_ID}"
-SCAN_LOG="/var/log/rkhunter-scan-$(date +%Y%m%d).log"
-
-send_telegram() {
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d text="$1" \
-        -d parse_mode="Markdown" >/dev/null 2>&1
-}
-
-/usr/bin/rkhunter --check --skip-keypress --nocolors > "$SCAN_LOG" 2>&1
-SCAN_RC=$?
-
-# Evidence that the scan actually ran end to end
-COMPLETED=$(grep -c "System checks summary" "$SCAN_LOG" 2>/dev/null)
-
-if [ "${COMPLETED:-0}" -eq 0 ]; then
-    MESSAGE="🚨 *RKHUNTER SCAN FAILED*%0A%0A"
-    MESSAGE+="Server: $(hostname)%0A"
-    MESSAGE+="Date: $(date '+%Y-%m-%d %H:%M')%0A%0A"
-    MESSAGE+="The scan did not run to completion (exit ${SCAN_RC}).%0A"
-    MESSAGE+="*This host is currently NOT being scanned for rootkits.*%0A%0A"
-    MESSAGE+="Last output:%0A\`\`\`%0A$(tail -8 "$SCAN_LOG" | cut -c1-200)%0A\`\`\`%0A%0A"
-    MESSAGE+="Check the config with: \`rkhunter --config-check\`%0A"
-    MESSAGE+="Full log: $SCAN_LOG"
-    send_telegram "$MESSAGE"
-
-elif grep -q "^Warning:" "$SCAN_LOG"; then
-    WARNINGS=$(grep "^Warning:" "$SCAN_LOG" | head -10)
-    WARNING_COUNT=$(grep -c "^Warning:" "$SCAN_LOG")
-
-    MESSAGE="🔍 *Rkhunter Daily Scan*%0A%0A"
-    MESSAGE+="⚠️ Found $WARNING_COUNT warning(s) on $(hostname)%0A%0A"
-    MESSAGE+="*Top warnings:*%0A\`\`\`%0A${WARNINGS}%0A\`\`\`%0A%0A"
-    MESSAGE+="Full log: $SCAN_LOG"
-    send_telegram "$MESSAGE"
-
-else
-    MESSAGE="✅ *Rkhunter Daily Scan*%0A%0A"
-    MESSAGE+="Server: $(hostname)%0A"
-    MESSAGE+="Status: *All Clear*%0A"
-    MESSAGE+="Date: $(date '+%Y-%m-%d %H:%M')%0A%0A"
-    MESSAGE+="Scan completed, no warnings.%0A"
-    MESSAGE+="Full log: $SCAN_LOG"
-    send_telegram "$MESSAGE"
-fi
-
-# Keep scan logs for 30 days
-find /var/log -name "rkhunter-scan-*.log" -mtime +30 -delete 2>/dev/null || true
-RKHUNTER_SCRIPT
+    # Installed from server-baseline/reporters/ so update-baseline.sh can
+    # deploy the identical script. Credentials are NOT written into it;
+    # it reads /etc/server-baseline/selfcheck.env at runtime.
+    RKH_SRC="$(dirname "$(readlink -f "$0")")/reporters/rkhunter-telegram.sh"
+    if [ -f "$RKH_SRC" ]; then
+        sudo install -m 700 -o root -g root "$RKH_SRC" /usr/local/bin/rkhunter-telegram.sh
+    else
+        log_warning "reporters/rkhunter-telegram.sh not found - skipping rkhunter reporter"
+    fi
 
     # Replace placeholders with actual credentials for rkhunter
-    sudo sed -i "s/REPLACE_BOT_TOKEN/$SECURITY_TELEGRAM_BOT_TOKEN/g" /usr/local/bin/rkhunter-telegram.sh
-    sudo sed -i "s/REPLACE_CHAT_ID/$SECURITY_TELEGRAM_CHAT_ID/g" /usr/local/bin/rkhunter-telegram.sh
-    sudo chmod 700 /usr/local/bin/rkhunter-telegram.sh
     log_info "Rkhunter Telegram integration configured (chmod 700 for security)"
 
     # Create symlink in scripts directory if it exists
@@ -5226,117 +5175,14 @@ RKHUNTER_SCRIPT
 
     # Create lynis Telegram wrapper script (only if installed)
     if [ "$LYNIS_INSTALLED" = true ]; then
-    cat <<'LYNIS_SCRIPT' | sudo tee /usr/local/bin/lynis-telegram.sh
-#!/bin/bash
-# Lynis audit with Telegram notifications
-
-# Credentials live in one place. The values below are only a fallback for
-# hosts provisioned before that file existed - a script that holds its own
-# copy of a token is one more place to rotate and one more place to leak.
-[ -r /etc/server-baseline/selfcheck.env ] && . /etc/server-baseline/selfcheck.env
-TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-REPLACE_BOT_TOKEN}"
-TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-REPLACE_CHAT_ID}"
-LYNIS_LOG="/var/log/lynis-report.dat"
-RECOMMENDATIONS_DIR="/var/log/lynis-recommendations"
-DATE_STAMP=$(date +%Y%m%d-%H%M%S)
-RECOMMENDATIONS_FILE="${RECOMMENDATIONS_DIR}/lynis-recommendations-${DATE_STAMP}.log"
-
-# Create recommendations directory if it doesn't exist
-mkdir -p "$RECOMMENDATIONS_DIR"
-
-# Remove stale PID file if exists (prevents "another process running" warning)
-rm -f /run/lynis/lynis.pid 2>/dev/null || true
-
-# Run lynis audit (supports both GitHub and legacy apt installations)
-if [ -x /usr/local/lynis/lynis ]; then
-    /usr/local/lynis/lynis audit system --quiet --quick
-elif [ -x /usr/sbin/lynis ]; then
-    /usr/sbin/lynis audit system --quiet --quick
-elif [ -x /usr/local/bin/lynis ]; then
-    /usr/local/bin/lynis audit system --quiet --quick
-else
-    echo "Error: Lynis not found"
-    exit 1
-fi
-
-# Extract score and suggestions
-HARDENING_INDEX=$(grep "hardening_index=" "$LYNIS_LOG" | cut -d'=' -f2)
-SUGGESTION_COUNT=$(grep -c "suggestion\[\]=" "$LYNIS_LOG")
-
-# Extract top 5 suggestions - get only the description (second field after TEST-ID)
-# Format in lynis: suggestion[]=TEST-ID|Description|Details|Solution|
-SUGGESTIONS_CLEAN=$(grep "suggestion\[\]=" "$LYNIS_LOG" | head -5 | cut -d'|' -f2)
-
-# Export ALL recommendations to a dated log file
-echo "Lynis Security Recommendations Report" > "$RECOMMENDATIONS_FILE"
-echo "Generated: $(date '+%Y-%m-%d %H:%M:%S')" >> "$RECOMMENDATIONS_FILE"
-echo "Server: $(hostname)" >> "$RECOMMENDATIONS_FILE"
-echo "Hardening Index: ${HARDENING_INDEX}/100" >> "$RECOMMENDATIONS_FILE"
-echo "Total Suggestions: ${SUGGESTION_COUNT}" >> "$RECOMMENDATIONS_FILE"
-echo "" >> "$RECOMMENDATIONS_FILE"
-echo "═══════════════════════════════════════════════════════════════" >> "$RECOMMENDATIONS_FILE"
-echo "ALL RECOMMENDATIONS:" >> "$RECOMMENDATIONS_FILE"
-echo "═══════════════════════════════════════════════════════════════" >> "$RECOMMENDATIONS_FILE"
-echo "" >> "$RECOMMENDATIONS_FILE"
-
-# Extract and format all suggestions with TEST-ID and description
-grep "suggestion\[\]=" "$LYNIS_LOG" | while IFS= read -r line; do
-    TEST_ID=$(echo "$line" | cut -d'=' -f2 | cut -d'|' -f1)
-    DESCRIPTION=$(echo "$line" | cut -d'|' -f2)
-    echo "[$TEST_ID] $DESCRIPTION"
-done | nl -w3 -s'. ' >> "$RECOMMENDATIONS_FILE"
-
-echo "" >> "$RECOMMENDATIONS_FILE"
-echo "═══════════════════════════════════════════════════════════════" >> "$RECOMMENDATIONS_FILE"
-echo "Full report: /var/log/lynis-report.dat" >> "$RECOMMENDATIONS_FILE"
-echo "Detailed log: /var/log/lynis.log" >> "$RECOMMENDATIONS_FILE"
-echo "═══════════════════════════════════════════════════════════════" >> "$RECOMMENDATIONS_FILE"
-
-# Set appropriate permissions
-chmod 644 "$RECOMMENDATIONS_FILE"
-
-# Report locations
-REPORT_FILE="/var/log/lynis-report.dat"
-REPORT_LOG="/var/log/lynis.log"
-
-# Function to escape HTML special characters
-escape_html() {
-    echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
-}
-
-# Build Telegram message with HTML formatting
-MESSAGE="🛡️ <b>Lynis Monthly Audit</b>%0A%0A"
-MESSAGE+="<b>Server:</b> $(hostname)%0A"
-MESSAGE+="<b>Hardening Score:</b> <code>${HARDENING_INDEX}/100</code>%0A"
-MESSAGE+="<b>Total suggestions:</b> ${SUGGESTION_COUNT}%0A%0A"
-MESSAGE+="<b>Top 5 suggestions:</b>%0A"
-
-# Format top 5 suggestions (escaped for HTML)
-while IFS= read -r suggestion; do
-    if [ -n "$suggestion" ]; then
-        ESCAPED=$(escape_html "$suggestion")
-        MESSAGE+="• ${ESCAPED}%0A"
+    LYN_SRC="$(dirname "$(readlink -f "$0")")/reporters/lynis-telegram.sh"
+    if [ -f "$LYN_SRC" ]; then
+        sudo install -m 700 -o root -g root "$LYN_SRC" /usr/local/bin/lynis-telegram.sh
+    else
+        log_warning "reporters/lynis-telegram.sh not found - skipping Lynis reporter"
     fi
-done <<< "$SUGGESTIONS_CLEAN"
-
-MESSAGE+="%0A📄 <b>Full recommendations:</b>%0A"
-MESSAGE+="<code>${RECOMMENDATIONS_FILE}</code>%0A%0A"
-MESSAGE+="<b>View commands:</b>%0A"
-MESSAGE+="<code>cat ${RECOMMENDATIONS_FILE}</code>%0A"
-MESSAGE+="<code>lynis show details TEST-ID</code>"
-
-curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-    -d chat_id="${TELEGRAM_CHAT_ID}" \
-    -d text="${MESSAGE}" \
-    -d parse_mode="HTML" >/dev/null 2>&1
-
-# Clean up old recommendation files (keep last 12 months)
-find "$RECOMMENDATIONS_DIR" -name "lynis-recommendations-*.log" -type f -mtime +365 -delete 2>/dev/null || true
-LYNIS_SCRIPT
 
     # Replace placeholders with actual credentials for lynis
-    sudo sed -i "s/REPLACE_BOT_TOKEN/$SECURITY_TELEGRAM_BOT_TOKEN/g" /usr/local/bin/lynis-telegram.sh
-    sudo sed -i "s/REPLACE_CHAT_ID/$SECURITY_TELEGRAM_CHAT_ID/g" /usr/local/bin/lynis-telegram.sh
     sudo chmod 700 /usr/local/bin/lynis-telegram.sh
     log_info "Lynis Telegram integration configured (chmod 700 for security)"
 
@@ -5906,116 +5752,16 @@ EOF
 
                 # Create AIDE Telegram wrapper script if Telegram credentials are available
                 if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT_ID" ]]; then
-                    cat <<'AIDE_SCRIPT' | sudo tee /usr/local/bin/aide-telegram.sh >/dev/null
-#!/bin/bash
-# AIDE integrity check with Telegram notifications
-#
-# The decision to alert is driven by AIDE's EXIT CODE, never by parsing counts
-# out of the report. An earlier version of this script grepped for "^Added:",
-# which never matches - AIDE writes "Added entries:" - so the counters were
-# always zero, the alert branch never fired, and every run reported "no changes"
-# and then ran `aide --update`, absorbing any tampering into the baseline.
-#
-# AIDE exit codes:
-#   0        no differences
-#   1|2|4    new / removed / changed entries (bitwise OR, so 1..7)
-#   >= 14    AIDE itself failed (config error, IO error, version mismatch)
-
-# Credentials live in one place. The values below are only a fallback for
-# hosts provisioned before that file existed - a script that holds its own
-# copy of a token is one more place to rotate and one more place to leak.
-[ -r /etc/server-baseline/selfcheck.env ] && . /etc/server-baseline/selfcheck.env
-TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-REPLACE_BOT_TOKEN}"
-TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-REPLACE_CHAT_ID}"
-LOG_FILE="/var/log/aide-check-$(date +%Y%m%d).log"
-DATE_STAMP=$(date '+%Y-%m-%d %H:%M')
-
-send_telegram() {
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d text="$1" \
-        -d parse_mode="Markdown" >/dev/null 2>&1
-}
-
-# Read a count out of AIDE's summary block, e.g. "  Added entries:      3"
-summary_count() {
-    sed -n "s/^[[:space:]]*$1 entries:[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$LOG_FILE" | head -1
-}
-
-# On Debian and Ubuntu, `aide` does NOT read /etc/aide/aide.conf by itself:
-# aide-common generates /var/lib/aide/aide.conf.autogenerated and ships
-# aide.wrapper to invoke it. A bare `aide --check` fails with "missing
-# configuration" (exit 17) on every run - which an earlier version of this
-# script did, so AIDE never actually ran here at all.
-if command -v aide.wrapper >/dev/null 2>&1; then
-    AIDE="aide.wrapper"
-elif [ -f /var/lib/aide/aide.conf.autogenerated ]; then
-    AIDE="aide --config=/var/lib/aide/aide.conf.autogenerated"
-else
-    AIDE="aide"
-fi
-
-# Run AIDE check
-$AIDE --check > "$LOG_FILE" 2>&1
-CHECK_RESULT=$?
-
-if [ "$CHECK_RESULT" -ge 14 ]; then
-    # AIDE could not complete. This MUST NOT be reported as "no changes" and the
-    # database MUST NOT be updated - a failing integrity checker is an incident
-    # in itself, not a clean bill of health.
-    MESSAGE="🚨 *AIDE CHECK FAILED*%0A%0A"
-    MESSAGE+="Server: $(hostname)%0A"
-    MESSAGE+="Date: ${DATE_STAMP}%0A%0A"
-    MESSAGE+="⚠️ AIDE exited with code ${CHECK_RESULT} and could not verify anything.%0A"
-    MESSAGE+="*File integrity is currently UNVERIFIED.*%0A%0A"
-    MESSAGE+="Last output:%0A"
-    MESSAGE+="\`$(tail -5 "$LOG_FILE" | tr '\n' ' ' | cut -c1-300)\`%0A%0A"
-    MESSAGE+="Full log: \`$LOG_FILE\`"
-    send_telegram "$MESSAGE"
-
-elif [ "$CHECK_RESULT" -ne 0 ]; then
-    ADDED=$(summary_count Added);     ADDED=${ADDED:-0}
-    REMOVED=$(summary_count Removed); REMOVED=${REMOVED:-0}
-    CHANGED=$(summary_count Changed); CHANGED=${CHANGED:-0}
-
-    # AIDE detail lines look like "f++++++++++++++++: /path/to/file"
-    DETAIL=$(grep -E '^[^[:space:]]+: /' "$LOG_FILE" | head -10 | sed 's/^/• /' | tr '\n' '@' | sed 's/@/%0A/g')
-
-    MESSAGE="🚨 *AIDE Integrity Alert*%0A%0A"
-    MESSAGE+="Server: $(hostname)%0A"
-    MESSAGE+="Date: ${DATE_STAMP}%0A%0A"
-    MESSAGE+="⚠️ *File changes detected!*%0A%0A"
-    MESSAGE+="Summary:%0A"
-    MESSAGE+="• Added: ${ADDED}%0A"
-    MESSAGE+="• Removed: ${REMOVED}%0A"
-    MESSAGE+="• Changed: ${CHANGED}%0A%0A"
-    MESSAGE+="First entries:%0A${DETAIL}%0A"
-    MESSAGE+="Full log: \`$LOG_FILE\`%0A%0A"
-    MESSAGE+="_The database was NOT updated. Review first, then if legitimate:_%0A"
-    MESSAGE+="\`sudo aide --update && sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db\`"
-    send_telegram "$MESSAGE"
-
-else
-    MESSAGE="✅ *AIDE Daily Check*%0A%0A"
-    MESSAGE+="Server: $(hostname)%0A"
-    MESSAGE+="Date: ${DATE_STAMP}%0A"
-    MESSAGE+="Status: *No changes detected*%0A%0A"
-    MESSAGE+="File integrity verified."
-    send_telegram "$MESSAGE"
-
-    # Only refresh the baseline when the check genuinely came back clean.
-    $AIDE --update >/dev/null 2>&1
-    mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db 2>/dev/null || true
-fi
-
-# Keep logs for 30 days
-find /var/log -name "aide-check-*.log" -mtime +30 -delete 2>/dev/null || true
-AIDE_SCRIPT
+                    # Installed from server-baseline/reporters/ so
+                    # update-baseline.sh can deploy the identical script.
+                    AIDE_SRC="$(dirname "$(readlink -f "$0")")/reporters/aide-telegram.sh"
+                    if [ -f "$AIDE_SRC" ]; then
+                        sudo install -m 700 -o root -g root "$AIDE_SRC" /usr/local/bin/aide-telegram.sh
+                    else
+                        log_warning "reporters/aide-telegram.sh not found - skipping AIDE reporter"
+                    fi
 
                     # Replace placeholders with actual credentials for AIDE
-                    sudo sed -i "s/REPLACE_BOT_TOKEN/$SECURITY_TELEGRAM_BOT_TOKEN/g" /usr/local/bin/aide-telegram.sh
-                    sudo sed -i "s/REPLACE_CHAT_ID/$SECURITY_TELEGRAM_CHAT_ID/g" /usr/local/bin/aide-telegram.sh
-                    sudo chmod 700 /usr/local/bin/aide-telegram.sh
                     log_info "AIDE Telegram integration configured"
 
                     # Create symlink in scripts directory if it exists

@@ -502,14 +502,31 @@ if [ ! -f /usr/local/bin/aide-telegram.sh ]; then
     fi
 elif grep -q 'grep "\^Added:"' /usr/local/bin/aide-telegram.sh 2>/dev/null; then
     aide_fix() {
-        note "This reporter has to be replaced, not patched in place."
-        note "Re-run the installer's AIDE section:"
-        echo "      sudo bash $SCRIPT_DIR/install-script.sh --section   # choose 17"
-        note "Until then, disable the misleading green reports:"
+        # Replace the reporter outright rather than telling the operator to go
+        # and re-run the installer. Both scripts deploy the identical file from
+        # server-baseline/reporters/, so there is one version to maintain.
+        if [ -f "$SCRIPT_DIR/reporters/aide-telegram.sh" ]; then
+            install -m 700 -o root -g root \
+                "$SCRIPT_DIR/reporters/aide-telegram.sh" /usr/local/bin/aide-telegram.sh
+            ok "Installed the corrected AIDE reporter"
+            note "It decides on the exit code, refuses to refresh the database on an"
+            note "AIDE error, and reads credentials from /etc/server-baseline/selfcheck.env"
+
+            # Re-enable a cron entry an earlier run of this script disabled
+            if [ -f /etc/cron.d/security-scans ] && \
+               grep -q '^# DISABLED.*aide-telegram' /etc/cron.d/security-scans; then
+                sed -i 's|^# DISABLED[^:]*: \(.*aide-telegram.*\)|\1|' /etc/cron.d/security-scans
+                ok "Re-enabled the aide-telegram cron entry"
+            fi
+            return 0
+        fi
+
+        note "reporters/aide-telegram.sh not found in this checkout."
+        note "Disabling the misleading green reports instead:"
         if [ -f /etc/cron.d/security-scans ]; then
             sed -i 's|^\([^#].*aide-telegram\.sh\)|# DISABLED - broken reporter: \1|' \
                 /etc/cron.d/security-scans
-            ok "Commented out the aide-telegram cron entry in /etc/cron.d/security-scans"
+            ok "Commented out the aide-telegram cron entry"
         fi
         note "A missing report is honest; a false green one is not."
         return 0
@@ -674,14 +691,36 @@ else
             fi
 
             if [ "$RK_REPORTER_BUGGY" = true ]; then
-                # Do not leave a reporter running that can only say "all clear"
-                if [ -f /etc/cron.d/security-scans ]; then
-                    sed -i 's|^\([^#].*rkhunter-telegram\.sh\)|# DISABLED - cannot detect an aborted scan: \1|' \
-                        /etc/cron.d/security-scans
-                    ok "Disabled the broken rkhunter-telegram cron entry"
+                if [ -f "$SCRIPT_DIR/reporters/rkhunter-telegram.sh" ]; then
+                    install -m 700 -o root -g root \
+                        "$SCRIPT_DIR/reporters/rkhunter-telegram.sh" /usr/local/bin/rkhunter-telegram.sh
+                    ok "Installed the corrected rkhunter reporter"
+                    note "It requires the 'System checks summary' line as proof the scan"
+                    note "completed, so an aborted scan can no longer report All Clear."
+
+                    if [ -f /etc/cron.d/security-scans ] && \
+                       grep -q '^# DISABLED.*rkhunter-telegram' /etc/cron.d/security-scans; then
+                        sed -i 's|^# DISABLED[^:]*: \(.*rkhunter-telegram.*\)|\1|' /etc/cron.d/security-scans
+                        ok "Re-enabled the rkhunter-telegram cron entry"
+                    fi
+                else
+                    # No replacement available - never leave a reporter running
+                    # that can only ever say "all clear"
+                    if [ -f /etc/cron.d/security-scans ]; then
+                        sed -i 's|^\([^#].*rkhunter-telegram\.sh\)|# DISABLED - cannot detect an aborted scan: \1|' \
+                            /etc/cron.d/security-scans
+                        ok "Disabled the broken rkhunter-telegram cron entry"
+                    fi
+                    note "reporters/rkhunter-telegram.sh not found in this checkout."
                 fi
-                note "Re-run the installer's security section for the corrected reporter:"
-                echo "      sudo bash $SCRIPT_DIR/install-script.sh --section   # choose 17"
+            fi
+
+            # Lynis uses the same credential file and the same install path
+            if [ -f "$SCRIPT_DIR/reporters/lynis-telegram.sh" ] && \
+               [ -f /usr/local/bin/lynis-telegram.sh ]; then
+                install -m 700 -o root -g root \
+                    "$SCRIPT_DIR/reporters/lynis-telegram.sh" /usr/local/bin/lynis-telegram.sh
+                ok "Refreshed the Lynis reporter (same credential file)"
             fi
 
             note "Refreshing the file property database and running one scan..."
