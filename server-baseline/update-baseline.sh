@@ -678,11 +678,12 @@ Fix: install aide-common and build the initial database. Takes 10-20 minutes." \
         # The evidence that AIDE completes lives in its last run's log instead.
         ok "AIDE resolves to: $AIDE_BIN"
 
-        local_last=$(ls -1t /var/log/aide-check-*.log /var/log/aide-refresh-*.log 2>/dev/null | head -1)
+        # Only logs written AFTER the current database say anything about the
+        # present. Earlier ones describe a baseline that no longer exists, so
+        # judging by them reports failures that a rebuild already resolved.
+        local_last=$(find /var/log -maxdepth 1                         \( -name 'aide-check-*.log' -o -name 'aide-refresh-*.log' \)                         -newer /var/lib/aide/aide.db 2>/dev/null |                      xargs -r ls -1t 2>/dev/null | head -1)
         if [ -z "$local_last" ]; then
-            note "No AIDE run has ever produced a log on this host."
-            note "Verify once, when you have the time:  aide-refresh --check-only"
-            ADVISORY+=("AIDE has never produced a run log - verify with: aide-refresh --check-only")
+            note "No AIDE run since the database was built - the first scheduled run is pending."
         elif grep -qE '^(ERROR|.*missing configuration|.*Invalid configure|.*Configuration error)' "$local_last" 2>/dev/null; then
             bad "The last AIDE run ended in an error - integrity is UNVERIFIED"
             note "See: $local_last"
@@ -1406,10 +1407,23 @@ else
             && DIRTY="$DIRTY proxyware-container"
     fi
 
+    # A rebuild costs 10-20 minutes. Offering it again on a database that was
+    # built an hour ago wastes that time and trains the operator to answer
+    # without reading - which is how a genuinely important prompt gets skipped
+    # later.
+    AIDE_DB_AGE=99999
+    if [ -f /var/lib/aide/aide.db ]; then
+        AIDE_DB_AGE=$(( ( $(date +%s) - $(stat -c %Y /var/lib/aide/aide.db) ) / 86400 ))
+    fi
+
     if [ -n "$DIRTY" ]; then
         bad "Compromise indicators present:$DIRTY"
         bad "NOT offering a baseline rebuild - that would make this state the reference."
         ADVISORY+=("Compromise indicators found ($DIRTY). Investigate before rebuilding the AIDE baseline.")
+    elif [ -f /var/lib/aide/aide.db ] && [ "$AIDE_DB_AGE" -lt 1 ]; then
+        ok "AIDE baseline was rebuilt today - nothing to do"
+        note "Keep it current with 'aide-refresh --reason ...' after deliberate changes."
+        CLEAN+=("aide-rebuild")
     elif [ ${#FAILED[@]} -gt 0 ]; then
         note "Some fixes above did not complete - resolve those first, then rebuild:"
         note "  sudo aideinit -y -f && sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db"
