@@ -28,6 +28,14 @@ SELECTED_SECTIONS=()  # Array to store selected section IDs
 CLOUDFLARE_ONLY=false  # When true, all Docker services bind to 127.0.0.1 and are only accessible via Cloudflare Tunnel
 DESKTOP_MODE=false     # When true, adapts script for Ubuntu Desktop (less restrictive security, desktop-friendly defaults)
 
+# Resolve this script's own location ONCE, before anything changes directory.
+# Several sections cd elsewhere (the Lynis install goes to /usr/local and never
+# comes back), after which any path derived from a relative $0 resolves against
+# the wrong directory - silently. That put the credential file in /usr/.env and
+# made the bundled reporters "not found".
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # Get the actual user (the one who ran sudo)
 # If running as root directly (not via sudo), find the first regular user
 ACTUAL_USER="${SUDO_USER:-}"
@@ -164,7 +172,7 @@ EOF
 # --verify delegates to security-selfcheck.sh so there is exactly one
 # implementation of "does this control actually work". Kept next to this script.
 run_verify_mode() {
-    local selfcheck="$(dirname "$(readlink -f "$0")")/security-selfcheck.sh"
+    local selfcheck="$SCRIPT_DIR/security-selfcheck.sh"
 
     if [ ! -f "$selfcheck" ]; then
         echo -e "${RED}Error: security-selfcheck.sh not found at $selfcheck${NC}" >&2
@@ -5002,11 +5010,14 @@ if [[ $install_lynis == "y" ]] || [[ $install_lynis == "Y" ]]; then
     sudo rm -f /usr/local/bin/lynis 2>/dev/null || true
     sudo rm -f /usr/sbin/lynis 2>/dev/null || true
 
-    # Extract to /usr/local
-    cd /usr/local
-    sudo tar xzf /tmp/lynis.tar.gz
-    sudo rm /tmp/lynis.tar.gz
-    sudo mv "lynis-${LYNIS_VERSION}" lynis || sudo mv lynis-* lynis
+    # Extract to /usr/local, in a subshell so the directory change cannot leak
+    # into the rest of the script.
+    (
+        cd /usr/local || exit 1
+        sudo tar xzf /tmp/lynis.tar.gz
+        sudo rm /tmp/lynis.tar.gz
+        sudo mv "lynis-${LYNIS_VERSION}" lynis || sudo mv lynis-* lynis
+    )
 
     # Create symlinks for compatibility
     sudo ln -sf /usr/local/lynis/lynis /usr/local/bin/lynis
@@ -5180,7 +5191,7 @@ if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT
     #
     # It lives with the project checkout, not in /etc. '.env' is already
     # gitignored, so it cannot be committed by accident.
-    PROJECT_ENV="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)/.env"
+    PROJECT_ENV="$PROJECT_ROOT/.env"
     printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' \
         "$SECURITY_TELEGRAM_BOT_TOKEN" "$SECURITY_TELEGRAM_CHAT_ID" | \
         sudo tee "$PROJECT_ENV" >/dev/null
@@ -5194,7 +5205,7 @@ if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT
     # Installed from server-baseline/reporters/ so update-baseline.sh can
     # deploy the identical script. Credentials are NOT written into it;
     # it reads /etc/server-baseline/selfcheck.env at runtime.
-    RKH_SRC="$(dirname "$(readlink -f "$0")")/reporters/rkhunter-telegram.sh"
+    RKH_SRC="$SCRIPT_DIR/reporters/rkhunter-telegram.sh"
     if [ -f "$RKH_SRC" ]; then
         sudo install -m 700 -o root -g root "$RKH_SRC" /usr/local/bin/rkhunter-telegram.sh
         sudo sed -i "s|^ENV_FILE_DEFAULT=.*|ENV_FILE_DEFAULT=\\"${PROJECT_ENV:-}\\"|" /usr/local/bin/rkhunter-telegram.sh 2>/dev/null || true
@@ -5214,7 +5225,7 @@ if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT
 
     # Create lynis Telegram wrapper script (only if installed)
     if [ "$LYNIS_INSTALLED" = true ]; then
-    LYN_SRC="$(dirname "$(readlink -f "$0")")/reporters/lynis-telegram.sh"
+    LYN_SRC="$SCRIPT_DIR/reporters/lynis-telegram.sh"
     if [ -f "$LYN_SRC" ]; then
         sudo install -m 700 -o root -g root "$LYN_SRC" /usr/local/bin/lynis-telegram.sh
         sudo sed -i "s|^ENV_FILE_DEFAULT=.*|ENV_FILE_DEFAULT=\\"${PROJECT_ENV:-}\\"|" /usr/local/bin/lynis-telegram.sh 2>/dev/null || true
@@ -5325,7 +5336,7 @@ Run it any time with: sudo security-selfcheck" \
             # within one cycle, which is worse than a stale database. It is
             # meant to be run after a deliberate change, and it reports what it
             # absorbed every time.
-            AIDE_REFRESH_SRC="$(dirname "$(readlink -f "$0")")/aide-refresh.sh"
+            AIDE_REFRESH_SRC="$SCRIPT_DIR/aide-refresh.sh"
             if [ -f "$AIDE_REFRESH_SRC" ]; then
                 sudo install -m 700 -o root -g root "$AIDE_REFRESH_SRC" /usr/local/bin/aide-refresh.sh
         sudo sed -i "s|^ENV_FILE_DEFAULT=.*|ENV_FILE_DEFAULT=\\"${PROJECT_ENV:-}\\"|" /usr/local/bin/aide-refresh.sh 2>/dev/null || true
@@ -5335,7 +5346,7 @@ Run it any time with: sudo security-selfcheck" \
                 log_info "  It reports which files it absorbs, and refuses to refresh on an AIDE error."
             fi
 
-            SELFCHECK_SRC="$(dirname "$(readlink -f "$0")")/security-selfcheck.sh"
+            SELFCHECK_SRC="$SCRIPT_DIR/security-selfcheck.sh"
 
             if [ -f "$SELFCHECK_SRC" ]; then
                 sudo install -m 700 -o root -g root "$SELFCHECK_SRC" /usr/local/bin/security-selfcheck.sh
@@ -5440,7 +5451,7 @@ deployed inside a single minute. A once-a-day check reports that far too late." 
             log_dry_run "Would create security-watchdog.service and .timer (every minute)"
             log_dry_run "Would schedule a monthly test alert to verify the alert path"
         else
-            WATCHDOG_SRC="$(dirname "$(readlink -f "$0")")/watchdogs/security-watchdog.sh"
+            WATCHDOG_SRC="$SCRIPT_DIR/watchdogs/security-watchdog.sh"
 
             if [ -f "$WATCHDOG_SRC" ]; then
                 sudo install -m 700 -o root -g root "$WATCHDOG_SRC" /usr/local/bin/security-watchdog.sh
@@ -5797,7 +5808,7 @@ EOF
                 if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT_ID" ]]; then
                     # Installed from server-baseline/reporters/ so
                     # update-baseline.sh can deploy the identical script.
-                    AIDE_SRC="$(dirname "$(readlink -f "$0")")/reporters/aide-telegram.sh"
+                    AIDE_SRC="$SCRIPT_DIR/reporters/aide-telegram.sh"
                     if [ -f "$AIDE_SRC" ]; then
                         sudo install -m 700 -o root -g root "$AIDE_SRC" /usr/local/bin/aide-telegram.sh
         sudo sed -i "s|^ENV_FILE_DEFAULT=.*|ENV_FILE_DEFAULT=\\"${PROJECT_ENV:-}\\"|" /usr/local/bin/aide-telegram.sh 2>/dev/null || true
