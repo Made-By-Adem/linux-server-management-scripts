@@ -958,12 +958,45 @@ if [ "${CF_TOKEN_EXPOSED:-0}" -gt 0 ]; then
             return 1
         fi
 
-        cp "$cf" "${cf}.bak.$(date +%Y%m%d_%H%M%S)"
-
+        # The detection for this section reads `ps`, not the file. So the file
+        # can already be correct while the RUNNING container still carries the
+        # old argv - which is exactly what happens after `docker restart`:
+        # that reuses the container's existing configuration and never re-reads
+        # docker-compose.yaml. Only `docker compose up -d` recreates it.
         if ! grep -q 'command:.*--token' "$cf"; then
-            bad "No --token found in $cf - patch it manually"
+            if grep -q 'TUNNEL_TOKEN' "$cf"; then
+                ok "The compose file is already correct - the running container is not"
+                note "It was created from the previous file. 'docker restart' reuses the"
+                note "existing container config; only 'up -d' rebuilds it from compose."
+                echo ""
+                echo "    Recreating briefly drops the tunnel - a few seconds of downtime"
+                echo "    for anything routed through it."
+                echo ""
+                read -r -p "    Recreate the cloudflared container now? (y/N): " do_recreate </dev/tty
+
+                if [[ "${do_recreate:-n}" =~ ^[Yy]$ ]]; then
+                    ( cd "$dir" && docker compose up -d ) || { bad "docker compose up -d failed"; return 1; }
+                    sleep 4
+                    if ps -eo args 2>/dev/null | grep -i cloudflared | grep -q -- '--token'; then
+                        bad "The token is still on the command line after recreating"
+                        return 1
+                    fi
+                    ok "Container recreated; the token is no longer in its argv"
+                    echo ""
+                    echo -e "    ${RED}${BOLD}ROTATE THE TUNNEL TOKEN.${NC} It was readable through /proc"
+                    echo "    for as long as it was on the command line."
+                    return 0
+                fi
+
+                note "Skipped. Recreate it yourself with:  cd $dir && docker compose up -d"
+                return 1
+            fi
+
+            bad "No --token and no TUNNEL_TOKEN in $cf - patch it manually"
             return 1
         fi
+
+        cp "$cf" "${cf}.bak.$(date +%Y%m%d_%H%M%S)"
 
         sed -i 's|^\(\s*\)command:.*--token.*|\1command: tunnel --no-autoupdate run\n\1environment:\n\1  - TUNNEL_TOKEN=${CF_TOKEN}|' "$cf"
 
