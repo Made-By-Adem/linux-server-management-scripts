@@ -953,9 +953,17 @@ elif ufw status 2>/dev/null | grep -qE '^22/tcp\s+ALLOW\s+Anywhere'; then
     echo "      2. Open a SECOND terminal:"
     echo "           ssh -p 888 $LOGIN_USER@$HOST_IP"
     echo "      3. Only if that works, run IN THAT SECOND SESSION:"
-    echo "           sudo sed -i '/^Port 22\$/d' /etc/ssh/sshd_config"
-    echo "           sudo systemctl restart ssh"
+    if systemctl is-active ssh.socket >/dev/null 2>&1; then
+        echo "           # Socket activation is in use on this host: the port lives in"
+        echo "           # ssh.socket. Editing sshd_config would do NOTHING here."
+        echo "           sudo sed -i '/:22\$/d' /etc/systemd/system/ssh.socket.d/ports.conf"
+        echo "           sudo systemctl daemon-reload && sudo systemctl restart ssh.socket"
+    else
+        echo "           sudo sed -i '/^Port 22\$/d' /etc/ssh/sshd_config"
+        echo "           sudo systemctl restart ssh"
+    fi
     echo "           sudo ufw delete allow 22/tcp"
+    echo "           sudo ss -tlnp | grep ':22 '     # must print nothing"
     echo "      4. Open a THIRD terminal, confirm 888 still works,"
     echo "         and only then close the first."
     echo ""

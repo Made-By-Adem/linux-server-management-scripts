@@ -3569,11 +3569,21 @@ else
         echo ""
         echo "        ssh -p 888 $ACTUAL_USER@$SERVER_IP"
         echo ""
-        echo "  3. Only if that second session works, run IN THAT SESSION:"
+        echo "  3. Only if that second session works, run IN THAT SESSION."
+        echo "     The command depends on which mechanism owns the port -"
+        echo "     the script will tell you which at the end of the run:"
         echo ""
+        echo "     With socket activation (Ubuntu 22.10+, Debian 12):"
+        echo "        sudo sed -i '/:22\$/d' /etc/systemd/system/ssh.socket.d/ports.conf"
+        echo "        sudo systemctl daemon-reload && sudo systemctl restart ssh.socket"
+        echo ""
+        echo "     Without socket activation:"
         echo "        sudo sed -i '/^Port 22\$/d' /etc/ssh/sshd_config"
         echo "        sudo systemctl restart ssh"
+        echo ""
+        echo "     Then in both cases:"
         echo "        sudo ufw delete allow 22/tcp"
+        echo "        sudo ss -tlnp | grep ':22 '     # must print nothing"
         echo ""
         echo "  4. Now open a THIRD terminal and confirm you can still get in"
         echo "     on 888. Only then close the first terminal."
@@ -3720,13 +3730,54 @@ else
         log_info "SSH forwarding disabled (maximum security)"
     fi
 
-    if [ "$DESKTOP_MODE" = true ]; then
-        # Desktop: only port 22
-        grep -q "^Port 22$" /etc/ssh/sshd_config || echo "Port 22" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+    # ------------------------------------------------------------------------
+    # Listening ports: ONE source of truth
+    #
+    # Ubuntu 22.10+ and Debian 12 socket-activate sshd through ssh.socket. When
+    # that is in use, sshd_config's Port directive is IGNORED entirely - the
+    # kernel socket is opened by systemd and handed to sshd. Writing the port to
+    # both places produces two settings that can silently disagree, and makes
+    # "delete Port 22 from sshd_config" a no-op that leaves the port wide open.
+    #
+    # So: whichever mechanism is actually in charge is the only one configured.
+    if systemctl is-enabled ssh.socket >/dev/null 2>&1 || \
+       systemctl is-active ssh.socket >/dev/null 2>&1; then
+        SSH_SOCKET_ACTIVATED=true
     else
-        # Server: BOTH port 22 and 888 (idempotent - only if not present)
-        grep -q "^Port 22$" /etc/ssh/sshd_config || echo "Port 22" | sudo tee -a /etc/ssh/sshd_config >/dev/null
-        grep -q "^Port 888$" /etc/ssh/sshd_config || echo "Port 888" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+        SSH_SOCKET_ACTIVATED=false
+    fi
+
+    if [ "$SSH_SOCKET_ACTIVATED" = true ]; then
+        # ssh.socket owns the ports. Keep sshd_config free of Port directives so
+        # there is nothing to contradict it and nothing misleading to edit.
+        sudo sed -i '/^#\?Port /d' /etc/ssh/sshd_config
+        if ! grep -q "^# Listening ports are managed by ssh.socket" /etc/ssh/sshd_config; then
+            {
+                echo ""
+                echo "# Listening ports are managed by ssh.socket, not by this file."
+                echo "# systemd opens the socket and hands it to sshd, so a Port directive"
+                echo "# here has NO effect. Change ports in:"
+                echo "#   /etc/systemd/system/ssh.socket.d/ports.conf"
+                echo "# then: systemctl daemon-reload && systemctl restart ssh.socket"
+            } | sudo tee -a /etc/ssh/sshd_config >/dev/null
+        fi
+        log_info "Socket activation detected: ssh.socket is the single source of truth for ports"
+        log_info "  sshd_config Port directives removed (they would be ignored anyway)"
+    else
+        # No socket activation: sshd_config is authoritative. Do not leave a
+        # ports.conf behind that would take over after a distribution upgrade.
+        if [ -f /etc/systemd/system/ssh.socket.d/ports.conf ]; then
+            sudo rm -f /etc/systemd/system/ssh.socket.d/ports.conf
+            sudo systemctl daemon-reload 2>/dev/null || true
+            log_info "Removed stale ssh.socket.d/ports.conf (socket activation is not in use)"
+        fi
+        if [ "$DESKTOP_MODE" = true ]; then
+            grep -q "^Port 22$" /etc/ssh/sshd_config || echo "Port 22" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+        else
+            grep -q "^Port 22$" /etc/ssh/sshd_config || echo "Port 22" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+            grep -q "^Port 888$" /etc/ssh/sshd_config || echo "Port 888" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+        fi
+        log_info "No socket activation: sshd_config is the single source of truth for ports"
     fi
 
     # Add additional SSH hardening if not present (already idempotent)
@@ -3842,8 +3893,11 @@ else
         log_info "Configuring systemd SSH socket for ports 22 and 888..."
     fi
 
-    # Check if ssh.socket exists (Ubuntu uses systemd socket activation)
-    if systemctl list-unit-files | grep -q "ssh.socket"; then
+    # Only configure ssh.socket when it is genuinely in charge. The unit file
+    # exists on Ubuntu whether or not socket activation is enabled, so testing
+    # for its presence (as this did before) would create a ports.conf on hosts
+    # where sshd_config is authoritative - two sources of truth again.
+    if [ "${SSH_SOCKET_ACTIVATED:-false}" = true ]; then
         log_info "Detected systemd socket activation, configuring ssh.socket..."
 
         # Create systemd override directory
@@ -7502,9 +7556,18 @@ else
         echo "          ssh -p 888 $ACTUAL_USER@$SERVER_IP"
         echo ""
         echo "     b) Only if that works, run IN THAT SECOND SESSION:"
-        echo "          sudo sed -i '/^Port 22\$/d' /etc/ssh/sshd_config"
-        echo "          sudo systemctl restart ssh"
+        if [ "${SSH_SOCKET_ACTIVATED:-false}" = true ]; then
+            echo "          # This host uses socket activation - the port lives in"
+            echo "          # ssh.socket, NOT in sshd_config. Editing sshd_config does nothing."
+            echo "          sudo sed -i '/:22\$/d' /etc/systemd/system/ssh.socket.d/ports.conf"
+            echo "          sudo systemctl daemon-reload && sudo systemctl restart ssh.socket"
+        else
+            echo "          sudo sed -i '/^Port 22\$/d' /etc/ssh/sshd_config"
+            echo "          sudo systemctl restart ssh"
+        fi
         echo "          sudo ufw delete allow 22/tcp"
+        echo ""
+        echo "     Confirm it is really gone:  sudo ss -tlnp | grep ':22 '"
         echo ""
         echo "     c) Open a THIRD terminal, confirm 888 still works,"
         echo "        and only then close this one."

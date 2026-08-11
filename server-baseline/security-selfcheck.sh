@@ -204,6 +204,29 @@ else
     pass "sshd listens on: $SSH_PORTS (port 22 is closed)"
 fi
 
+# Where is the port actually configured? On a socket-activated host the Port
+# directive in sshd_config is ignored entirely, so a leftover "Port 22" there is
+# both misleading and a trap: deleting it looks like it closed the port when it
+# changed nothing at all.
+SOCKET_ON=false
+/bin/systemctl is-active ssh.socket >/dev/null 2>&1 && SOCKET_ON=true
+CONF_PORTS=$(/bin/grep -oE '^Port +[0-9]+' /etc/ssh/sshd_config 2>/dev/null | /bin/grep -oE '[0-9]+' | sort -u | /bin/tr '\n' ' ')
+
+if [ "$SOCKET_ON" = true ]; then
+    if [ -n "$CONF_PORTS" ]; then
+        warn "Socket activation is in use, but sshd_config still sets Port: $CONF_PORTS"
+        warn "  Those lines are IGNORED. Editing them will not change anything."
+        warn "  The real ports live in /etc/systemd/system/ssh.socket.d/ports.conf"
+    else
+        pass "Port configured in one place only (ssh.socket)"
+    fi
+elif [ -f /etc/systemd/system/ssh.socket.d/ports.conf ]; then
+    warn "sshd_config is authoritative, but a stale ssh.socket.d/ports.conf exists"
+    warn "  It would take over if socket activation is ever enabled. Remove it."
+else
+    pass "Port configured in one place only (sshd_config)"
+fi
+
 if [ -n "${SSH_PORTS##*none*}" ]; then
     UNEXPECTED_SSH=""
     for p in $SSH_PORTS; do

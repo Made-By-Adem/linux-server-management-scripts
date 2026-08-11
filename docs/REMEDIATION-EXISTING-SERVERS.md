@@ -354,6 +354,24 @@ docker ps --format '{{.Names}}\t{{.Ports}}' | grep -E '0\.0\.0\.0:|:::'
 ss -tlnp | grep -vE '127\.0\.0\.1|::1'
 ```
 
+> **Before you close port 22 anywhere:** find out which mechanism owns it.
+> On Ubuntu 22.10+ and Debian 12 sshd is socket-activated, and the `Port`
+> directive in `sshd_config` is **ignored** — systemd opens the socket and hands
+> it to sshd. Deleting `Port 22` from `sshd_config` on such a host looks like it
+> worked and changes nothing.
+>
+> ```bash
+> systemctl is-active ssh.socket        # active  -> ssh.socket owns the port
+> ```
+>
+> | Owner | Where to change the port | Reload with |
+> | --- | --- | --- |
+> | `ssh.socket` active | `/etc/systemd/system/ssh.socket.d/ports.conf` | `systemctl daemon-reload && systemctl restart ssh.socket` |
+> | otherwise | `/etc/ssh/sshd_config` | `systemctl restart ssh` |
+>
+> Confirm either way with `ss -tlnp | grep ':22 '` — it must print nothing.
+> `update-baseline.sh` detects which applies and prints the right command.
+
 **Option A — bind to localhost (preferred).** Change the port mappings in each
 compose file from `"9443:9443"` to `"127.0.0.1:9443:9443"` and reach the service
 through Cloudflare Tunnel or a VPN. Then `docker compose up -d`.
