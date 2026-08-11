@@ -925,6 +925,48 @@ else
     log_info "Internet connectivity confirmed"
 fi
 
+# Check that the package manager is in a usable state.
+#
+# An interrupted dpkg transaction makes every subsequent apt call fail. Without
+# this check the script carries on regardless, reporting a long list of failed
+# package installs that all share one cause and none of which say what it is -
+# which is how twenty minutes get spent on the wrong problem.
+if [ "$DRY_RUN" != true ]; then
+    log_info "Checking package manager state..."
+    if ! DEBIAN_FRONTEND=noninteractive sudo dpkg --audit >/dev/null 2>&1 || \
+       [ -n "$(ls -A /var/lib/dpkg/updates/ 2>/dev/null)" ] || \
+       sudo apt-get check 2>&1 | grep -q 'dpkg was interrupted'; then
+
+        log_warning "dpkg is in an interrupted state - every package install will fail"
+        echo ""
+        echo "This usually means a previous transaction was cut short, often by a"
+        echo "configuration dialog that was closed or answered unexpectedly."
+        echo ""
+        echo "The repair runs with DEBIAN_FRONTEND=noninteractive, so any pending"
+        echo "dialog takes its default answer. For the GRUB removal question that"
+        echo "default is 'No', which is the safe one."
+        echo ""
+        read -p "Repair it now with 'dpkg --configure -a'? (Y/n): " fix_dpkg
+        fix_dpkg=${fix_dpkg:-y}
+
+        if [[ $fix_dpkg =~ ^[Yy]$ ]]; then
+            DEBIAN_FRONTEND=noninteractive sudo dpkg --configure -a || \
+                log_warning "dpkg --configure -a reported problems"
+            DEBIAN_FRONTEND=noninteractive sudo apt-get -f install -y >/dev/null 2>&1 || true
+
+            if sudo apt-get check >/dev/null 2>&1; then
+                log_info "✓ Package manager repaired"
+            else
+                handle_error "Package manager is still broken. Fix it by hand before re-running: sudo dpkg --configure -a"
+            fi
+        else
+            handle_error "Cannot continue with a broken package manager. Run: sudo dpkg --configure -a"
+        fi
+    else
+        log_info "Package manager state is clean"
+    fi
+fi
+
 # Timezone Configuration
 if ask_component_install \
     "TIMEZONE CONFIGURATION" \
