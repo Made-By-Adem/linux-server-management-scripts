@@ -563,7 +563,7 @@ elif grep -q 'grep "\^Added:"' /usr/local/bin/aide-telegram.sh 2>/dev/null; then
                 "$SCRIPT_DIR/reporters/aide-telegram.sh" /usr/local/bin/aide-telegram.sh
             ok "Installed the corrected AIDE reporter"
             note "It decides on the exit code, refuses to refresh the database on an"
-            note "AIDE error, and reads credentials from /etc/server-baseline/selfcheck.env"
+            note "AIDE error, and reads credentials from $CRED_FILE"
 
             # Re-enable a cron entry an earlier run of this script disabled
             if [ -f /etc/cron.d/security-scans ] && \
@@ -1164,7 +1164,7 @@ elif ! grep -qE '^Port +[0-9]+' /etc/ssh/sshd_config 2>/dev/null; then
     CLEAN+=("ssh-port-single-source")
 else
     echo "    sshd_config still contains: $(grep -E '^Port +[0-9]+' /etc/ssh/sshd_config | tr '\n' ' ')"
-    echo "    Actually listening on:      $(ss -tlnH 2>/dev/null | grep -i sshd | grep -oE ':[0-9]+ ' | tr -d ': ' | sort -u | tr '\n' ' ')"
+    echo "    Actually listening on:      $(ss -tlnpH 2>/dev/null | grep -i sshd | grep -oE ':[0-9]+ ' | tr -d ': ' | sort -u | tr '\n' ' ')"
 
     ssh_port_fix() {
         cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak.$(date +%Y%m%d_%H%M%S)"
@@ -1184,7 +1184,7 @@ else
         if sshd -t 2>/dev/null; then
             ok "Removed the ignored Port directives; sshd config still validates"
             note "Nothing was restarted. Listening ports are unchanged:"
-            note "  $(ss -tlnH 2>/dev/null | grep -i sshd | grep -oE ':[0-9]+ ' | tr -d ': ' | sort -u | tr '\n' ' ')"
+            note "  $(ss -tlnpH 2>/dev/null | grep -i sshd | grep -oE ':[0-9]+ ' | tr -d ': ' | sort -u | tr '\n' ' ')"
             return 0
         fi
         bad "sshd -t failed after the edit - restoring the backup"
