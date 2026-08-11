@@ -26,6 +26,7 @@
 #     persistence-files           /etc/profile, /root/.profile, /etc/cron* contents
 #     tmpfs-exec                  executable files appearing in /tmp, /var/tmp, /dev/shm
 #     path-hijack                 .local/bin under a system path, shim directories
+#     hidden-dirs                 hidden working directories under system paths
 #     ld-preload                  /etc/ld.so.preload is non-empty
 #     ufw                         firewall disabled or default policy changed
 #     docker-daemons              a second dockerd/containerd appearing
@@ -50,7 +51,7 @@
 #   TELEGRAM_CHAT_ID=...
 #   WATCH_UNITS="auditd fail2ban acct"
 #   WATCH_JAIL="sshd"                   # "" disables the jail check
-#   WATCH_MONITORS="listeners root-keys persistence-files tmpfs-exec path-hijack ld-preload ufw docker-daemons container-images boot-id"
+#   WATCH_MONITORS="listeners root-keys persistence-files tmpfs-exec path-hijack hidden-dirs ld-preload ufw docker-daemons container-images boot-id"
 #
 # Drop any monitor from WATCH_MONITORS that turns out to be too noisy for your
 # environment. Each one is independent.
@@ -72,7 +73,7 @@ TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${SECRET_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-${CHAT_ID_PERSON1:-}}"
 WATCH_UNITS="${WATCH_UNITS:-auditd fail2ban acct}"
 WATCH_JAIL="${WATCH_JAIL-sshd}"
-WATCH_MONITORS="${WATCH_MONITORS:-listeners root-keys persistence-files tmpfs-exec path-hijack ld-preload ufw docker-daemons container-images boot-id}"
+WATCH_MONITORS="${WATCH_MONITORS:-listeners root-keys persistence-files tmpfs-exec path-hijack hidden-dirs ld-preload ufw docker-daemons container-images boot-id}"
 
 MODE="check"
 case "${1:-}" in
@@ -192,6 +193,7 @@ monitor_title() {
         persistence-files) echo "STARTUP OR CRON FILE CHANGED" ;;
         tmpfs-exec)        echo "EXECUTABLE IN A TEMPORARY DIRECTORY" ;;
         path-hijack)      echo "PATH HIJACK DETECTED" ;;
+        hidden-dirs)      echo "HIDDEN DIRECTORY UNDER A SYSTEM PATH" ;;
         ld-preload)       echo "LD_PRELOAD HIJACK DETECTED" ;;
         ufw)              echo "FIREWALL STATE CHANGED" ;;
         docker-daemons)   echo "DOCKER DAEMON SET CHANGED" ;;
@@ -211,6 +213,8 @@ monitor_impact() {
             echo "A file that runs automatically changed - a login shell profile or a cron entry. This is where persistence is installed: one appended line survives every reboot. Package upgrades legitimately touch /etc/cron.daily, so check whether an upgrade ran." ;;
         tmpfs-exec)
             echo "An executable file appeared in a world-writable directory. This is the standard staging pattern: write the payload somewhere anyone can write, then run it. If these directories are mounted noexec it cannot execute, but its presence still needs explaining." ;;
+        hidden-dirs)
+            echo "A hidden directory appeared where nothing legitimate lives. This kit family used /usr/bin/wbin for its second Docker daemon, /var/.i.* and /tmp/.t.* as working directories, and /dev/shm/.config for proxyware configuration." ;;
         path-hijack)
             echo "A directory under a system path now precedes /usr/bin in PATH. This is how top, htop, lsof, crontab, df and mount get replaced with versions that filter their own output. Treat every observation made through those tools as unreliable." ;;
         ld-preload)
@@ -232,7 +236,7 @@ monitor_impact() {
 # info = context only. Drives the emoji and nothing else.
 monitor_level() {
     case "$1" in
-        path-hijack|ld-preload|docker-daemons) echo "crit" ;;
+        path-hijack|ld-preload|docker-daemons|hidden-dirs) echo "crit" ;;
         persistence-files|tmpfs-exec)          echo "warn" ;;
         boot-id)                               echo "info" ;;
         *)                                     echo "warn" ;;
@@ -244,7 +248,7 @@ monitor_level() {
 # that state silently accepted as the baseline.
 monitor_expects_empty() {
     case "$1" in
-        path-hijack|ld-preload|tmpfs-exec) return 0 ;;
+        path-hijack|ld-preload|tmpfs-exec|hidden-dirs) return 0 ;;
         *)                      return 1 ;;
     esac
 }
@@ -341,9 +345,25 @@ monitor_snapshot() {
         ;;
 
     container-images)
+        # 'ps -a', not 'ps': the loader containers in the incident ran for well
+        # under a minute each. A poll of running containers alone would have
+        # missed them entirely; as exited containers they stayed visible for
+        # hours. Anything started with --rm still escapes this.
         if command -v docker >/dev/null 2>&1; then
-            docker ps --format '{{.Image}}' 2>/dev/null | sort -u
+            docker ps -a --format '{{.Image}}' 2>/dev/null | sort -u
         fi
+        ;;
+
+    hidden-dirs)
+        # Working directories used by this kit family. Each is a hidden name
+        # under a system path, where nothing legitimate lives.
+        for d in /usr/bin/wbin /bin/wbin /usr/lib/exi /dev/shm/.config \
+                 /root/.config/cron; do
+            [ -e "$d" ] && echo "dir: $d"
+        done
+        ls -d /var/.i.* /tmp/.t.* /var/tmp/.* 2>/dev/null | \
+            grep -vE '/\.{1,2}$' | sed 's/^/dir: /'
+        true
         ;;
 
     boot-id)

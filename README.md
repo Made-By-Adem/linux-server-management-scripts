@@ -415,10 +415,11 @@ alert says *what* changed, not merely that something did.
 | `persistence-files` | Any change to `/etc/profile`, `/root/.profile`, `/etc/crontab` or any `/etc/cron.*` entry — not just the hijack signature |
 | `tmpfs-exec` | An executable file appears in `/tmp`, `/var/tmp` or `/dev/shm` |
 | `path-hijack` | `.local/bin` under a system path, or a replaced `top`/`crontab`/`lsof` |
+| `hidden-dirs` | A hidden working directory appears: `/usr/bin/wbin`, `/var/.i.*`, `/tmp/.t.*`, `/dev/shm/.config`, `/usr/lib/exi` |
 | `ld-preload` | `/etc/ld.so.preload` becomes non-empty |
 | `ufw` | The firewall is disabled or a default policy changes |
 | `docker-daemons` | A second `dockerd`/`containerd` appears |
-| `container-images` | A container image never seen on this host starts running |
+| `container-images` | A container image never seen on this host appears — `docker ps -a`, so short-lived loader containers are still caught after they exit |
 | `boot-id` | The machine rebooted — context for the service alerts that follow |
 
 Drop any of them via `WATCH_MONITORS` in `/etc/server-baseline/selfcheck.env` if
