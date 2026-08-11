@@ -3708,7 +3708,7 @@ else
             echo ""
             echo "If you continue without SSH keys, you may be LOCKED OUT!"
             echo ""
-            echo "Recommended: Cancel now (Ctrl+C) and run: ssh-copy-id $USER@$(hostname -I | awk '{print $1}')"
+            echo "Recommended: Cancel now (Ctrl+C) and run: ssh-copy-id ${USER:-$ACTUAL_USER}@$(hostname -I | awk '{print $1}')"
             echo "═══════════════════════════════════════════════════════════"
             read -p "Continue anyway? (y/N): " continue_without_keys
             continue_without_keys=${continue_without_keys:-n}
@@ -6276,17 +6276,21 @@ Owner: $ACTUAL_USER" \
         log_info "Creating project directory structure..."
 
         # Verify we're creating directories in the correct user's home
-        if [ "$USER_HOME" = "/root" ] && [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
-            log_warning "Detected USER_HOME points to /root but script was run with sudo by $SUDO_USER"
+        # SUDO_USER is unset when the script is run from a root shell rather
+        # than through sudo, and `set -u` turns a bare reference into a fatal
+        # error - two thirds of the way through an installation.
+        SUDO_INVOKER="${SUDO_USER:-}"
+        if [ "$USER_HOME" = "/root" ] && [ -n "$SUDO_INVOKER" ] && [ "$SUDO_INVOKER" != "root" ]; then
+            log_warning "Detected USER_HOME points to /root but script was run with sudo by $SUDO_INVOKER"
             log_warning "Correcting to use actual user's home directory..."
             # Use getent to get the correct home directory
-            CORRECTED_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+            CORRECTED_HOME=$(getent passwd "$SUDO_INVOKER" | cut -d: -f6)
             if [ -n "$CORRECTED_HOME" ] && [ "$CORRECTED_HOME" != "/" ]; then
                 USER_HOME="$CORRECTED_HOME"
                 log_info "Using corrected home directory: $USER_HOME"
             else
-                log_warning "Could not determine correct home directory, using /home/$SUDO_USER"
-                USER_HOME="/home/$SUDO_USER"
+                log_warning "Could not determine correct home directory, using /home/$SUDO_INVOKER"
+                USER_HOME="/home/$SUDO_INVOKER"
             fi
         fi
 
