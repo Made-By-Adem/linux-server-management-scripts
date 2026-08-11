@@ -73,11 +73,16 @@ header() {
 # pulls a fix, the script reports the component as correct, and the stale copy
 # keeps running. That is how the watchdog on the first real host kept reading
 # the old credential location after the refactor that moved it.
+#
+# ENV_FILE_DEFAULT is rewritten in the installed copy at install time, so a
+# byte-for-byte comparison can never match and every run would reinstall,
+# re-bake, and report the component as "fixed" again. That line is excluded.
 needs_refresh() {
     local repo_file="$1" installed="$2"
     [ -f "$repo_file" ] || return 1
     [ -f "$installed" ] || return 0
-    ! cmp -s "$repo_file" "$installed"
+    ! diff -q <(grep -v '^ENV_FILE_DEFAULT=' "$repo_file") \
+              <(grep -v '^ENV_FILE_DEFAULT=' "$installed") >/dev/null 2>&1
 }
 
 # offer <id> <title> <why> <fix_function>
@@ -496,6 +501,7 @@ else
         install -m 700 -o root -g root \
             "$SCRIPT_DIR/watchdogs/security-watchdog.sh" /usr/local/bin/security-watchdog.sh
         ln -sf /usr/local/bin/security-watchdog.sh /usr/local/bin/security-watchdog
+        bake_env_path /usr/local/bin/security-watchdog.sh
 
         cat > /etc/systemd/system/security-watchdog.service <<'EOF'
 [Unit]
@@ -567,6 +573,7 @@ for r in aide rkhunter lynis; do
         install -m 700 -o root -g root \
             "$SCRIPT_DIR/reporters/${r}-telegram.sh" "/usr/local/bin/${r}-telegram.sh"
         ok "Refreshed the ${r} reporter from this checkout"
+        bake_env_path "/usr/local/bin/${r}-telegram.sh"
     fi
 done
 
@@ -1245,12 +1252,14 @@ else
         install -m 700 -o root -g root \
             "$SCRIPT_DIR/security-selfcheck.sh" /usr/local/bin/security-selfcheck.sh
         ln -sf /usr/local/bin/security-selfcheck.sh /usr/local/bin/security-selfcheck
+        bake_env_path /usr/local/bin/security-selfcheck.sh
 
         # Baseline refresh helper - run after deliberate changes, never on a timer
         if [ -f "$SCRIPT_DIR/aide-refresh.sh" ]; then
             install -m 700 -o root -g root \
                 "$SCRIPT_DIR/aide-refresh.sh" /usr/local/bin/aide-refresh.sh
             ln -sf /usr/local/bin/aide-refresh.sh /usr/local/bin/aide-refresh
+            bake_env_path /usr/local/bin/aide-refresh.sh
             ok "Installed aide-refresh (run after upgrades: aide-refresh --reason '...')"
         fi
 
