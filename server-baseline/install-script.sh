@@ -4995,15 +4995,36 @@ if [[ $install_lynis == "y" ]] || [[ $install_lynis == "Y" ]]; then
         log_info "Latest Lynis version: $LYNIS_VERSION"
     fi
 
-    # Download and install
-    cd /tmp
-    sudo wget -q "https://github.com/CISOfy/lynis/archive/refs/tags/${LYNIS_VERSION}.tar.gz" -O lynis.tar.gz
+    # Download and install.
+    #
+    # The previous version ran `wget -q ...` and then tested $? for a retry.
+    # With `set -e` active the script exits on the failing wget before ever
+    # reaching that test, so the fallback was unreachable code and a transient
+    # network problem aborted the entire installation. -q also hid the reason.
+    #
+    # Lynis is optional tooling. A download failure warns and moves on.
+    LYNIS_DOWNLOADED=false
+    for try_version in "$LYNIS_VERSION" "3.1.6"; do
+        log_info "Downloading Lynis ${try_version}..."
+        if sudo wget --tries=2 --timeout=20 \
+                "https://github.com/CISOfy/lynis/archive/refs/tags/${try_version}.tar.gz" \
+                -O /tmp/lynis.tar.gz 2>/tmp/lynis-download.err; then
+            LYNIS_VERSION="$try_version"
+            LYNIS_DOWNLOADED=true
+            break
+        fi
+        log_warning "Download of Lynis ${try_version} failed"
+        sed 's/^/    /' /tmp/lynis-download.err 2>/dev/null | tail -3
+        [ "$try_version" = "3.1.6" ] || log_warning "Retrying with the pinned version..."
+    done
 
-    if [ $? -ne 0 ]; then
-        log_warning "Failed to download Lynis. Trying with version 3.1.6..."
-        LYNIS_VERSION="3.1.6"
-        sudo wget -q "https://github.com/CISOfy/lynis/archive/refs/tags/${LYNIS_VERSION}.tar.gz" -O lynis.tar.gz
-    fi
+    if [ "$LYNIS_DOWNLOADED" != true ]; then
+        log_warning "Could not download Lynis - skipping it and continuing"
+        log_warning "  Everything else on this host is unaffected."
+        log_warning "  Install it later with: bash $SCRIPT_DIR/install-script.sh --section  (choose 16)"
+        LYNIS_INSTALLED=false
+        sudo rm -f /tmp/lynis.tar.gz /tmp/lynis-download.err 2>/dev/null || true
+    else
 
     # Remove old installation if exists
     sudo rm -rf /usr/local/lynis 2>/dev/null || true
@@ -5036,6 +5057,7 @@ if [[ $install_lynis == "y" ]] || [[ $install_lynis == "Y" ]]; then
         log_warning "Lynis installation verification failed"
         LYNIS_INSTALLED=false
     fi
+    fi   # end of: download succeeded
 else
     log_warning "Lynis installation skipped"
 fi
