@@ -518,11 +518,43 @@ else
 
         rkhunter_fix() {
             if [ "$RK_CONFIG_OK" = false ]; then
-                note "Configuration errors, which must be resolved first:"
+                note "Configuration errors reported by rkhunter:"
                 rkhunter --config-check 2>&1 | head -10 | sed 's/^/      /'
-                note "Common cause on Ubuntu: obsolete options left behind by a package upgrade."
-                note "Fix /etc/rkhunter.conf, then re-run this script."
-                return 1
+
+                # rkhunter names the options it does not understand. Commenting
+                # those out is safe by definition - it is already refusing to
+                # act on them - and it is what stands between this host and a
+                # working rootkit scan.
+                #
+                # PORT_NUMBER in particular was written by an earlier version of
+                # THIS repo's install script. It is not an rkhunter option, and
+                # its presence aborted every scan while the daily report kept
+                # saying "All Clear".
+                local unknown
+                unknown=$(rkhunter --config-check 2>&1 | \
+                          grep -oE 'Unknown configuration file option: [A-Z_]+' | \
+                          awk '{print $NF}' | sort -u)
+
+                if [ -z "$unknown" ]; then
+                    note "The errors above are not unknown-option errors - fix them by hand,"
+                    note "then re-run this script."
+                    return 1
+                fi
+
+                cp /etc/rkhunter.conf "/etc/rkhunter.conf.bak.$(date +%Y%m%d_%H%M%S)"
+                for opt in $unknown; do
+                    sed -i "s/^${opt}=/# DISABLED - not a valid rkhunter option: ${opt}=/" /etc/rkhunter.conf
+                    ok "Commented out invalid option: $opt"
+                done
+
+                if rkhunter --config-check >/dev/null 2>&1; then
+                    ok "Configuration is valid again"
+                    RK_CONFIG_OK=true
+                else
+                    bad "Still invalid after removing the unknown options:"
+                    rkhunter --config-check 2>&1 | head -10 | sed 's/^/      /'
+                    return 1
+                fi
             fi
 
             if [ "$RK_REPORTER_BUGGY" = true ]; then
@@ -627,12 +659,38 @@ OTHER_SECRETS=$(ps -eo args 2>/dev/null | grep -iE -- '--token[= ]|--password[= 
 
 if [ "${CF_TOKEN_EXPOSED:-0}" -gt 0 ]; then
     cf_fix() {
-        local dir
-        dir=$(docker inspect --format='{{index .Config.Labels "com.docker.compose.project.working_dir"}}' \
-              cloudflared 2>/dev/null)
-        if [ -z "$dir" ] || [ "$dir" = "<no value>" ]; then
-            dir="$(getent passwd "$LOGIN_USER" | cut -d: -f6)/docker/cloudflare"
+        # Find the container by IMAGE, not by an assumed name, and ask compose
+        # where its project lives. Guessing "$HOME/docker/cloudflare" fails as
+        # soon as the stack lives anywhere else - or, when running as root
+        # without sudo, looks under /root for a stack owned by someone else.
+        local cname dir
+        cname=$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null | \
+                awk '/cloudflared/{print $1; exit}')
+
+        dir=""
+        if [ -n "$cname" ]; then
+            dir=$(docker inspect --format='{{index .Config.Labels "com.docker.compose.project.working_dir"}}' \
+                  "$cname" 2>/dev/null)
+            [ "$dir" = "<no value>" ] && dir=""
         fi
+
+        # Fall back to locating the compose file that actually mentions cloudflared
+        if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+            local found
+            found=$(find /root /home /opt /srv -maxdepth 5 -name 'docker-compose.y*ml' \
+                    -exec grep -l cloudflared {} + 2>/dev/null | head -1)
+            [ -n "$found" ] && dir=$(dirname "$found")
+        fi
+
+        if [ -z "$dir" ]; then
+            bad "Could not locate a cloudflared compose file anywhere under /root /home /opt /srv"
+            note "Patch it manually: replace the --token argument with"
+            note "  command: tunnel --no-autoupdate run"
+            note "  environment:"
+            note "    - TUNNEL_TOKEN=\${CF_TOKEN}"
+            return 1
+        fi
+        ok "Found the cloudflared stack in $dir"
 
         local cf=""
         for f in "$dir/docker-compose.yaml" "$dir/docker-compose.yml"; do

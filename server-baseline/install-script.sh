@@ -4881,7 +4881,20 @@ if [[ $install_rkhunter == "y" ]] || [[ $install_rkhunter == "Y" ]]; then
     # Configure rkhunter for this server's SSH setup
     log_info "Configuring rkhunter for custom SSH port..."
     sudo sed -i 's/^#\?ALLOW_SSH_ROOT_USER=.*/ALLOW_SSH_ROOT_USER=prohibit-password/' /etc/rkhunter.conf
-    sudo sed -i 's/^#\?PORT_NUMBER=.*/PORT_NUMBER=888/' /etc/rkhunter.conf
+
+    # PORT_NUMBER is NOT an rkhunter configuration option. An earlier version of
+    # this script set it, and rkhunter then refused the whole configuration with
+    # "Unknown configuration file option: PORT_NUMBER=888" and aborted every
+    # scan from that point on - while the daily report kept saying "All Clear",
+    # because it only looked for warning lines and an aborted scan produces none.
+    #
+    # This script broke rootkit scanning on the servers it hardened. Remove the
+    # line wherever a previous run left it.
+    if grep -q '^PORT_NUMBER=' /etc/rkhunter.conf 2>/dev/null; then
+        sudo sed -i '/^PORT_NUMBER=/d' /etc/rkhunter.conf
+        log_warning "Removed invalid PORT_NUMBER option from /etc/rkhunter.conf"
+        log_warning "  It was written by an earlier version of this script and aborted every scan."
+    fi
 
     # Fix WEB_CMD to use absolute path (fixes "Invalid WEB_CMD" error)
     sudo sed -i 's|^WEB_CMD=.*|WEB_CMD=/bin/false|' /etc/rkhunter.conf

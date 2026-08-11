@@ -564,7 +564,12 @@ section "Secrets exposure"
 # Report WHICH process and WHICH flag - never the value. This report gets piped
 # to a file and pasted into tickets; printing the secret would copy it to every
 # one of those places, which is the problem it is reporting.
-CMDLINE_SECRETS=$(/bin/ps -eo comm=,args= 2>/dev/null | \
+# Capture the process list BEFORE the filter runs. In a pipeline both sides run
+# concurrently, so grep's own argv - which contains the patterns being searched
+# for - shows up in ps output and the check reports itself as a finding.
+PS_SNAPSHOT=$(/bin/ps -eo comm=,args= 2>/dev/null)
+
+CMDLINE_SECRETS=$(echo "$PS_SNAPSHOT" | \
     /bin/grep -iE -- '--token[= ]|--password[= ]|apikey=|api_key=|--secret[= ]' | \
     /bin/grep -v grep | \
     /usr/bin/awk '{proc=$1; flag="unknown";
