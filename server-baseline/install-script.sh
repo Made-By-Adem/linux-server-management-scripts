@@ -5155,8 +5155,12 @@ if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT
 # --report-warnings-only is deliberately NOT used: it suppresses the summary
 # line that is the evidence of completion.
 
-TELEGRAM_BOT_TOKEN="REPLACE_BOT_TOKEN"
-TELEGRAM_CHAT_ID="REPLACE_CHAT_ID"
+# Credentials live in one place. The values below are only a fallback for
+# hosts provisioned before that file existed - a script that holds its own
+# copy of a token is one more place to rotate and one more place to leak.
+[ -r /etc/server-baseline/selfcheck.env ] && . /etc/server-baseline/selfcheck.env
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-REPLACE_BOT_TOKEN}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-REPLACE_CHAT_ID}"
 SCAN_LOG="/var/log/rkhunter-scan-$(date +%Y%m%d).log"
 
 send_telegram() {
@@ -5226,8 +5230,12 @@ RKHUNTER_SCRIPT
 #!/bin/bash
 # Lynis audit with Telegram notifications
 
-TELEGRAM_BOT_TOKEN="REPLACE_BOT_TOKEN"
-TELEGRAM_CHAT_ID="REPLACE_CHAT_ID"
+# Credentials live in one place. The values below are only a fallback for
+# hosts provisioned before that file existed - a script that holds its own
+# copy of a token is one more place to rotate and one more place to leak.
+[ -r /etc/server-baseline/selfcheck.env ] && . /etc/server-baseline/selfcheck.env
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-REPLACE_BOT_TOKEN}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-REPLACE_CHAT_ID}"
 LYNIS_LOG="/var/log/lynis-report.dat"
 RECOMMENDATIONS_DIR="/var/log/lynis-recommendations"
 DATE_STAMP=$(date +%Y%m%d-%H%M%S)
@@ -5913,8 +5921,12 @@ EOF
 #   1|2|4    new / removed / changed entries (bitwise OR, so 1..7)
 #   >= 14    AIDE itself failed (config error, IO error, version mismatch)
 
-TELEGRAM_BOT_TOKEN="REPLACE_BOT_TOKEN"
-TELEGRAM_CHAT_ID="REPLACE_CHAT_ID"
+# Credentials live in one place. The values below are only a fallback for
+# hosts provisioned before that file existed - a script that holds its own
+# copy of a token is one more place to rotate and one more place to leak.
+[ -r /etc/server-baseline/selfcheck.env ] && . /etc/server-baseline/selfcheck.env
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-REPLACE_BOT_TOKEN}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-REPLACE_CHAT_ID}"
 LOG_FILE="/var/log/aide-check-$(date +%Y%m%d).log"
 DATE_STAMP=$(date '+%Y-%m-%d %H:%M')
 
