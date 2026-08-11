@@ -804,7 +804,11 @@ sudo ufw status numbered
 
 - Uses jail.local instead of jail.conf (Lynis DEB-0880)
 - Prevents configuration overwrites during updates
-- Configuration preserved in /etc/fail2ban/jail.d/
+- Configuration written to /etc/fail2ban/jail.d/zz-server-baseline.local
+  (the `.local` extension matters: fail2ban reads jail.conf → jail.d/*.conf →
+  jail.local → jail.d/*.local, so anything in a plain `.conf` is overridden by
+  a `jail.local` if one exists)
+- Reads the systemd journal (`backend = systemd`), not /var/log/auth.log
 
 **Systemd Service Hardening (Maximum Compatibility):**
 
@@ -1541,8 +1545,17 @@ sudo ausearch -k sshd_config_changes
 # All root commands today
 sudo ausearch -k privileged_commands -ts today
 
-# Authentication events
-sudo ausearch -k auth_log_changes
+# Everything persistence-related in one query
+sudo ausearch -k persist -i
+
+# Or per category
+sudo ausearch -k profile_tampering    # /etc/profile, /root/.profile, PATH injection
+sudo ausearch -k cron_tampering       # /etc/cron.*, crontabs, crontab execution
+sudo ausearch -k systemd_tampering    # unit files, systemctl execution
+sudo ausearch -k preload_tampering    # /etc/ld.so.preload, ld.so.conf.d
+sudo ausearch -k ssh_key_tampering    # /root/.ssh
+sudo ausearch -k exec_from_tmp        # execution from /tmp, /var/tmp, /dev/shm
+sudo ausearch -k timestomp            # root running touch (timestamp forgery)
 ```
 
 ### Configure Cloudflare Tunnel
@@ -1614,9 +1627,13 @@ sudo ufw allow 12345/tcp comment 'SSH'
 sudo ufw reload
 
 # Update Fail2ban
-sudo nano /etc/fail2ban/jail.d/server-baseline.conf
+sudo nano /etc/fail2ban/jail.d/zz-server-baseline.local
 # Change: port = 22,888 to port = 12345
 sudo systemctl restart fail2ban
+
+# Verify the jail actually came back up - a restart that "succeeds" while the
+# jail is broken is exactly how this stays unnoticed for months
+sudo fail2ban-client status sshd
 ```
 
 **3. Configure automatic backups**
@@ -2788,8 +2805,9 @@ sudo cat /var/log/server_install_*.log
 # System log
 sudo journalctl -xe
 
-# Auth log (SSH logins)
-sudo tail -f /var/log/auth.log
+# SSH logins. Ubuntu 24.04 and Debian 12 no longer write /var/log/auth.log -
+# sshd logs to the journal only.
+sudo journalctl -u ssh -f
 
 # Docker logs
 sudo journalctl -u docker

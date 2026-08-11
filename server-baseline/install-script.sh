@@ -2029,6 +2029,15 @@ cat <<EOF | sudo tee /etc/docker/daemon.json
 }
 EOF
 
+# Deliberately NOT set here, because both have real breakage potential and this
+# script runs against live servers:
+#   "no-new-privileges": true  - blocks gaining privileges through setuid binaries
+#                               and file capabilities. Netdata's plugins rely on
+#                               file capabilities, so this breaks apps.plugin.
+#   "icc": false               - blocks container-to-container traffic on the
+#                               default bridge, which breaks most compose stacks.
+# See "Optional Docker daemon hardening" in README.md before enabling either.
+
 sudo systemctl enable docker || handle_error "Failed to enable Docker service"
 sudo systemctl restart docker || handle_error "Failed to restart Docker service"
 
@@ -3392,6 +3401,98 @@ Lynis recommendation: FILE-6000" \
 fi
 
 ###############################################################################
+# WRITABLE FILESYSTEM HARDENING (noexec on /tmp, /var/tmp, /dev/shm)
+###############################################################################
+#
+# /tmp, /var/tmp and /dev/shm are world-writable and, by default, executable.
+# That combination is the standard staging ground for dropper malware: write a
+# payload somewhere anyone can write, then run it. Mounting them noexec removes
+# the second half. Lynis flags this as FILE-6310.
+#
+# noexec blocks execve() on files under the mount. It does NOT block
+# `bash /tmp/script.sh` (the interpreter reads the file, it is never exec'd), so
+# installers that are invoked through an interpreter keep working.
+
+if skip_if_completed "MOUNT_HARDENING"; then
+    log_info "Writable filesystem hardening already applied, skipping"
+else
+    if ask_component_install \
+        "WRITABLE FILESYSTEM HARDENING" \
+        "kernel-hardening" \
+        "Mount /tmp, /var/tmp and /dev/shm as noexec,nosuid,nodev." \
+        "Configuration:
+• /tmp      -> noexec, nosuid, nodev (self bind mount, stays on disk)
+• /var/tmp  -> noexec, nosuid, nodev (self bind mount, stays on disk)
+• /dev/shm  -> noexec, nosuid, nodev (tmpfs)
+• Applied immediately and persisted in /etc/fstab
+• /etc/fstab is backed up first
+
+Benefits:
+• Payloads dropped into world-writable directories cannot be executed
+• Blocks the most common staging path for dropper and proxyjacking kits
+• Lynis FILE-6310
+
+Known trade-offs:
+• Some third-party installers extract to /tmp and exec directly. If one fails,
+  run it from another directory or temporarily remount without noexec.
+• /dev/shm noexec can break Chromium-based and Electron applications. It is
+  safe on a headless server; consider skipping this on a desktop." \
+        "$([ "$DESKTOP_MODE" = true ] && echo 'n' || echo 'y')"; then
+
+        if [ "$DRY_RUN" = true ]; then
+            log_dry_run "Would back up /etc/fstab"
+            log_dry_run "Would add noexec,nosuid,nodev mounts for /tmp, /var/tmp, /dev/shm"
+            log_dry_run "Would apply them immediately with mount --bind / mount -o remount"
+            log_dry_run "Would verify the flags with findmnt"
+        else
+            log_info "Hardening writable filesystems..."
+
+            sudo cp /etc/fstab /etc/fstab.backup.$(date +%Y%m%d_%H%M%S)
+            log_info "Backed up /etc/fstab"
+
+            harden_writable_mount() {
+                local target="$1"
+                local fstab_line="$2"
+
+                if grep -qE "^[^#]*[[:space:]]${target}[[:space:]]" /etc/fstab; then
+                    log_info "$target already has an fstab entry - leaving it alone"
+                else
+                    echo "$fstab_line" | sudo tee -a /etc/fstab >/dev/null
+                    log_info "Added fstab entry for $target"
+                fi
+
+                # Apply now, without waiting for a reboot. For /tmp and /var/tmp
+                # (normally part of the root filesystem) a self bind mount is
+                # needed before the flags can be set.
+                if ! mountpoint -q "$target" 2>/dev/null; then
+                    sudo mount --bind "$target" "$target" 2>/dev/null || \
+                        log_warning "Could not bind-mount $target"
+                fi
+                sudo mount -o remount,noexec,nosuid,nodev "$target" 2>/dev/null || \
+                    log_warning "Could not apply noexec to $target - it will take effect after reboot"
+
+                if findmnt -no OPTIONS "$target" 2>/dev/null | grep -q noexec; then
+                    log_info "✓ $target is mounted noexec"
+                else
+                    log_warning "✗ $target is NOT noexec yet (applies after reboot)"
+                fi
+            }
+
+            harden_writable_mount /tmp     "/tmp     /tmp     none  rw,noexec,nosuid,nodev,bind  0 0"
+            harden_writable_mount /var/tmp "/var/tmp /var/tmp none  rw,noexec,nosuid,nodev,bind  0 0"
+            harden_writable_mount /dev/shm "tmpfs    /dev/shm tmpfs rw,noexec,nosuid,nodev       0 0"
+
+            log_info "Writable filesystem hardening applied"
+            log_info "To undo:  sudo mount -o remount,exec /tmp   (and remove the line from /etc/fstab)"
+        fi
+        mark_completed "MOUNT_HARDENING"
+    else
+        log_info "Writable filesystem hardening skipped"
+        mark_completed "MOUNT_HARDENING"
+    fi
+fi
+
+###############################################################################
 # SSH HARDENING
 ###############################################################################
 
@@ -3847,7 +3948,7 @@ else
 • Max 5 failed attempts allowed
 • Ban time: 1 hour (3600s)
 • Detection window: 10 minutes (600s)
-• Monitors /var/log/auth.log
+• Reads the systemd journal (backend = systemd)
 
 Benefits:
 • Automatic blocking of brute-force attacks
@@ -3860,7 +3961,8 @@ Benefits:
 • Max 3 failed attempts allowed
 • Ban time: 2 hours (7200s)
 • Detection window: 10 minutes (600s)
-• Monitors /var/log/auth.log
+• Reads the systemd journal (backend = systemd)
+• Verifies after install that the jail is really active
 
 Benefits:
 • Automatic blocking of brute-force attacks
@@ -3878,12 +3980,18 @@ Benefits:
 
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would backup existing /etc/fail2ban/jail.local if present"
-        log_dry_run "Would create /etc/fail2ban/jail.d/server-baseline.conf with:"
+        log_dry_run "Would remove /etc/fail2ban/jail.local if it is a verbatim copy of jail.conf"
+        log_dry_run "  (it is read after jail.d/*.conf and silently overrides the baseline)"
+        log_dry_run "Would remove superseded /etc/fail2ban/jail.d/server-baseline.conf"
+        log_dry_run "Would create /etc/fail2ban/jail.d/zz-server-baseline.local with:"
         log_dry_run "  - SSH jail enabled on ports 22,888"
+        log_dry_run "  - backend = systemd (Ubuntu 24.04 has no /var/log/auth.log)"
+        log_dry_run "  - journalmatch = _SYSTEMD_UNIT=ssh.service"
         log_dry_run "  - Max retries: 3"
         log_dry_run "  - Ban time: 7200s (2 hours)"
         log_dry_run "  - Find time: 600s (10 minutes)"
         log_dry_run "Would enable and restart fail2ban service"
+        log_dry_run "Would verify with 'fail2ban-client status sshd' that the jail is live"
     else
         log_info "Configuring Fail2ban..."
 
@@ -3893,67 +4001,116 @@ Benefits:
             log_info "Backed up existing jail.local"
         fi
 
-        # Lynis recommendation (DEB-0880): Use jail.local instead of direct jail.conf modifications
-        # Create jail.local from jail.conf if it doesn't exist
-        if [ ! -f /etc/fail2ban/jail.local ] && [ -f /etc/fail2ban/jail.conf ]; then
-            sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
-            log_info "Created jail.local from jail.conf (Lynis best practice DEB-0880)"
-            log_info "Future Fail2ban updates won't overwrite your custom jail.local"
+        # Fail2ban reads its configuration in this order, last one wins:
+        #   jail.conf  ->  jail.d/*.conf  ->  jail.local  ->  jail.d/*.local
+        #
+        # Earlier versions of this script copied jail.conf to jail.local. That was
+        # wrong: jail.local is read AFTER jail.d/*.conf, so a verbatim copy of the
+        # upstream defaults silently overrode every setting written below - including
+        # the port list and the log backend. The jail looked configured and banned
+        # nothing. Config now goes into jail.d/*.local, which is read last.
+        if [ -f /etc/fail2ban/jail.local ] && \
+           sudo cmp -s /etc/fail2ban/jail.local /etc/fail2ban/jail.conf 2>/dev/null; then
+            sudo rm -f /etc/fail2ban/jail.local
+            log_warning "Removed /etc/fail2ban/jail.local (verbatim copy of jail.conf)"
+            log_warning "It overrode the baseline jail settings - backup kept alongside it"
+        fi
+
+        # Remove the config file written by earlier versions of this script; its
+        # settings are superseded by the .local file created below.
+        if [ -f /etc/fail2ban/jail.d/server-baseline.conf ]; then
+            sudo rm -f /etc/fail2ban/jail.d/server-baseline.conf
+            log_info "Removed superseded /etc/fail2ban/jail.d/server-baseline.conf"
         fi
 
         # Create jail.d directory if it doesn't exist
         sudo mkdir -p /etc/fail2ban/jail.d
 
-        # Configure Fail2ban for SSH in jail.d (doesn't overwrite existing custom jails)
+        # Ubuntu 24.04 and Debian 12 no longer write /var/log/auth.log; sshd logs
+        # to the journal only. A jail pointed at auth.log starts, reports "enabled"
+        # and never bans anything. backend=systemd reads the journal directly.
         if [ "$DESKTOP_MODE" = true ]; then
-            cat <<EOF | sudo tee /etc/fail2ban/jail.d/server-baseline.conf
+            cat <<EOF | sudo tee /etc/fail2ban/jail.d/zz-server-baseline.local
 # System Baseline Fail2ban Configuration (Desktop Mode)
 # Created by system baseline installation script
+#
+# Filename note: read order is jail.conf -> jail.d/*.conf -> jail.local ->
+# jail.d/*.local. This file must be read last, hence the .local extension.
 
 [DEFAULT]
-bantime = 3600
+backend  = systemd
+bantime  = 3600
 findtime = 600
 maxretry = 5
 
 [sshd]
-enabled = true
-port = 22
-filter = sshd
-logpath = /var/log/auth.log
-maxretry = 5
-bantime = 3600
-findtime = 600
+enabled      = true
+port         = 22
+filter       = sshd
+backend      = systemd
+journalmatch = _SYSTEMD_UNIT=ssh.service
+maxretry     = 5
+bantime      = 3600
+findtime     = 600
 EOF
         else
-            cat <<EOF | sudo tee /etc/fail2ban/jail.d/server-baseline.conf
+            cat <<EOF | sudo tee /etc/fail2ban/jail.d/zz-server-baseline.local
 # Server Baseline Fail2ban Configuration
 # Created by server_baseline installation script
+#
+# Filename note: read order is jail.conf -> jail.d/*.conf -> jail.local ->
+# jail.d/*.local. This file must be read last, hence the .local extension.
 
 [DEFAULT]
 # Default ban settings for all jails
-bantime = 3600
+backend  = systemd
+bantime  = 3600
 findtime = 600
 maxretry = 5
 
 [sshd]
 # SSH protection - monitors both ports 22 and 888
-enabled = true
-port = 22,888
-filter = sshd
-logpath = /var/log/auth.log
-maxretry = 3
-bantime = 7200
-findtime = 600
+enabled      = true
+port         = 22,888
+filter       = sshd
+backend      = systemd
+journalmatch = _SYSTEMD_UNIT=ssh.service
+maxretry     = 3
+bantime      = 7200
+findtime     = 600
 EOF
         fi
 
-        log_info "Fail2ban configuration created in /etc/fail2ban/jail.d/server-baseline.conf"
-        log_info "Existing custom jails in jail.local are preserved"
+        log_info "Fail2ban configuration created in /etc/fail2ban/jail.d/zz-server-baseline.local"
+        log_info "Existing custom jails are preserved"
 
         sudo systemctl enable fail2ban || handle_error "Failed to enable Fail2ban"
         sudo systemctl restart fail2ban || handle_error "Failed to restart Fail2ban"
 
-        log_info "Fail2ban configured for SSH protection"
+        # Verify the jail is actually live. "systemctl restart succeeded" is not
+        # evidence that the jail works - that was exactly the failure mode this
+        # section is being fixed for.
+        log_info "Verifying that the sshd jail is actually active..."
+        F2B_OK=false
+        for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if sudo fail2ban-client status sshd >/dev/null 2>&1; then
+                F2B_OK=true
+                break
+            fi
+            sleep 2
+        done
+
+        if [ "$F2B_OK" = true ]; then
+            log_info "✓ Fail2ban sshd jail is active and reachable"
+            sudo fail2ban-client status sshd || true
+            log_info "Check periodically that the ban counter is non-zero:"
+            log_info "  sudo fail2ban-client status sshd"
+            log_info "A jail reporting 0 bans while the journal shows failed logins is a fault, not a success."
+        else
+            log_warning "✗ Fail2ban restarted but the sshd jail did not come up"
+            log_warning "  Diagnose with: sudo fail2ban-client -d | grep sshd"
+            log_warning "  and:           sudo journalctl -u fail2ban -n 50"
+        fi
     fi
         mark_completed "FAIL2BAN"
     else
@@ -4356,7 +4513,12 @@ Audit rules to monitor:
 • SSH configuration changes (/etc/ssh/sshd_config)
 • User home directory modifications
 • Privileged commands (run by root)
-• Authentication events (/var/log/auth.log)
+• PATH injection (/etc/profile, /etc/profile.d, /root/.profile)
+• Scheduled execution (/etc/cron.*, /var/spool/cron/crontabs)
+• Service persistence (/etc/systemd/system, systemctl execution)
+• Loader hijacking (/etc/ld.so.preload, /etc/ld.so.conf.d)
+• SSH keys, /etc/passwd, /etc/shadow, sudoers
+• Timestomping (root running touch) and execution from /tmp, /var/tmp, /dev/shm
 
 Benefits:
 • Track unauthorized changes
@@ -4364,18 +4526,27 @@ Benefits:
 • Compliance (PCI-DSS, HIPAA, etc.)
 • Security incident detection
 
-View logs: sudo ausearch -k sshd_config_changes" \
+View logs: sudo ausearch -k profile_tampering" \
     "$([ "$DESKTOP_MODE" = true ] && echo 'n' || echo 'y')"; then
 
     if [ "$DRY_RUN" = true ]; then
         log_dry_run "Would install: auditd, acct, audispd-plugins"
         log_dry_run "Would create /etc/audit/rules.d/ssh-security.rules with:"
-        log_dry_run "  - Monitor /etc/ssh/sshd_config changes"
+        log_dry_run "  - Monitor /etc/ssh/sshd_config and sshd_config.d changes"
         log_dry_run "  - Monitor /home/ directory changes"
         log_dry_run "  - Monitor privileged commands (root execve)"
-        log_dry_run "  - Monitor /var/log/auth.log changes"
+        log_dry_run "Would create /etc/audit/rules.d/10-persistence.rules with:"
+        log_dry_run "  - Monitor /etc/profile, /etc/profile.d, /root/.profile (PATH injection)"
+        log_dry_run "  - Monitor /etc/cron.* and /var/spool/cron/crontabs"
+        log_dry_run "  - Monitor /etc/systemd/system and systemctl execution"
+        log_dry_run "  - Monitor /etc/ld.so.preload and /etc/ld.so.conf.d"
+        log_dry_run "  - Monitor /root/.ssh, /etc/passwd, /etc/shadow, sudoers"
+        log_dry_run "  - Monitor execve in /tmp, /var/tmp, /dev/shm"
+        log_dry_run "  - Every rule tagged with a shared key 'persist' for one-shot ausearch"
         log_dry_run "Would enable and start auditd service"
-        log_dry_run "Would enable and start acct service"
+        log_dry_run "Would run 'augenrules --load' to compile the rules into the kernel"
+        log_dry_run "Would run 'systemctl enable --now acct' for process accounting"
+        log_dry_run "Would verify that the rules are actually loaded (auditctl -l)"
     else
         log_info "Configuring audit logging (auditd + acct)..."
 
@@ -4387,27 +4558,114 @@ View logs: sudo ausearch -k sshd_config_changes" \
         cat <<EOF | sudo tee /etc/audit/rules.d/ssh-security.rules
 # Monitor SSH configuration changes
 -w /etc/ssh/sshd_config -p wa -k sshd_config_changes
+-w /etc/ssh/sshd_config.d/ -p wa -k sshd_config_changes
 
 # Monitor user home directories for unauthorized changes
 -w /home/ -p wa -k home_modifications
 
 # Monitor privileged commands (run by root)
 -a always,exit -F arch=b64 -S execve -F uid=0 -k privileged_commands
+EOF
 
-# Monitor authentication events
--w /var/log/auth.log -p wa -k auth_log_changes
+        # Watch the locations that persistence and PATH-hijack kits actually use.
+        # The rule set above deliberately did NOT cover any of them; a userland
+        # rootkit can install itself into every path below without tripping a
+        # single audit rule. /var/log/auth.log is intentionally absent - it no
+        # longer exists on Ubuntu 24.04 and watching it produced nothing.
+        # Every rule carries two keys: a specific one for targeted searches and
+        # the shared key 'persist' so a single `ausearch -k persist` returns the
+        # whole persistence picture in one go.
+        cat <<EOF | sudo tee /etc/audit/rules.d/10-persistence.rules
+# --- Shell profile / PATH injection ---------------------------------------
+# A single appended line here is enough to put an attacker-controlled directory
+# in front of /usr/bin for every login shell.
+-w /etc/profile -p wa -k profile_tampering -k persist
+-w /etc/profile.d/ -p wa -k profile_tampering -k persist
+-w /etc/bash.bashrc -p wa -k profile_tampering -k persist
+-w /etc/environment -p wa -k profile_tampering -k persist
+-w /root/.profile -p wa -k profile_tampering -k persist
+-w /root/.bashrc -p wa -k profile_tampering -k persist
+
+# --- Scheduled execution ---------------------------------------------------
+-w /etc/crontab -p wa -k cron_tampering -k persist
+-w /etc/cron.d/ -p wa -k cron_tampering -k persist
+-w /etc/cron.hourly/ -p wa -k cron_tampering -k persist
+-w /etc/cron.daily/ -p wa -k cron_tampering -k persist
+-w /etc/cron.weekly/ -p wa -k cron_tampering -k persist
+-w /etc/cron.monthly/ -p wa -k cron_tampering -k persist
+-w /var/spool/cron/crontabs/ -p wa -k cron_tampering -k persist
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/crontab -k cron_tampering -k persist
+
+# --- Service persistence ---------------------------------------------------
+# Self-installing, self-deleting units do not show up in list-unit-files.
+-w /etc/systemd/system/ -p wa -k systemd_tampering -k persist
+-w /lib/systemd/system/ -p wa -k systemd_tampering -k persist
+-w /usr/lib/systemd/system/ -p wa -k systemd_tampering -k persist
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/systemctl -k systemd_tampering -k persist
+
+# --- Loader / library hijacking -------------------------------------------
+-w /etc/ld.so.preload -p wa -k preload_tampering -k persist
+-w /etc/ld.so.conf -p wa -k preload_tampering -k persist
+-w /etc/ld.so.conf.d/ -p wa -k preload_tampering -k persist
+
+# --- Remote access ---------------------------------------------------------
+-w /root/.ssh/ -p wa -k ssh_key_tampering -k persist
+-w /etc/passwd -p wa -k identity_tampering -k persist
+-w /etc/shadow -p wa -k identity_tampering -k persist
+-w /etc/sudoers -p wa -k identity_tampering -k persist
+-w /etc/sudoers.d/ -p wa -k identity_tampering -k persist
+
+# --- Anti-forensics --------------------------------------------------------
+# Timestomping: copying mtime/ctime from a system binary onto a dropped one.
+-a always,exit -F arch=b64 -S execve -F path=/usr/bin/touch -F uid=0 -k timestomp -k persist
+
+# --- Execution from writable, world-accessible locations -------------------
+# Complements the noexec mount options: noexec blocks it, this records it.
+-a always,exit -F arch=b64 -S execve -F dir=/tmp -k exec_from_tmp -k persist
+-a always,exit -F arch=b64 -S execve -F dir=/var/tmp -k exec_from_tmp -k persist
+-a always,exit -F arch=b64 -S execve -F dir=/dev/shm -k exec_from_tmp -k persist
 EOF
 
         # Enable and start auditd
         sudo systemctl enable auditd || log_warning "Failed to enable auditd"
         sudo systemctl restart auditd || log_warning "Failed to restart auditd"
 
-        # Enable process accounting with acct
-        sudo systemctl enable acct || log_warning "Failed to enable acct"
-        sudo systemctl restart acct || log_warning "Failed to restart acct"
+        # Load the rules explicitly rather than relying on the service restart.
+        # augenrules compiles rules.d/*.rules into the running kernel ruleset; a
+        # restart alone is not a reliable signal that it succeeded, and on some
+        # systems auditd refuses a manual restart altogether.
+        sudo augenrules --load || log_warning "augenrules --load reported a problem"
+
+        # Enable process accounting. 'enable --now' both enables at boot and
+        # starts it immediately - process accounting being inactive after a
+        # reboot means no command history for exactly the window that matters.
+        sudo systemctl enable --now acct || log_warning "Failed to enable/start acct"
+
+        # Verify the rules actually loaded. augenrules silently skips a rules
+        # file it cannot parse, so "auditd restarted" says nothing about whether
+        # the rules below are live.
+        # wc -l, not grep -c: grep -c prints 0 and exits 1 on no match, so a
+        # '|| echo 0' fallback would yield "0\n0" and break the numeric test.
+        LOADED_RULES=$(sudo auditctl -l 2>/dev/null | wc -l)
+        LOADED_RULES=${LOADED_RULES:-0}
+        if [ "$LOADED_RULES" -gt 10 ]; then
+            log_info "✓ auditd active with $LOADED_RULES rules loaded"
+        else
+            log_warning "✗ auditd reports only $LOADED_RULES rules loaded - expected 30+"
+            log_warning "  Diagnose with: sudo augenrules --check && sudo auditctl -l"
+        fi
+
+        if systemctl is-active acct >/dev/null 2>&1; then
+            log_info "✓ Process accounting (acct) is active"
+        else
+            log_warning "✗ Process accounting (acct) is NOT active - no command history will be kept"
+        fi
 
         log_info "Audit logging configured successfully"
-        log_info "View audit logs: sudo ausearch -k sshd_config_changes"
+        log_info "View all persistence events: sudo ausearch -k persist"
+        log_info "Or per category:             sudo ausearch -k profile_tampering"
+        log_info "                             sudo ausearch -k cron_tampering"
+        log_info "                             sudo ausearch -k exec_from_tmp"
     fi
 else
     log_info "Audit logging configuration skipped"
@@ -4939,6 +5197,92 @@ fi
 fi  # End of desktop mode / tool installed check
 
 ###############################################################################
+# SECURITY SELF-CHECK
+###############################################################################
+#
+# Installs security-selfcheck.sh and schedules it daily. This is the control
+# that verifies the other controls: it asserts that fail2ban actually bans, that
+# auditd is running with rules loaded, that AIDE's check completes, that PATH is
+# not hijacked, and that no second Docker daemon or proxyware container exists.
+#
+# Every check it performs corresponds to a control that was installed, reported
+# healthy, and did nothing. "systemctl is-active" is not evidence.
+
+if skip_if_completed "SECURITY_SELFCHECK"; then
+    log_info "Security self-check already installed, skipping"
+else
+    if ask_component_install \
+        "SECURITY SELF-CHECK" \
+        "audit-logging" \
+        "Install a daily self-check that verifies the security controls actually work." \
+        "What it does:
+• Verifies fail2ban is banning (not just running)
+• Verifies auditd is active with rules loaded, and warns if it was ever stopped
+• Verifies 'aide --check' completes instead of failing silently
+• Detects PATH hijacking and replaced diagnostic tools
+• Detects a second Docker daemon, proxyware containers, and host-level container access
+• Detects executables in /tmp, /dev/shm, /var/tmp and known persistence markers
+• Detects secrets exposed on process command lines
+
+Installed to: /usr/local/bin/security-selfcheck.sh
+Schedule:     daily at 06:00 via /etc/cron.d/security-selfcheck
+Alerts:       only when something fails (Telegram, if configured)
+
+Run it any time with: sudo security-selfcheck" \
+        "$([ "$DESKTOP_MODE" = true ] && echo 'n' || echo 'y')"; then
+
+        if [ "$DRY_RUN" = true ]; then
+            log_dry_run "Would install /usr/local/bin/security-selfcheck.sh"
+            log_dry_run "Would create /etc/cron.d/security-selfcheck (daily at 06:00)"
+            log_dry_run "Would store Telegram credentials in /etc/server-baseline/selfcheck.env (chmod 600)"
+        else
+            SELFCHECK_SRC="$(dirname "$(readlink -f "$0")")/security-selfcheck.sh"
+
+            if [ -f "$SELFCHECK_SRC" ]; then
+                sudo install -m 700 -o root -g root "$SELFCHECK_SRC" /usr/local/bin/security-selfcheck.sh
+                sudo ln -sf /usr/local/bin/security-selfcheck.sh /usr/local/bin/security-selfcheck
+                log_info "Installed /usr/local/bin/security-selfcheck.sh"
+
+                # Store Telegram credentials outside the script so the script
+                # itself stays a plain, reviewable file with no secrets in it.
+                if [[ ! -z "${SECURITY_TELEGRAM_BOT_TOKEN:-}" ]] && [[ ! -z "${SECURITY_TELEGRAM_CHAT_ID:-}" ]]; then
+                    sudo mkdir -p /etc/server-baseline
+                    sudo chmod 700 /etc/server-baseline
+                    printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' \
+                        "$SECURITY_TELEGRAM_BOT_TOKEN" "$SECURITY_TELEGRAM_CHAT_ID" | \
+                        sudo tee /etc/server-baseline/selfcheck.env >/dev/null
+                    sudo chmod 600 /etc/server-baseline/selfcheck.env
+                    SELFCHECK_ARGS="--quiet --telegram"
+                    log_info "Self-check will alert via Telegram on failures"
+                else
+                    SELFCHECK_ARGS="--quiet"
+                    log_info "No Telegram credentials - self-check output goes to cron mail"
+                fi
+
+                {
+                    echo "# Daily security self-check - verifies that the security controls work"
+                    echo "# Only produces output when a check fails."
+                    echo "0 6 * * * root /usr/local/bin/security-selfcheck.sh $SELFCHECK_ARGS"
+                } | sudo tee /etc/cron.d/security-selfcheck >/dev/null
+                sudo chmod 644 /etc/cron.d/security-selfcheck
+                log_info "Scheduled daily security self-check at 06:00"
+
+                echo ""
+                log_info "Running the self-check once now to establish a baseline..."
+                sudo /usr/local/bin/security-selfcheck.sh || true
+            else
+                log_warning "security-selfcheck.sh not found next to the install script - skipping"
+                log_warning "Expected at: $SELFCHECK_SRC"
+            fi
+        fi
+        mark_completed "SECURITY_SELFCHECK"
+    else
+        log_info "Security self-check skipped"
+        mark_completed "SECURITY_SELFCHECK"
+    fi
+fi
+
+###############################################################################
 # SYSSTAT PERFORMANCE MONITORING
 ###############################################################################
 
@@ -5209,47 +5553,61 @@ EOF
                     cat <<'AIDE_SCRIPT' | sudo tee /usr/local/bin/aide-telegram.sh >/dev/null
 #!/bin/bash
 # AIDE integrity check with Telegram notifications
+#
+# The decision to alert is driven by AIDE's EXIT CODE, never by parsing counts
+# out of the report. An earlier version of this script grepped for "^Added:",
+# which never matches - AIDE writes "Added entries:" - so the counters were
+# always zero, the alert branch never fired, and every run reported "no changes"
+# and then ran `aide --update`, absorbing any tampering into the baseline.
+#
+# AIDE exit codes:
+#   0        no differences
+#   1|2|4    new / removed / changed entries (bitwise OR, so 1..7)
+#   >= 14    AIDE itself failed (config error, IO error, version mismatch)
 
 TELEGRAM_BOT_TOKEN="REPLACE_BOT_TOKEN"
 TELEGRAM_CHAT_ID="REPLACE_CHAT_ID"
 LOG_FILE="/var/log/aide-check-$(date +%Y%m%d).log"
 DATE_STAMP=$(date '+%Y-%m-%d %H:%M')
 
+send_telegram() {
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHAT_ID}" \
+        -d text="$1" \
+        -d parse_mode="Markdown" >/dev/null 2>&1
+}
+
+# Read a count out of AIDE's summary block, e.g. "  Added entries:      3"
+summary_count() {
+    sed -n "s/^[[:space:]]*$1 entries:[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$LOG_FILE" | head -1
+}
+
 # Run AIDE check
 /usr/bin/aide --check > "$LOG_FILE" 2>&1
 CHECK_RESULT=$?
 
-# Parse results
-ADDED=$(grep "^Added:" "$LOG_FILE" 2>/dev/null | wc -l)
-REMOVED=$(grep "^Removed:" "$LOG_FILE" 2>/dev/null | wc -l)
-CHANGED=$(grep "^Changed:" "$LOG_FILE" 2>/dev/null | wc -l)
+if [ "$CHECK_RESULT" -ge 14 ]; then
+    # AIDE could not complete. This MUST NOT be reported as "no changes" and the
+    # database MUST NOT be updated - a failing integrity checker is an incident
+    # in itself, not a clean bill of health.
+    MESSAGE="🚨 *AIDE CHECK FAILED*%0A%0A"
+    MESSAGE+="Server: $(hostname)%0A"
+    MESSAGE+="Date: ${DATE_STAMP}%0A%0A"
+    MESSAGE+="⚠️ AIDE exited with code ${CHECK_RESULT} and could not verify anything.%0A"
+    MESSAGE+="*File integrity is currently UNVERIFIED.*%0A%0A"
+    MESSAGE+="Last output:%0A"
+    MESSAGE+="\`$(tail -5 "$LOG_FILE" | tr '\n' ' ' | cut -c1-300)\`%0A%0A"
+    MESSAGE+="Full log: \`$LOG_FILE\`"
+    send_telegram "$MESSAGE"
 
-TOTAL=$((ADDED + REMOVED + CHANGED))
+elif [ "$CHECK_RESULT" -ne 0 ]; then
+    ADDED=$(summary_count Added);     ADDED=${ADDED:-0}
+    REMOVED=$(summary_count Removed); REMOVED=${REMOVED:-0}
+    CHANGED=$(summary_count Changed); CHANGED=${CHANGED:-0}
 
-# If changes detected (exit code != 0)
-if [ "$CHECK_RESULT" -ne 0 ] && [ "$TOTAL" -gt 0 ]; then
-    # Get summary of changes (first 10 lines of each type)
-    CHANGES_SUMMARY=""
+    # AIDE detail lines look like "f++++++++++++++++: /path/to/file"
+    DETAIL=$(grep -E '^[^[:space:]]+: /' "$LOG_FILE" | head -10 | sed 's/^/• /' | tr '\n' '@' | sed 's/@/%0A/g')
 
-    if [ "$ADDED" -gt 0 ]; then
-        CHANGES_SUMMARY+="*Added files ($ADDED):*%0A"
-        CHANGES_SUMMARY+=$(grep "^Added:" "$LOG_FILE" | head -5 | sed 's/Added: /• /g' | tr '\n' '%' | sed 's/%/%0A/g')
-        CHANGES_SUMMARY+="%0A"
-    fi
-
-    if [ "$REMOVED" -gt 0 ]; then
-        CHANGES_SUMMARY+="*Removed files ($REMOVED):*%0A"
-        CHANGES_SUMMARY+=$(grep "^Removed:" "$LOG_FILE" | head -5 | sed 's/Removed: /• /g' | tr '\n' '%' | sed 's/%/%0A/g')
-        CHANGES_SUMMARY+="%0A"
-    fi
-
-    if [ "$CHANGED" -gt 0 ]; then
-        CHANGES_SUMMARY+="*Changed files ($CHANGED):*%0A"
-        CHANGES_SUMMARY+=$(grep "^Changed:" "$LOG_FILE" | head -5 | sed 's/Changed: /• /g' | tr '\n' '%' | sed 's/%/%0A/g')
-        CHANGES_SUMMARY+="%0A"
-    fi
-
-    # Send alert message
     MESSAGE="🚨 *AIDE Integrity Alert*%0A%0A"
     MESSAGE+="Server: $(hostname)%0A"
     MESSAGE+="Date: ${DATE_STAMP}%0A%0A"
@@ -5258,29 +5616,21 @@ if [ "$CHECK_RESULT" -ne 0 ] && [ "$TOTAL" -gt 0 ]; then
     MESSAGE+="• Added: ${ADDED}%0A"
     MESSAGE+="• Removed: ${REMOVED}%0A"
     MESSAGE+="• Changed: ${CHANGED}%0A%0A"
-    MESSAGE+="${CHANGES_SUMMARY}%0A"
+    MESSAGE+="First entries:%0A${DETAIL}%0A"
     MESSAGE+="Full log: \`$LOG_FILE\`%0A%0A"
-    MESSAGE+="_Review changes and update database if legitimate:_%0A"
+    MESSAGE+="_The database was NOT updated. Review first, then if legitimate:_%0A"
     MESSAGE+="\`sudo aide --update && sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db\`"
+    send_telegram "$MESSAGE"
 
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d text="${MESSAGE}" \
-        -d parse_mode="Markdown" >/dev/null 2>&1
 else
-    # No changes - send daily status (optional, comment out if too noisy)
     MESSAGE="✅ *AIDE Daily Check*%0A%0A"
     MESSAGE+="Server: $(hostname)%0A"
     MESSAGE+="Date: ${DATE_STAMP}%0A"
     MESSAGE+="Status: *No changes detected*%0A%0A"
     MESSAGE+="File integrity verified."
+    send_telegram "$MESSAGE"
 
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d text="${MESSAGE}" \
-        -d parse_mode="Markdown" >/dev/null 2>&1
-
-    # Auto-update database when no changes (keeps baseline current)
+    # Only refresh the baseline when the check genuinely came back clean.
     /usr/bin/aide --update >/dev/null 2>&1
     mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db 2>/dev/null || true
 fi
@@ -5324,6 +5674,9 @@ AIDE_SCRIPT
                     cat <<'EOF' | sudo tee /etc/cron.daily/aide-check >/dev/null
 #!/bin/bash
 # AIDE daily integrity check (Lynis FINT-4350)
+#
+# AIDE exit codes: 0 = clean, 1..7 = differences, >= 14 = AIDE itself failed.
+# The database is only refreshed on a genuinely clean run.
 
 LOG_FILE="/var/log/aide-check-$(date +%Y%m%d).log"
 
@@ -5331,8 +5684,10 @@ LOG_FILE="/var/log/aide-check-$(date +%Y%m%d).log"
 /usr/bin/aide --check > "$LOG_FILE" 2>&1
 CHECK_RESULT=$?
 
-# If changes detected, send email to root
-if [ $CHECK_RESULT -ne 0 ]; then
+if [ $CHECK_RESULT -ge 14 ]; then
+    # AIDE could not complete - integrity is UNVERIFIED, not "unchanged"
+    cat "$LOG_FILE" | mail -s "AIDE: CHECK FAILED (exit $CHECK_RESULT) on $(hostname)" root 2>/dev/null || true
+elif [ $CHECK_RESULT -ne 0 ]; then
     cat "$LOG_FILE" | mail -s "AIDE: File Changes Detected on $(hostname)" root 2>/dev/null || true
 else
     # No changes, update database
@@ -5810,9 +6165,16 @@ services:
   cloudflared:
     # NOTE: Using :latest tag. For production, consider pinning to a specific version (e.g., cloudflare/cloudflared:2024.1.5)
     image: cloudflare/cloudflared:latest
-    command: tunnel --no-autoupdate run --token ${CF_TOKEN}
-    env_file:
-      - .env
+    # The token is passed via the environment, NOT on the command line. Compose
+    # interpolates ${CF_TOKEN} into `command:`, which would put the tunnel token
+    # in the process argv - readable through `ps`, /proc, and `docker inspect` by
+    # anything on the host, including any container running with pid: host.
+    # cloudflared reads TUNNEL_TOKEN from the environment.
+    # CF_TOKEN is interpolated from the .env file in this directory, which
+    # `docker compose` reads automatically.
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CF_TOKEN}
     network_mode: host
     restart: unless-stopped
 EOF
@@ -6515,6 +6877,174 @@ if [ "$PORTAINER_STARTED" = true ]; then
     echo ""
     echo "=========================================================================="
     echo ""
+fi
+
+###############################################################################
+# DOCKER NETWORK FILTERING (DOCKER-USER) + EGRESS POLICY
+###############################################################################
+#
+# Runs late on purpose: by this point we know whether Cloudflare-only mode is on
+# and which service ports are actually in use, so the allowlist can be accurate.
+#
+# Why this section exists at all: Docker inserts its own DNAT and FORWARD rules
+# and does NOT traverse UFW's INPUT chain. Every port published with `-p` is
+# therefore reachable from the internet regardless of what `ufw status` shows.
+# A container published on 0.0.0.0 is exposed even when UFW has no rule for it -
+# and "I never opened that port in UFW" is not a defence. DOCKER-USER is the
+# chain Docker guarantees it will consult first, so that is where the filter has
+# to live.
+
+if [ "$DRY_RUN" = true ]; then
+    log_dry_run "Would offer DOCKER-USER filtering in /etc/ufw/after.rules:"
+    log_dry_run "  - RETURN for established/related and private ranges"
+    log_dry_run "  - RETURN for 80/tcp and 443/tcp (unless Cloudflare-only mode)"
+    log_dry_run "  - DROP everything else arriving on the external interface"
+    log_dry_run "Would offer an outbound (egress) allowlist:"
+    log_dry_run "  - allow out 53, 123/udp, 80/tcp, 443/tcp, 22/tcp, 888/tcp, private ranges"
+    log_dry_run "  - then 'ufw default deny outgoing'"
+fi
+
+if [ "$DRY_RUN" != true ] && command -v docker &>/dev/null && command -v ufw &>/dev/null; then
+
+if skip_if_completed "DOCKER_FIREWALL"; then
+    log_info "Docker firewall filtering already configured, skipping"
+else
+    echo ""
+    echo "=========================================================================="
+    echo "DOCKER NETWORK FILTERING"
+    echo "=========================================================================="
+    echo ""
+    echo "Docker bypasses UFW. Ports published by containers are reachable from"
+    echo "the internet even when UFW shows no rule for them."
+    echo ""
+    echo "This adds a DOCKER-USER filter that drops external inbound traffic to"
+    echo "containers by default, with an explicit allowlist."
+    echo ""
+    echo "Traffic that stays allowed:"
+    echo "  • Established and related connections"
+    echo "  • Traffic from private ranges (10/8, 172.16/12, 192.168/16)"
+    echo "  • Container-to-container and host-to-container traffic"
+    if [ "$CLOUDFLARE_ONLY" != true ]; then
+        echo "  • External inbound on 80/tcp and 443/tcp"
+    else
+        echo "  • Nothing external inbound (Cloudflare-only mode)"
+    fi
+    echo ""
+    echo "Everything else from the internet to a container port is DROPPED."
+    echo ""
+    read -p "Apply DOCKER-USER filtering? (Y/n): " apply_docker_fw
+    apply_docker_fw=${apply_docker_fw:-y}
+
+    if [[ $apply_docker_fw =~ ^[Yy]$ ]]; then
+        # Detect the interface holding the default route
+        EXT_IF=$(ip -4 route show default | awk '{print $5; exit}')
+        if [ -z "$EXT_IF" ]; then
+            log_warning "Could not detect the external interface - skipping DOCKER-USER filtering"
+        else
+            log_info "External interface detected: $EXT_IF"
+
+            sudo cp /etc/ufw/after.rules /etc/ufw/after.rules.backup.$(date +%Y%m%d_%H%M%S)
+
+            # Drop any block a previous run added, so this is re-runnable
+            sudo sed -i '/# BEGIN SERVER-BASELINE DOCKER-USER/,/# END SERVER-BASELINE DOCKER-USER/d' /etc/ufw/after.rules
+
+            {
+                echo ""
+                echo "# BEGIN SERVER-BASELINE DOCKER-USER"
+                echo "# Managed by server-baseline install-script.sh - edit between the markers only."
+                echo "# Docker does not traverse UFW's INPUT chain; DOCKER-USER is consulted first"
+                echo "# for all container traffic, so the filter for published ports lives here."
+                echo "*filter"
+                echo ":DOCKER-USER - [0:0]"
+                echo "-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN"
+                echo "-A DOCKER-USER -s 10.0.0.0/8 -j RETURN"
+                echo "-A DOCKER-USER -s 172.16.0.0/12 -j RETURN"
+                echo "-A DOCKER-USER -s 192.168.0.0/16 -j RETURN"
+                if [ "$CLOUDFLARE_ONLY" != true ]; then
+                    echo "-A DOCKER-USER -i $EXT_IF -p tcp --dport 80 -j RETURN"
+                    echo "-A DOCKER-USER -i $EXT_IF -p tcp --dport 443 -j RETURN"
+                fi
+                echo "-A DOCKER-USER -i $EXT_IF -j DROP"
+                echo "-A DOCKER-USER -j RETURN"
+                echo "COMMIT"
+                echo "# END SERVER-BASELINE DOCKER-USER"
+            } | sudo tee -a /etc/ufw/after.rules >/dev/null
+
+            if sudo ufw reload; then
+                log_info "✓ DOCKER-USER filtering applied via /etc/ufw/after.rules"
+                log_info "  Verify with: sudo iptables -L DOCKER-USER -n -v"
+                log_info "  To add a port:  edit /etc/ufw/after.rules between the markers, then 'sudo ufw reload'"
+                log_info "  To remove:      delete the marked block and reload"
+            else
+                log_warning "✗ UFW reload failed - check /etc/ufw/after.rules syntax"
+                log_warning "  A timestamped backup is in /etc/ufw/"
+            fi
+        fi
+    else
+        log_warning "DOCKER-USER filtering skipped - container ports remain reachable from the internet"
+        log_warning "regardless of UFW rules. See the Security model section of README.md."
+    fi
+
+    ###########################################################################
+    # EGRESS POLICY
+    ###########################################################################
+    #
+    # Proxyjacking, cryptomining and data exfiltration all need outbound
+    # connectivity, usually on arbitrary ports. `ufw default allow outgoing`
+    # means a payload that lands on the host can dial out to anything. An
+    # allowlist does not prevent the initial compromise; it removes most of the
+    # value the attacker gets from it.
+    echo ""
+    echo "=========================================================================="
+    echo "OUTBOUND (EGRESS) POLICY"
+    echo "=========================================================================="
+    echo ""
+    echo "Default is 'allow outgoing': the server may connect anywhere, on any port."
+    echo ""
+    echo "Restricting egress to an allowlist keeps normal operation working while"
+    echo "cutting off payloads that need arbitrary outbound ports."
+    echo ""
+    echo "Would be allowed outbound:"
+    echo "  • DNS (53), NTP (123)"
+    echo "  • HTTP (80) and HTTPS (443)  - apt, Docker registries, Cloudflare"
+    echo "  • SSH (22, 888)              - git, backups, remote administration"
+    echo "  • Traffic to private ranges"
+    echo ""
+    echo "⚠️  Anything else outbound is denied, including mail (25/587), and any"
+    echo "    service you run that dials a non-standard port. Add rules for those."
+    echo ""
+    echo "    Undo at any time with:  sudo ufw default allow outgoing"
+    echo ""
+    read -p "Restrict outbound traffic to the allowlist? (y/N): " apply_egress
+    apply_egress=${apply_egress:-n}
+
+    if [[ $apply_egress =~ ^[Yy]$ ]]; then
+        log_info "Applying egress allowlist..."
+
+        sudo ufw allow out 53 comment 'DNS' || log_warning "Failed to allow outbound DNS"
+        sudo ufw allow out 123/udp comment 'NTP' || log_warning "Failed to allow outbound NTP"
+        sudo ufw allow out 80/tcp comment 'HTTP (apt, registries)' || log_warning "Failed to allow outbound HTTP"
+        sudo ufw allow out 443/tcp comment 'HTTPS (apt, registries, Cloudflare)' || log_warning "Failed to allow outbound HTTPS"
+        sudo ufw allow out 22/tcp comment 'SSH out (git, backups)' || log_warning "Failed to allow outbound SSH 22"
+        sudo ufw allow out 888/tcp comment 'SSH out (backups)' || log_warning "Failed to allow outbound SSH 888"
+        sudo ufw allow out to 10.0.0.0/8 comment 'Private range' || true
+        sudo ufw allow out to 172.16.0.0/12 comment 'Private range' || true
+        sudo ufw allow out to 192.168.0.0/16 comment 'Private range' || true
+
+        sudo ufw default deny outgoing || handle_error "Failed to set default deny outgoing"
+        sudo ufw reload || log_warning "Failed to reload UFW"
+
+        log_info "✓ Egress restricted to the allowlist"
+        log_warning "Note: this governs traffic originating on the HOST. Container traffic"
+        log_warning "is forwarded, not output, so it is not covered by this policy."
+        log_warning "Restrict container egress with per-network rules or an egress proxy."
+    else
+        log_info "Egress policy left at 'allow outgoing'"
+    fi
+
+    mark_completed "DOCKER_FIREWALL"
+fi
+
 fi
 
 ###############################################################################

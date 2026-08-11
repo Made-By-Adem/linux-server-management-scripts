@@ -1,0 +1,399 @@
+#!/bin/bash
+###############################################################################
+# Security Self-Check
+#
+# Answers one question: are the security controls on this host actually WORKING,
+# or do they merely exist?
+#
+# Every check in here exists because the corresponding control was installed,
+# reported healthy, and did nothing:
+#   - fail2ban ran for months against a log file that no longer exists
+#   - AIDE reported "no changes" while its own check was failing
+#   - auditd was stopped by malware and nothing noticed
+#   - a rootkit put itself in front of /usr/bin via /etc/profile
+#
+# "systemctl is-active" is not evidence. Each check below demands a real result.
+#
+# Usage:
+#   sudo bash security-selfcheck.sh              # human-readable report
+#   sudo bash security-selfcheck.sh --quiet      # only output when something is wrong
+#   sudo bash security-selfcheck.sh --telegram   # send failures to Telegram
+#
+# Telegram credentials are read from /etc/server-baseline/selfcheck.env:
+#   TELEGRAM_BOT_TOKEN=...
+#   TELEGRAM_CHAT_ID=...
+#
+# Exit codes: 0 = all checks passed, 1 = at least one FAIL, 2 = only WARNs.
+###############################################################################
+
+# Reset PATH to system directories before doing anything else. If this host has
+# a PATH hijack installed, inheriting the environment's PATH means running the
+# attacker's replacements for the very tools used to detect them. Every command
+# below is additionally invoked through an absolute path where it matters.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+set -u
+
+QUIET=false
+TELEGRAM=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --quiet)    QUIET=true; shift ;;
+        --telegram) TELEGRAM=true; shift ;;
+        --help|-h)
+            /bin/sed -n '2,30p' "$0"
+            exit 0
+            ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+
+FAILURES=()
+WARNINGS=()
+PASSES=()
+
+pass() { PASSES+=("$1");   [ "$QUIET" = false ] && echo -e "  ${GREEN}[PASS]${NC} $1"; return 0; }
+warn() { WARNINGS+=("$1"); [ "$QUIET" = false ] && echo -e "  ${YELLOW}[WARN]${NC} $1"; return 0; }
+fail() { FAILURES+=("$1"); [ "$QUIET" = false ] && echo -e "  ${RED}[FAIL]${NC} $1"; return 0; }
+
+section() { [ "$QUIET" = false ] && { echo ""; echo "── $1"; }; return 0; }
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "This script must run as root (sudo bash $0)" >&2
+    exit 1
+fi
+
+[ "$QUIET" = false ] && {
+    echo ""
+    echo "=========================================================================="
+    echo "  Security Self-Check - $(/bin/hostname) - $(/bin/date '+%Y-%m-%d %H:%M')"
+    echo "=========================================================================="
+}
+
+###############################################################################
+section "PATH integrity"
+###############################################################################
+# The single most characteristic sign of the userland rootkit families that ship
+# with proxyjacking payloads: a directory prepended to PATH inside a system path,
+# holding replacements for top/htop/lsof/crontab/df/mount/strace/ldd.
+#
+# $HOME/.local/bin in a user's own .profile is normal (pip, npm, XDG) and is not
+# matched here - only .local/bin under a SYSTEM path is.
+
+if /bin/grep -qs '/bin/\.local/bin\|/usr/bin/\.local/bin' \
+        /etc/profile /etc/profile.d/* /etc/environment /etc/bash.bashrc /root/.bashrc /root/.profile 2>/dev/null; then
+    fail "PATH injection found in a system profile (.local/bin under a system path)"
+else
+    pass "No PATH injection in system profiles"
+fi
+
+SHIMS_FOUND=""
+for d in /usr/bin/.local /bin/.local; do
+    [ -d "$d" ] && SHIMS_FOUND="$SHIMS_FOUND $d"
+done
+if [ -n "$SHIMS_FOUND" ]; then
+    fail "Shim directory present:$SHIMS_FOUND"
+else
+    pass "No shim directories under /usr/bin or /bin"
+fi
+
+HIJACKED=""
+for b in top htop lsof crontab df mount strace ldd; do
+    RESOLVED=$(command -v "$b" 2>/dev/null || true)
+    case "$RESOLVED" in
+        /usr/bin/*|/bin/*|/usr/sbin/*|/sbin/*|"") : ;;
+        *) HIJACKED="$HIJACKED $b->$RESOLVED" ;;
+    esac
+    for d in /usr/bin /bin; do
+        [ -f "$d/.local/bin/$b" ] && HIJACKED="$HIJACKED $d/.local/bin/$b"
+    done
+done
+if [ -n "$HIJACKED" ]; then
+    fail "Diagnostic tools resolve to non-system paths:$HIJACKED"
+else
+    pass "Diagnostic tools resolve to system paths"
+fi
+
+###############################################################################
+section "Fail2ban"
+###############################################################################
+# The failure this catches: a jail that is "enabled" but pointed at a log file
+# that no longer exists. It starts, reports healthy, and bans nothing - which is
+# indistinguishable from "no attacks" unless you compare against the journal.
+
+if ! command -v fail2ban-client >/dev/null 2>&1; then
+    warn "fail2ban is not installed"
+elif ! /bin/systemctl is-active fail2ban >/dev/null 2>&1; then
+    fail "fail2ban is installed but not running"
+elif ! fail2ban-client status sshd >/dev/null 2>&1; then
+    fail "fail2ban is running but the sshd jail is not active"
+else
+    pass "fail2ban sshd jail is active"
+
+    # A jail reading /var/log/auth.log on Ubuntu 24.04 is a dead jail.
+    if fail2ban-client get sshd logpath 2>/dev/null | /bin/grep -q '/var/log/auth.log' && \
+       [ ! -s /var/log/auth.log ]; then
+        fail "sshd jail reads /var/log/auth.log, which does not exist on this system - it can never ban"
+    else
+        pass "sshd jail log source exists"
+    fi
+
+    # Compare bans against actual failed logins. Zero bans while the journal is
+    # full of failures is a fault, not quiet.
+    # Note: `grep -c` prints 0 AND exits 1 on no match, so `|| echo 0` would
+    # produce "0\n0" and break the numeric test. wc -l always exits 0.
+    BANS=$(fail2ban-client status sshd 2>/dev/null | /bin/grep -i 'Total banned' | /bin/grep -oE '[0-9]+$' | /usr/bin/head -1)
+    BANS=${BANS:-0}
+    ATTEMPTS=$(/bin/journalctl -u ssh --since "-7 days" --no-pager 2>/dev/null | \
+               /bin/grep -iE 'Failed password|Invalid user|authentication failure' | /usr/bin/wc -l)
+    ATTEMPTS=${ATTEMPTS:-0}
+    if [ "${ATTEMPTS:-0}" -gt 50 ] && [ "${BANS:-0}" -eq 0 ]; then
+        fail "$ATTEMPTS failed SSH logins in 7 days but 0 total bans - the jail is not working"
+    elif [ "${ATTEMPTS:-0}" -gt 50 ]; then
+        pass "$ATTEMPTS failed logins, $BANS bans - jail is banning"
+    else
+        pass "$ATTEMPTS failed logins in 7 days (too few to judge banning)"
+    fi
+fi
+
+###############################################################################
+section "auditd and process accounting"
+###############################################################################
+# auditd being stopped was the clearest signal in the AC2 incident and nothing
+# reported it. This check is the alert that was missing.
+
+if ! command -v auditctl >/dev/null 2>&1; then
+    warn "auditd is not installed"
+else
+    if /bin/systemctl is-active auditd >/dev/null 2>&1; then
+        pass "auditd is running"
+    else
+        fail "auditd is NOT running - syscall auditing is off"
+    fi
+
+    RULE_COUNT=$(auditctl -l 2>/dev/null | /usr/bin/wc -l)
+    RULE_COUNT=${RULE_COUNT:-0}
+    if [ "${RULE_COUNT:-0}" -lt 10 ]; then
+        fail "auditd has only ${RULE_COUNT} rules loaded - expected 30+"
+    else
+        pass "auditd has ${RULE_COUNT} rules loaded"
+    fi
+
+    # Persistence paths must actually be covered, not merely present in a file.
+    MISSING_WATCH=""
+    for p in /etc/profile /etc/cron.d /var/spool/cron/crontabs /etc/systemd/system /root/.ssh /etc/ld.so.preload; do
+        auditctl -l 2>/dev/null | /bin/grep -q -- "-w $p" || MISSING_WATCH="$MISSING_WATCH $p"
+    done
+    if [ -n "$MISSING_WATCH" ]; then
+        warn "No audit watch on:$MISSING_WATCH"
+    else
+        pass "Persistence paths are covered by audit watches"
+    fi
+
+    # An auditd that stopped in the recent past is worth knowing about even if
+    # it is running now.
+    if /bin/journalctl -u auditd --since "-30 days" --no-pager 2>/dev/null | \
+            /bin/grep -qiE 'stopped|exiting'; then
+        warn "auditd was stopped at least once in the last 30 days - check: journalctl -u auditd"
+    else
+        pass "No auditd stop events in the last 30 days"
+    fi
+fi
+
+if /bin/systemctl is-active acct >/dev/null 2>&1 || /bin/systemctl is-active psacct >/dev/null 2>&1; then
+    pass "Process accounting is active"
+else
+    warn "Process accounting (acct) is not active - no command history will be recorded"
+fi
+
+###############################################################################
+section "File integrity (AIDE)"
+###############################################################################
+# Catches the state where AIDE is installed, the cron job runs, and every report
+# is green because the check itself is failing.
+
+if ! command -v aide >/dev/null 2>&1; then
+    warn "AIDE is not installed"
+elif [ ! -f /var/lib/aide/aide.db ]; then
+    fail "AIDE is installed but has no database - it has never had a baseline"
+else
+    DB_AGE_DAYS=$(( ( $(/bin/date +%s) - $(/usr/bin/stat -c %Y /var/lib/aide/aide.db) ) / 86400 ))
+    if [ "$DB_AGE_DAYS" -gt 30 ]; then
+        warn "AIDE database is ${DB_AGE_DAYS} days old - stale baselines produce noise, then get ignored"
+    else
+        pass "AIDE database is ${DB_AGE_DAYS} days old"
+    fi
+
+    # Does --check actually run? An AIDE that errors out is not an AIDE that
+    # found nothing.
+    /usr/bin/aide --check >/dev/null 2>&1
+    AIDE_RC=$?
+    if [ "$AIDE_RC" -ge 14 ]; then
+        fail "aide --check fails with exit ${AIDE_RC} - file integrity is UNVERIFIED"
+    elif [ "$AIDE_RC" -ne 0 ]; then
+        warn "aide --check reports differences (exit ${AIDE_RC}) - review them"
+    else
+        pass "aide --check completes cleanly"
+    fi
+fi
+
+###############################################################################
+section "Writable filesystem hardening"
+###############################################################################
+
+for m in /tmp /var/tmp /dev/shm; do
+    if /bin/findmnt -no OPTIONS "$m" 2>/dev/null | /bin/grep -q noexec; then
+        pass "$m is mounted noexec"
+    else
+        warn "$m is executable - payloads dropped there can be run directly"
+    fi
+done
+
+TMP_EXEC=$(/usr/bin/find /tmp /var/tmp /dev/shm -maxdepth 2 -type f -executable 2>/dev/null | /usr/bin/head -5)
+if [ -n "$TMP_EXEC" ]; then
+    fail "Executable files present in temporary directories: $(echo "$TMP_EXEC" | /bin/tr '\n' ' ')"
+else
+    pass "No executable files in /tmp, /var/tmp, /dev/shm"
+fi
+
+###############################################################################
+section "Docker exposure"
+###############################################################################
+
+if command -v docker >/dev/null 2>&1; then
+    # A second daemon with its own data-root is how container workloads are
+    # hidden from `docker ps` - not by filtering output, but by running on a
+    # completely separate daemon.
+    EXTRA_DAEMONS=$(/bin/ps -eo args 2>/dev/null | \
+        /bin/grep -E '(^|/)(dockerd|containerd)( |$)' | \
+        /bin/grep -v grep | \
+        /bin/grep -vE -- '-H fd://|--config /etc/containerd|^/usr/bin/containerd$|containerd-shim' || true)
+    if [ -n "$EXTRA_DAEMONS" ]; then
+        fail "Unexpected dockerd/containerd process: $(echo "$EXTRA_DAEMONS" | /usr/bin/head -2 | /bin/tr '\n' ' ')"
+    else
+        pass "No unexpected Docker daemons"
+    fi
+
+    # Container ports published on all interfaces. These are reachable from the
+    # internet whatever UFW says.
+    PUBLIC_PORTS=$(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | /bin/grep -E '0\.0\.0\.0:|:::' || true)
+    if [ -n "$PUBLIC_PORTS" ]; then
+        if /usr/sbin/iptables -L DOCKER-USER -n 2>/dev/null | /bin/grep -q DROP; then
+            pass "Containers publish on 0.0.0.0 but DOCKER-USER has a DROP rule"
+        else
+            warn "Containers published on all interfaces with no DOCKER-USER filter: $(echo "$PUBLIC_PORTS" | /bin/tr '\n' '; ')"
+        fi
+    else
+        pass "No containers published on all interfaces"
+    fi
+
+    # Known proxyjacking images.
+    PROXYWARE=$(docker ps -a --format '{{.Names}} {{.Image}}' 2>/dev/null | \
+        /bin/grep -iE 'repocket|packetstream|psclient|bitping|proxyrack|earnfm|wipter|antgain|traffmonetizer|pawns|honeygain|peer2profit' || true)
+    if [ -n "$PROXYWARE" ]; then
+        fail "Proxyware container present: $PROXYWARE"
+    else
+        pass "No known proxyware containers"
+    fi
+
+    # Containers holding root-equivalent access to the host.
+    for c in $(docker ps --format '{{.Names}}' 2>/dev/null); do
+        PRIV=$(docker inspect --format='{{.HostConfig.Privileged}}' "$c" 2>/dev/null)
+        PIDMODE=$(docker inspect --format='{{.HostConfig.PidMode}}' "$c" 2>/dev/null)
+        SOCK=$(docker inspect --format='{{range .Mounts}}{{.Source}} {{end}}' "$c" 2>/dev/null | /bin/grep -o 'docker.sock' | /usr/bin/wc -l)
+        RISK=""
+        [ "$PRIV" = "true" ] && RISK="$RISK privileged"
+        [ "$PIDMODE" = "host" ] && RISK="$RISK pid=host"
+        [ "${SOCK:-0}" -gt 0 ] && RISK="$RISK docker.sock"
+        if [ -n "$RISK" ]; then
+            warn "Container '$c' has host-level access:$RISK"
+        fi
+    done
+else
+    pass "Docker is not installed"
+fi
+
+###############################################################################
+section "Persistence artefacts"
+###############################################################################
+
+if /bin/grep -rqs 'perfcc\|FPROF' /root/.profile /root/.bashrc /etc/cron.d/ \
+        /etc/cron.hourly/ /etc/cron.daily/ /var/spool/cron/crontabs/ 2>/dev/null; then
+    fail "perfctl-style persistence marker found (perfcc/FPROF)"
+else
+    pass "No perfctl-style persistence markers"
+fi
+
+HIDDEN_DIRS=$(/bin/ls -d /var/.i.* /tmp/.t.* /usr/bin/wbin /bin/wbin /usr/lib/exi /dev/shm/.config /root/.config/cron 2>/dev/null || true)
+if [ -n "$HIDDEN_DIRS" ]; then
+    fail "Hidden working directory present: $(echo "$HIDDEN_DIRS" | /bin/tr '\n' ' ')"
+else
+    pass "No known hidden working directories"
+fi
+
+if [ -s /etc/ld.so.preload ]; then
+    fail "/etc/ld.so.preload is non-empty: $(/bin/cat /etc/ld.so.preload | /bin/tr '\n' ' ')"
+else
+    pass "/etc/ld.so.preload is empty"
+fi
+
+###############################################################################
+section "Secrets exposure"
+###############################################################################
+# Tokens on a command line are readable by anything that can read /proc,
+# including any container running with pid: host.
+
+CMDLINE_SECRETS=$(/bin/ps -eo args 2>/dev/null | \
+    /bin/grep -iE -- '--token[= ]|--password[= ]|apikey=|api_key=' | \
+    /bin/grep -v grep || true)
+if [ -n "$CMDLINE_SECRETS" ]; then
+    fail "Secret visible in a process command line: $(echo "$CMDLINE_SECRETS" | /usr/bin/head -2 | /usr/bin/cut -c1-120 | /bin/tr '\n' ' ')"
+else
+    pass "No secrets on process command lines"
+fi
+
+###############################################################################
+# Report
+###############################################################################
+
+TOTAL=$(( ${#PASSES[@]} + ${#WARNINGS[@]} + ${#FAILURES[@]} ))
+
+if [ "$QUIET" = false ]; then
+    echo ""
+    echo "=========================================================================="
+    echo "  ${#PASSES[@]} passed, ${#WARNINGS[@]} warnings, ${#FAILURES[@]} failures (of $TOTAL checks)"
+    echo "=========================================================================="
+    echo ""
+fi
+
+if [ ${#FAILURES[@]} -gt 0 ] || [ ${#WARNINGS[@]} -gt 0 ]; then
+    if [ "$QUIET" = true ]; then
+        echo "Security self-check on $(/bin/hostname): ${#FAILURES[@]} failures, ${#WARNINGS[@]} warnings"
+        for f in "${FAILURES[@]}"; do echo "  [FAIL] $f"; done
+        for w in "${WARNINGS[@]}"; do echo "  [WARN] $w"; done
+    fi
+
+    if [ "$TELEGRAM" = true ] && [ -r /etc/server-baseline/selfcheck.env ]; then
+        # shellcheck disable=SC1091
+        . /etc/server-baseline/selfcheck.env
+        if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            MSG="🔍 *Security Self-Check*%0A%0A"
+            MSG+="Server: $(/bin/hostname)%0A"
+            MSG+="Date: $(/bin/date '+%Y-%m-%d %H:%M')%0A%0A"
+            MSG+="Failures: ${#FAILURES[@]} • Warnings: ${#WARNINGS[@]}%0A%0A"
+            for f in "${FAILURES[@]}"; do MSG+="🚨 ${f}%0A"; done
+            for w in "${WARNINGS[@]}"; do MSG+="⚠️ ${w}%0A"; done
+            /usr/bin/curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d chat_id="${TELEGRAM_CHAT_ID}" \
+                -d text="${MSG}" \
+                -d parse_mode="Markdown" >/dev/null 2>&1
+        fi
+    fi
+fi
+
+[ ${#FAILURES[@]} -gt 0 ] && exit 1
+[ ${#WARNINGS[@]} -gt 0 ] && exit 2
+exit 0
