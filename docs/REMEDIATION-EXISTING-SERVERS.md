@@ -192,6 +192,32 @@ aideinit -y -f
 mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
 ```
 
+### Keeping it current without going blind
+
+A stale baseline produces so much noise that it gets ignored. The obvious fix —
+a cron job that refreshes it — is worse: it absorbs any tampering into the
+baseline within one cycle. That is precisely the bug that made the old reporter
+useless. **Do not put `aide --update` on a timer.**
+
+`aide-refresh.sh` is the safe middle. It checks first, reports exactly which
+files it is about to accept, and only then refreshes:
+
+```bash
+sudo aide-refresh --reason "post apt upgrade"   # check, report, then refresh
+sudo aide-refresh --check-only                  # report only, never touch the db
+```
+
+- If `aide --check` itself fails, it refreshes **nothing** and says integrity is
+  unverified. A broken checker is not a clean result.
+- If there are differences, the full list goes out *before* the refresh happens,
+  so there is a record of what was accepted even if the update is interrupted.
+
+Run it after a deliberate change — a package upgrade, a deployment — when the
+diff is attributable to something you did. `update-containers.sh --update-system`
+offers to run it in interactive mode for exactly that reason, and never does so
+unattended: a 10-20 minute baseline refresh should be a decision, not a side
+effect of a cron job.
+
 ---
 
 ## 3. auditd — cover the paths that persistence actually uses

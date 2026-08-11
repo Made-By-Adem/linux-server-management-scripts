@@ -865,6 +865,14 @@ else
             "$SCRIPT_DIR/security-selfcheck.sh" /usr/local/bin/security-selfcheck.sh
         ln -sf /usr/local/bin/security-selfcheck.sh /usr/local/bin/security-selfcheck
 
+        # Baseline refresh helper - run after deliberate changes, never on a timer
+        if [ -f "$SCRIPT_DIR/aide-refresh.sh" ]; then
+            install -m 700 -o root -g root \
+                "$SCRIPT_DIR/aide-refresh.sh" /usr/local/bin/aide-refresh.sh
+            ln -sf /usr/local/bin/aide-refresh.sh /usr/local/bin/aide-refresh
+            ok "Installed aide-refresh (run after upgrades: aide-refresh --reason '...')"
+        fi
+
         local args="--quiet"
         [ -r /etc/server-baseline/selfcheck.env ] && args="--quiet --telegram"
 

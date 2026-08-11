@@ -5399,6 +5399,20 @@ Run it any time with: sudo security-selfcheck" \
             log_dry_run "Would create /etc/cron.d/security-selfcheck (daily at 06:00)"
             log_dry_run "Would store Telegram credentials in /etc/server-baseline/selfcheck.env (chmod 600)"
         else
+            # Baseline refresh helper. Deliberately NOT put on a timer: a
+            # scheduled `aide --update` absorbs tampering into the baseline
+            # within one cycle, which is worse than a stale database. It is
+            # meant to be run after a deliberate change, and it reports what it
+            # absorbed every time.
+            AIDE_REFRESH_SRC="$(dirname "$(readlink -f "$0")")/aide-refresh.sh"
+            if [ -f "$AIDE_REFRESH_SRC" ]; then
+                sudo install -m 700 -o root -g root "$AIDE_REFRESH_SRC" /usr/local/bin/aide-refresh.sh
+                sudo ln -sf /usr/local/bin/aide-refresh.sh /usr/local/bin/aide-refresh
+                log_info "Installed /usr/local/bin/aide-refresh.sh"
+                log_info "  Run it after a deliberate change: sudo aide-refresh --reason 'post upgrade'"
+                log_info "  It reports which files it absorbs, and refuses to refresh on an AIDE error."
+            fi
+
             SELFCHECK_SRC="$(dirname "$(readlink -f "$0")")/security-selfcheck.sh"
 
             if [ -f "$SELFCHECK_SRC" ]; then

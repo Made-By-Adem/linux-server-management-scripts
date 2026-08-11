@@ -289,6 +289,37 @@ perform_system_update() {
     log_success "System update complete"
 
     SYSTEM_UPDATED=true
+
+    # A package upgrade is exactly the moment the AIDE baseline goes stale: the
+    # files it fingerprinted have legitimately changed. Refreshing it here means
+    # the diff is attributable to something you just did, instead of piling up
+    # into noise that eventually gets ignored.
+    #
+    # Never triggered automatically in unattended mode. `aide --update` takes
+    # 10-20 minutes, and more importantly a baseline refresh should be a
+    # decision, not a side effect of a cron job.
+    if [ -x /usr/local/bin/aide-refresh.sh ]; then
+        echo ""
+        log_info "AIDE baseline is now out of date - the upgrade changed files it tracks."
+        if [ "$MODE" = "interactive" ]; then
+            echo ""
+            echo "  Refreshing it now reports exactly which files are absorbed, so this"
+            echo "  upgrade's changes are recorded rather than silently accepted."
+            echo -e "  ${YELLOW}Takes 10-20 minutes.${NC}"
+            echo ""
+            read -p "Refresh the AIDE baseline now? (y/N): " refresh_aide
+            if [[ "${refresh_aide:-n}" =~ ^[Yy]$ ]]; then
+                /usr/local/bin/aide-refresh.sh --reason "after apt upgrade via update-containers" \
+                    || log_warning "AIDE refresh reported a problem - check its output"
+            else
+                log_info "Skipped. Run later: sudo aide-refresh.sh --reason 'post upgrade'"
+            fi
+        else
+            log_info "Unattended mode - not refreshing automatically."
+            log_info "Run when convenient: sudo aide-refresh.sh --reason 'post upgrade'"
+        fi
+    fi
+
     return 0
 }
 
