@@ -6243,15 +6243,56 @@ Target: $USER_HOME/.bashrc" \
     else
         log_info "Adding shell improvements..."
 
-        # Add useful aliases to .bashrc for actual user
-        if [ -f "$USER_HOME/.bashrc" ]; then
-            # Add aliases if not already present
-            grep -q "alias ll=" "$USER_HOME/.bashrc" || echo "alias ll='ls -lah'" >> "$USER_HOME/.bashrc"
-            grep -q "alias update=" "$USER_HOME/.bashrc" || echo "alias update='sudo apt-get update && sudo apt-get upgrade -y'" >> "$USER_HOME/.bashrc"
-            grep -q "alias dps=" "$USER_HOME/.bashrc" || echo "alias dps='docker ps --format \"table {{.Names}}\t{{.Status}}\t{{.Ports}}\"'" >> "$USER_HOME/.bashrc"
+        # System-wide, not in one account's .bashrc.
+        #
+        # USER_HOME is where the service directories live (/home on a root-only
+        # host), which is not necessarily a home directory with an rc file in
+        # it. Appending aliases to "$USER_HOME/.bashrc" wrote them to
+        # /home/.bashrc there - a file no shell ever reads.
+        cat > /etc/profile.d/99-server-baseline.sh <<'PROFILE_EOF'
+# Installed by server-baseline. Safe to edit; re-running the installer
+# overwrites this file.
+
+alias ll='ls -lah'
+alias update='apt-get update && apt-get upgrade -y'
+alias dps='docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
+alias dlog='docker logs -f --tail 100'
+PROFILE_EOF
+        sudo chmod 644 /etc/profile.d/99-server-baseline.sh
+
+        # Ubuntu sources /etc/profile.d only for login shells. Interactive
+        # non-login shells read /etc/bash.bashrc, so point that at the same file
+        # rather than maintaining two copies.
+        if [ -f /etc/bash.bashrc ] && ! grep -q '99-server-baseline' /etc/bash.bashrc; then
+            {
+                echo ""
+                echo "# server-baseline aliases (also loaded for login shells via profile.d)"
+                echo "[ -r /etc/profile.d/99-server-baseline.sh ] && . /etc/profile.d/99-server-baseline.sh"
+            } | sudo tee -a /etc/bash.bashrc >/dev/null
         fi
 
+        # Make this repo's tools available as commands.
+        #
+        # Symlinks, never copies: install-script.sh installs files from its own
+        # directory (reporters/, watchdogs/), and it resolves that directory by
+        # following the symlink back to the checkout. A copy in /usr/local/bin
+        # would look for those files in /usr/local/bin and find nothing.
+        link_repo_tool() {
+            local target="$1" name="$2"
+            if [ -f "$target" ]; then
+                sudo ln -sf "$target" "/usr/local/bin/$name"
+                log_info "  $name -> $target"
+            fi
+        }
+
+        log_info "Linking repository tools into /usr/local/bin..."
+        link_repo_tool "$SCRIPT_DIR/install-script.sh"                 server-setup
+        link_repo_tool "$SCRIPT_DIR/update-baseline.sh"                update-baseline
+        link_repo_tool "$PROJECT_ROOT/update-containers/update-containers.sh" update-containers
+        link_repo_tool "$PROJECT_ROOT/backup-script/backup.sh"         backup-folders
+
         log_info "Shell improvements added"
+        log_info "  Aliases apply to new shells; run 'source /etc/profile.d/99-server-baseline.sh' for this one."
     fi
 else
     log_info "Shell improvements skipped"

@@ -207,22 +207,45 @@ chmod +x backup-script/backup.sh
 
 ### Optional: Install System-Wide
 
+The baseline installer does this for you. To do it by hand, use **symlinks, not
+copies** — every one of these scripts loads files from its own directory
+(`reporters/`, `watchdogs/`, `.env`) and finds that directory by resolving its
+own path. A copy in `/usr/local/bin` looks for those files in `/usr/local/bin`
+and silently finds nothing.
+
 ```bash
-# Server baseline
-sudo cp server-baseline/install-script.sh /usr/local/bin/server-setup
-sudo chmod +x /usr/local/bin/server-setup
+cd /path/to/linux-server-management-scripts
 
-# Container updates
-sudo cp update-containers/update-containers.sh /usr/local/bin/update-containers
-sudo chmod +x /usr/local/bin/update-containers
+sudo ln -sf "$(pwd)/server-baseline/install-script.sh"            /usr/local/bin/server-setup
+sudo ln -sf "$(pwd)/server-baseline/update-baseline.sh"           /usr/local/bin/update-baseline
+sudo ln -sf "$(pwd)/update-containers/update-containers.sh"       /usr/local/bin/update-containers
+sudo ln -sf "$(pwd)/backup-script/backup.sh"                      /usr/local/bin/backup-folders
 
-# Folder backup (symlink so it finds .env)
-sudo ln -sf $(pwd)/backup-script/backup.sh /usr/local/bin/backup-folders
-
-# Now you can run from anywhere:
-sudo server-setup --help
-sudo update-containers --help
+# Now from anywhere:
+sudo server-setup --verify
+sudo update-baseline --check
+sudo update-containers --interactive
 backup-folders
+```
+
+Verify a link resolves back into the checkout rather than to `/usr/local/bin`:
+
+```bash
+readlink -f /usr/local/bin/server-setup
+```
+
+Move or re-clone the checkout and these links break. Re-run the installer, or
+re-create them.
+
+### Shell aliases
+
+The installer writes `/etc/profile.d/99-server-baseline.sh` (`ll`, `update`,
+`dps`, `dlog`) and sources it from `/etc/bash.bashrc`, so it applies to login
+and interactive shells alike, for every account. Load it in the current shell
+with:
+
+```bash
+source /etc/profile.d/99-server-baseline.sh
 ```
 
 ---
