@@ -593,6 +593,64 @@ schedule a monthly test alert so a dead alert chain is noticed." \
 fi
 
 ###############################################################################
+header "4b. Superseded watchdogs"
+###############################################################################
+#
+# A rebuilt host only ever gets what this repository installs. A host brought up
+# to the baseline with this script keeps whatever was already on it - including
+# tooling written by hand during an incident, before the repository version
+# existed. Nothing here knew about those, so two watchdogs ran side by side,
+# both alerting, and the older one's state file made AIDE report a difference
+# every single night.
+#
+# auditd-watchdog is a strict subset of security-watchdog: it tracks only
+# whether auditd is active, where security-watchdog tracks four units and
+# eleven monitors and already includes the same session count and journal
+# excerpt in its alerts. There is nothing to carry over.
+#
+# The script itself is deliberately left on disk. It lives in no repository, so
+# deleting it would be irreversible; only the units and the state file go.
+
+LEGACY_WD=/etc/systemd/system/auditd-watchdog.service
+
+if [ ! -f "$LEGACY_WD" ]; then
+    :   # nothing to say on a host that never had it
+elif ! systemctl is-active security-watchdog.timer >/dev/null 2>&1; then
+    note "auditd-watchdog.service is present but security-watchdog is not active"
+    note "  Leaving it alone - removing it now would leave nothing watching auditd."
+else
+    legacy_wd_fix() {
+        systemctl disable --now auditd-watchdog.timer >/dev/null 2>&1 || true
+        systemctl disable --now auditd-watchdog.service >/dev/null 2>&1 || true
+        rm -f "$LEGACY_WD" /etc/systemd/system/auditd-watchdog.timer
+        systemctl daemon-reload
+        rm -f /var/lib/auditd-watchdog.state
+        ok "Removed the auditd-watchdog units and state file"
+        note "The script itself is untouched: /home/scripts/watchdogs/auditd-watchdog.sh"
+        note "Its state file was in AIDE's baseline, so refresh it:"
+        note "  aide-refresh --reason 'removed the superseded auditd-watchdog'"
+        return 0
+    }
+
+    offer "legacy-watchdog" "Two watchdogs are watching auditd" \
+"auditd-watchdog.service predates security-watchdog and does a strict subset of
+its job: it reports only whether auditd is active. security-watchdog covers
+auditd, fail2ban, acct and the fail2ban jail, plus eleven state monitors, and
+its alerts already carry the same session count and journal excerpt.
+
+Left in place you get two alerts for one event, which is how an alert channel
+stops being read. Its state file is rewritten every minute and sits in AIDE's
+baseline, so it also produces a file-integrity difference every night.
+
+It also loads credentials from another project's .env, which is a second copy
+of a token to rotate and to leak.
+
+Fix: disable and remove the units and the state file. The script itself is left
+on disk - it is in no repository, so removing it would be irreversible." \
+        legacy_wd_fix
+fi
+
+###############################################################################
 header "5. AIDE reporting"
 ###############################################################################
 
