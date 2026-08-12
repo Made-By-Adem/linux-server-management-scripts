@@ -1560,6 +1560,80 @@ edited has no effect on them, which is the entire point." \
 fi
 
 ###############################################################################
+header "8d. cloud-init crashes on Docker interfaces"
+###############################################################################
+#
+# Starting a container makes Docker create a veth pair. udev fires cloud-init's
+# network hotplug hook for it, which asks the cloud datasource what this
+# interface is. It is not a provider NIC, so detect_hotplugged_device() finds
+# nothing, raises, and apport writes /var/crash/_usr_bin_cloud-init.0.crash.
+#
+# So every container restart leaves a crash dump behind. That matters here for
+# a specific reason: /var/crash is monitored on purpose, because a crash
+# appearing is real information. A recurring benign one trains you to dismiss
+# the whole directory, and the next crash - the one that is not benign - gets
+# dismissed with it.
+#
+# The hook has no function on these hosts. Networking is static and everything
+# else is Docker. Overriding the rule with a symlink to /dev/null in /etc is
+# the standard systemd/udev way: it wins over the packaged rule and survives a
+# cloud-init upgrade.
+
+CI_RULE=""
+for d in /lib/udev/rules.d /usr/lib/udev/rules.d; do
+    [ -f "$d/10-cloud-init-hook-hotplug.rules" ] && CI_RULE="10-cloud-init-hook-hotplug.rules" && break
+done
+
+if [ -z "$CI_RULE" ]; then
+    :   # cloud-init's hotplug hook is not installed on this host
+elif ! command -v docker >/dev/null 2>&1; then
+    :   # no Docker, so no veth churn to trip over
+elif [ -L "/etc/udev/rules.d/$CI_RULE" ]; then
+    ok "cloud-init's network hotplug hook is disabled"
+    CLEAN+=("cloudinit-hotplug")
+else
+    CI_CRASHES=$(ls -1 /var/crash/_usr_bin_cloud-init*.crash 2>/dev/null | wc -l)
+    [ "${CI_CRASHES:-0}" -gt 0 ] && \
+        note "Already ${CI_CRASHES} cloud-init crash dump(s) in /var/crash"
+
+    cloudinit_hotplug_fix() {
+        ln -sf /dev/null "/etc/udev/rules.d/$CI_RULE"
+        udevadm control --reload-rules 2>/dev/null || \
+            note "udevadm reload failed - the override applies after the next boot"
+        ok "Disabled cloud-init's network hotplug hook"
+
+        # Only cloud-init's own dumps, and only after the cause is fixed.
+        # Everything else in /var/crash stays: those are somebody's evidence.
+        if [ "${CI_CRASHES:-0}" -gt 0 ]; then
+            rm -f /var/crash/_usr_bin_cloud-init*.crash
+            ok "Removed ${CI_CRASHES} cloud-init crash dump(s)"
+            note "Other crash dumps in /var/crash were left alone."
+        fi
+
+        note "Verify: restart one container and check /var/crash stays empty."
+        note "AIDE tracked those files, so refresh afterwards:"
+        note "  aide-refresh --reason 'cloud-init hotplug hook disabled'"
+        return 0
+    }
+
+    offer "cloudinit-hotplug" "Every container restart crashes cloud-init" \
+"Docker creates a veth pair when a container starts. udev hands it to
+cloud-init's network hotplug hook, which asks the cloud datasource to identify
+it, finds nothing - it is not a provider NIC - and crashes. apport writes a
+dump to /var/crash each time.
+
+/var/crash is monitored deliberately: a crash dump appearing is information. A
+recurring harmless one teaches you to ignore the directory, and then the crash
+that matters is ignored too.
+
+The hook does nothing useful here - networking is static and the rest is
+Docker. Fix: override the udev rule with a symlink to /dev/null in /etc, which
+wins over the packaged rule and survives a cloud-init upgrade. Existing
+cloud-init dumps are removed; any other crash dumps are left untouched." \
+        cloudinit_hotplug_fix
+fi
+
+###############################################################################
 header "9. Security self-check"
 ###############################################################################
 

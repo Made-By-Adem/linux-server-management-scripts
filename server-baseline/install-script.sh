@@ -2167,6 +2167,29 @@ sudo systemctl restart docker || handle_error "Failed to restart Docker service"
 
 log_info "Docker $(docker --version) installed successfully"
 log_info "Docker Compose installed as plugin (use: docker compose)"
+
+# Starting a container makes Docker create a veth pair. udev hands it to
+# cloud-init's network hotplug hook, which asks the cloud datasource what this
+# interface is, finds nothing - it is not a provider NIC - and crashes. apport
+# then writes a dump to /var/crash on every single container start.
+#
+# That matters because /var/crash is deliberately monitored by AIDE: a crash
+# dump appearing is real information. A recurring harmless one teaches the
+# operator to dismiss the directory, and the crash that is not harmless goes
+# with it.
+#
+# The hook has no purpose on a server with static networking. Overriding the
+# rule with a symlink to /dev/null in /etc is the standard udev mechanism: it
+# takes precedence over the packaged rule and survives a cloud-init upgrade.
+for _cidir in /lib/udev/rules.d /usr/lib/udev/rules.d; do
+    if [ -f "$_cidir/10-cloud-init-hook-hotplug.rules" ]; then
+        sudo ln -sf /dev/null /etc/udev/rules.d/10-cloud-init-hook-hotplug.rules
+        sudo udevadm control --reload-rules 2>/dev/null || true
+        log_info "Disabled cloud-init's network hotplug hook (it crashes on Docker veth devices)"
+        break
+    fi
+done
+
 mark_completed "DOCKER_INSTALL"
 fi
 
