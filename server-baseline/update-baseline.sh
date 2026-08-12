@@ -584,8 +584,23 @@ if [ -f /etc/aide/aide.conf ] && ! grep -q '^!/var/lib/server-baseline' /etc/aid
 !/root/\.cache
 !/root/\.copilot
 !/root/\.bash_history
+
+# ---------------------------------------------------------------------
+# LOCAL EXCLUSIONS - add your own below this line.
+#
+# Application log and data directories churn every day and will otherwise
+# make every run report differences. Exclude the directories that change,
+# NOT the whole application tree: the code and configs beside them are
+# exactly what an integrity monitor is for.
+#
+# Example, for services laid out as /home/<service>/<instance>/:
+#   !/home/pos-servers/[^/]+/logs
+#   !/home/pos-servers/[^/]+/scanapp-data
+# ---------------------------------------------------------------------
 EOF
         ok "Added exclusions to /etc/aide/aide.conf"
+        note "Application log/data directories are site-specific - see the LOCAL"
+        note "EXCLUSIONS block at the end of /etc/aide/aide.conf to add yours."
         note "Rebuild the baseline afterwards so they take effect:"
         note "  aide-refresh --reason 'after adding exclusions'"
         return 0
