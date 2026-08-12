@@ -453,6 +453,19 @@ else
     # every earlier log irrelevant: they describe a baseline that no longer
     # exists, and judging the present by them reports failures that were
     # already fixed.
+    # The installed reporter resolves AIDE independently of this script. That
+    # logic lived in five places and drifted: one copy lacked a branch, fell
+    # through to a bare `aide`, and reported exit 17 every night on a host whose
+    # configuration was fine. Compare what the reporter would resolve against
+    # what this script resolves, so a future divergence is caught here rather
+    # than by a nightly alert nobody can act on.
+    if [ -f /usr/local/bin/aide-telegram.sh ] && \
+       ! /bin/grep -q 'config=/etc/aide/aide.conf' /usr/local/bin/aide-telegram.sh 2>/dev/null; then
+        fail "The installed AIDE reporter cannot resolve this host's config layout"
+        warn "  It will report exit 17 nightly regardless of the actual state."
+        warn "  Fix: sudo update-baseline   (refreshes the reporter from the checkout)"
+    fi
+
     # A log only says something about the present if it was written BOTH after
     # the current database AND by the current reporter. A log from the old
     # broken reporter post-dates the database on any host where the database
