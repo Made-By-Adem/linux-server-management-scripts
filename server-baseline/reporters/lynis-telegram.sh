@@ -30,9 +30,47 @@ CONFIG_FILE="$(resolve_env_file || true)"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 
-if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
-    command -v logger >/dev/null 2>&1 &&         logger -t lynis-telegram "no Telegram credentials in /etc/server-baseline/selfcheck.env; report not sent"
-fi
+###############################################################################
+# Sending
+#
+# This reporter used to end in a bare `curl ... >/dev/null 2>&1`: no status
+# check, no guard on empty credentials. A rejected message, an expired token
+# and a delivered report were all indistinguishable from each other, which is
+# the same silent-failure class the other reporters were fixed for.
+###############################################################################
+
+html_escape() {
+    sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+send_telegram() {
+    local name http_code
+    name="$(basename "$0")"
+
+    if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+        echo "$name: no Telegram credentials resolved - report NOT sent" >&2
+        command -v logger >/dev/null 2>&1 && \
+            logger -t "$name" "no Telegram credentials resolved; report not sent"
+        return 1
+    fi
+
+    # -d, not --data-urlencode: line breaks are written as %0A below, which
+    # Telegram decodes from a plain field. Urlencoding would escape the percent
+    # sign and print "%0A" throughout the message.
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+        -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHAT_ID}" \
+        -d parse_mode="HTML" \
+        -d text="$1")
+
+    [ "$http_code" = "200" ] && return 0
+
+    echo "$name: Telegram rejected the message (HTTP $http_code)" >&2
+    command -v logger >/dev/null 2>&1 && \
+        logger -t "$name" "Telegram send FAILED with HTTP $http_code"
+    return 1
+}
+
 LYNIS_LOG="/var/log/lynis-report.dat"
 RECOMMENDATIONS_DIR="/var/log/lynis-recommendations"
 DATE_STAMP=$(date +%Y%m%d-%H%M%S)
@@ -96,14 +134,9 @@ chmod 644 "$RECOMMENDATIONS_FILE"
 REPORT_FILE="/var/log/lynis-report.dat"
 REPORT_LOG="/var/log/lynis.log"
 
-# Function to escape HTML special characters
-escape_html() {
-    echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
-}
-
 # Build Telegram message with HTML formatting
 MESSAGE="🛡️ <b>Lynis Monthly Audit</b>%0A%0A"
-MESSAGE+="<b>Server:</b> $(hostname)%0A"
+MESSAGE+="<b>Server:</b> $(hostname | html_escape)%0A"
 MESSAGE+="<b>Hardening Score:</b> <code>${HARDENING_INDEX}/100</code>%0A"
 MESSAGE+="<b>Total suggestions:</b> ${SUGGESTION_COUNT}%0A%0A"
 MESSAGE+="<b>Top 5 suggestions:</b>%0A"
@@ -111,7 +144,7 @@ MESSAGE+="<b>Top 5 suggestions:</b>%0A"
 # Format top 5 suggestions (escaped for HTML)
 while IFS= read -r suggestion; do
     if [ -n "$suggestion" ]; then
-        ESCAPED=$(escape_html "$suggestion")
+        ESCAPED=$(printf %s "$suggestion" | html_escape)
         MESSAGE+="• ${ESCAPED}%0A"
     fi
 done <<< "$SUGGESTIONS_CLEAN"
@@ -122,10 +155,12 @@ MESSAGE+="<b>View commands:</b>%0A"
 MESSAGE+="<code>cat ${RECOMMENDATIONS_FILE}</code>%0A"
 MESSAGE+="<code>lynis show details TEST-ID</code>"
 
-curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-    -d chat_id="${TELEGRAM_CHAT_ID}" \
-    -d text="${MESSAGE}" \
-    -d parse_mode="HTML" >/dev/null 2>&1
+send_telegram "$MESSAGE"
+SEND_RC=$?
 
 # Clean up old recommendation files (keep last 12 months)
 find "$RECOMMENDATIONS_DIR" -name "lynis-recommendations-*.log" -type f -mtime +365 -delete 2>/dev/null || true
+
+# Exit non-zero when the report did not reach Telegram, so a cron mail or a
+# manual run shows the failure instead of the cleanup's exit code.
+exit "$SEND_RC"
