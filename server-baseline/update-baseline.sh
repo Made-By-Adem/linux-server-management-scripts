@@ -85,6 +85,38 @@ needs_refresh() {
               <(grep -v '^ENV_FILE_DEFAULT=' "$installed") >/dev/null 2>&1
 }
 
+# read_env_value <KEY> <file>
+#
+# Read one KEY=value out of a .env without sourcing it - these files are not
+# ours to execute, and one of them being writable would otherwise be a way to
+# run code as root.
+#
+# Inline comments are the trap. The previous one-liner stripped quotes and
+# spaces with tr but left the comment intact, so
+#
+#     REMOTE_HOST="10.0.0.3" # private ip
+#
+# came back as 10.0.0.3#privateip. ssh-keyscan then failed against a host that
+# does not exist and the check reported it as unreachable - blaming the network
+# for a parsing bug, and leaving the real setting unfixed run after run.
+#
+# bash strips that comment itself when backup.sh sources the same file, which
+# is why the backups worked while this check did not.
+read_env_value() {
+    local key="$1" file="$2" v
+    v=$(grep -E "^[[:space:]]*${key}=" "$file" 2>/dev/null | head -1 | cut -d= -f2-)
+    v=${v#"${v%%[![:space:]]*}"}          # leading whitespace
+
+    case "$v" in
+        \"*) v=${v#\"}; v=${v%%\"*} ;;    # "value"  # comment
+        \'*) v=${v#\'}; v=${v%%\'*} ;;    # 'value'  # comment
+        *)   v=${v%%#*}                   #  value   # comment
+             v=${v%"${v##*[![:space:]]}"} ;;
+    esac
+
+    printf %s "$v"
+}
+
 # offer <id> <title> <why> <fix_function>
 # The caller has already established that the fix is needed.
 offer() {
@@ -1255,10 +1287,9 @@ else
                 touch "$kh"
 
                 for env_file in $NEEDS_TRUST; do
-                    # Read only the two values needed, without sourcing the file
                     local host port
-                    host=$(grep -E '^[[:space:]]*REMOTE_HOST=' "$env_file" | head -1 | cut -d= -f2- | tr -d '"'"'"' ')
-                    port=$(grep -E '^[[:space:]]*SSH_PORT=' "$env_file" | head -1 | cut -d= -f2- | tr -d '"'"'"' ')
+                    host=$(read_env_value REMOTE_HOST "$env_file")
+                    port=$(read_env_value SSH_PORT "$env_file")
                     port=${port:-22}
 
                     if [ -z "$host" ]; then
@@ -1266,8 +1297,14 @@ else
                         continue
                     fi
 
+                    # -F: an IP is full of dots, and as a regex those match any
+                    # character - 10.0.0.3 would happily match 100003 or a
+                    # neighbouring address in the file.
                     if ssh-keyscan -T 10 -p "$port" "$host" >>"$kh" 2>/dev/null && \
-                       grep -q "$host" "$kh"; then
+                       grep -qF "$host" "$kh"; then
+                        # A .env without a trailing newline would otherwise get
+                        # this glued onto its last setting.
+                        [ -n "$(tail -c1 "$env_file")" ] && echo >> "$env_file"
                         echo 'STRICT_HOST_KEY="yes"' >> "$env_file"
                         ok "$(basename "$env_file"): seeded $host:$port and pinned the key"
                         done_any=true
