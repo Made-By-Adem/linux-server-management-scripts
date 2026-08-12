@@ -114,8 +114,16 @@ aide_cmd() {
 }
 AIDE="$(aide_cmd)"
 
+# Telegram's Markdown parser answers HTTP 400 on a single unmatched _ * ` or
+# [ . These messages list file paths, where underscores are the norm, so every
+# message that actually had content would have failed to send.
+html_escape() {
+    sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
 LOG_FILE="/var/log/aide-refresh-$(date +%Y%m%d_%H%M%S).log"
 HOST=$(hostname)
+HOST_ESC=$(printf %s "$HOST" | html_escape)
 TS=$(date '+%Y-%m-%d %H:%M')
 
 syslog() {
@@ -132,7 +140,7 @@ send_telegram() {
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
         -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
         -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d parse_mode="Markdown" \
+        -d parse_mode="HTML" \
         -d text="$1")
     [ "$code" = "200" ] && return 0
     syslog "Telegram send FAILED with HTTP ${code}"
@@ -160,12 +168,12 @@ RC=$?
 # AIDE itself failed - refresh nothing
 ###############################################################################
 if [ "$RC" -ge 14 ]; then
-    MSG="🚨 *AIDE REFRESH ABORTED*%0A%0A"
-    MSG+="Server: ${HOST}%0A"
+    MSG="<b>🚨 AIDE REFRESH ABORTED</b>%0A%0A"
+    MSG+="Server: <code>${HOST_ESC}</code>%0A"
     MSG+="Date: ${TS}%0A%0A"
-    MSG+="\`aide --check\` failed with exit ${RC}. The database was *not* touched.%0A"
+    MSG+="<code>aide --check</code> failed with exit ${RC}. The database was <b>not</b> touched.%0A"
     MSG+="File integrity is currently UNVERIFIED - this is not a clean result.%0A%0A"
-    MSG+="\`$(tail -5 "$LOG_FILE" | tr '\n' ' ' | cut -c1-250)\`"
+    MSG+="<pre>$(tail -5 "$LOG_FILE" | tr '\n' ' ' | cut -c1-250 | html_escape)</pre>"
     send_telegram "$MSG"
     syslog "aide --check failed with exit ${RC}; database untouched"
     echo "AIDE check failed (exit $RC). Database untouched. See $LOG_FILE" >&2
@@ -189,31 +197,31 @@ REMOVED=$(summary_count Removed); REMOVED=${REMOVED:-0}
 CHANGED=$(summary_count Changed); CHANGED=${CHANGED:-0}
 
 # AIDE detail lines look like "f++++++++++++++++: /path/to/file"
-DETAIL=$(grep -E '^[^[:space:]]+: /' "$LOG_FILE" | head -25 | sed 's/^/• /' | tr '\n' '@' | sed 's/@/%0A/g')
+DETAIL=$(grep -E '^[^[:space:]]+: /' "$LOG_FILE" | head -25 | html_escape | sed 's/^/- /' | tr '\n' '@' | sed 's/@/%0A/g')
 TOTAL_LINES=$(grep -cE '^[^[:space:]]+: /' "$LOG_FILE" 2>/dev/null)
 TOTAL_LINES=${TOTAL_LINES:-0}
 
 if [ "$CHECK_ONLY" = true ]; then
-    MSG="🔍 *AIDE Check* (no refresh)%0A%0A"
+    MSG="<b>🔍 AIDE Check</b> (no refresh)%0A%0A"
 else
-    MSG="📋 *AIDE Baseline Refreshed*%0A%0A"
+    MSG="<b>📋 AIDE Baseline Refreshed</b>%0A%0A"
 fi
-MSG+="Server: ${HOST}%0A"
+MSG+="Server: <code>${HOST_ESC}</code>%0A"
 MSG+="Date: ${TS}%0A"
-MSG+="Reason: ${REASON}%0A%0A"
-MSG+="Added: ${ADDED} • Removed: ${REMOVED} • Changed: ${CHANGED}%0A%0A"
-MSG+="*Files:*%0A${DETAIL}%0A"
-[ "$TOTAL_LINES" -gt 25 ] && MSG+="_...and $((TOTAL_LINES - 25)) more, see the log._%0A"
-MSG+="%0AFull log: \`${LOG_FILE}\`%0A%0A"
+MSG+="Reason: $(printf %s "$REASON" | html_escape)%0A%0A"
+MSG+="Added: ${ADDED} / Removed: ${REMOVED} / Changed: ${CHANGED}%0A%0A"
+MSG+="<b>Files:</b>%0A${DETAIL}%0A"
+[ "$TOTAL_LINES" -gt 25 ] && MSG+="<i>...and $((TOTAL_LINES - 25)) more, see the log.</i>%0A"
+MSG+="%0AFull log: <code>${LOG_FILE}</code>%0A%0A"
 
 if [ "$CHECK_ONLY" = true ]; then
-    MSG+="_The database was NOT updated (--check-only)._"
+    MSG+="<i>The database was NOT updated (--check-only).</i>"
     send_telegram "$MSG"
     echo "Differences reported. Database untouched (--check-only). See $LOG_FILE"
     exit 2
 fi
 
-MSG+="⚠️ _These files are now the new baseline. If anything above was not you, investigate before trusting the next check._"
+MSG+="<i>These files are now the new baseline. If anything above was not you, investigate before trusting the next check.</i>"
 
 # Send the record BEFORE absorbing, so the evidence exists even if the update
 # is interrupted.
