@@ -5861,6 +5861,23 @@ Lynis recommendation: FINT-4350" \
 !/root/\.copilot
 !/root/\.bash_history
 
+# A git checkout rewrites these on every pull, and this repository is itself a
+# checkout on every host - so a single 'git pull' produced a few thousand
+# differences in the next morning's report.
+#
+# Deliberately NOT the whole .git directory: hooks and config stay monitored,
+# because a hook is executable code that runs as whoever runs git. Only the
+# content-addressed churn is excluded.
+!.*/\.git/objects
+!.*/\.git/logs
+!.*/\.git/refs
+!.*/\.git/index
+!.*/\.git/FETCH_HEAD
+!.*/\.git/ORIG_HEAD
+!.*/\.git/COMMIT_EDITMSG
+!.*/\.git/packed-refs
+!.*/\.git/modules
+
 # Monitor Docker binaries if installed
 /usr/bin/docker$ R
 /usr/bin/docker-compose$ R
