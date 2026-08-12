@@ -702,6 +702,30 @@ for gp in objects logs refs index FETCH_HEAD ORIG_HEAD COMMIT_EDITMSG \
     AIDE_EXCLUDES+=("!${AIDE_GIT_ROOT}/\\.git/${gp}")
 done
 
+# A backup destination is a mirror of another host's filesystem, plus an
+# .attic/ of everything rsync replaced. Every run rewrites thousands of files
+# there by design, and the host it came from is monitoring those same files
+# itself - watching the copy adds no coverage and buries the copy's own host in
+# noise. AC1 reported 1072 additions the first evening its backup cron ran.
+#
+# Read from the backup configs rather than hardcoded, so a host that keeps its
+# backups somewhere else is still covered. Only when BACKUP_DEST is set
+# explicitly: unset means backup.sh writes inside its own directory in this
+# checkout, and excluding that would hide backup.sh itself from AIDE.
+BACKUP_ENV_DIR="$PROJECT_ROOT/backup-script"
+if [ -d "$BACKUP_ENV_DIR" ]; then
+    for bf in "$BACKUP_ENV_DIR"/.env "$BACKUP_ENV_DIR"/.env.*; do
+        [ -f "$bf" ] || continue
+        case "$bf" in *.example) continue ;; esac
+        bdest=$(read_env_value BACKUP_DEST "$bf")
+        [ -n "$bdest" ] || continue
+        bdest="${bdest%/}"
+        brule="!${bdest//./\\.}"
+        case " ${AIDE_EXCLUDES[*]} " in *" $brule "*) continue ;; esac
+        AIDE_EXCLUDES+=("$brule")
+    done
+fi
+
 # A stale entry from the version that shipped the unparseable rules. Left in
 # place, AIDE stays dead however many correct rules are added after it.
 AIDE_BROKEN=$(grep -c '^![^/]' /etc/aide/aide.conf 2>/dev/null || true)
