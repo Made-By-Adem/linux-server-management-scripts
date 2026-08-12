@@ -5878,6 +5878,15 @@ Lynis recommendation: FINT-4350" \
 !.*/\.git/packed-refs
 !.*/\.git/modules
 
+# Package metadata, refreshed by apt's own timers. Tampering here is not a
+# useful attack: the indexes are signature-verified, so a modified one fails
+# apt rather than installing anything.
+!/var/lib/apt/lists
+!/var/lib/ubuntu-advantage
+!/var/lib/landscape
+!/var/lib/update-notifier
+!/var/lib/PackageKit
+
 # Monitor Docker binaries if installed
 /usr/bin/docker$ R
 /usr/bin/docker-compose$ R
