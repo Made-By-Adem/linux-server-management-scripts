@@ -1658,8 +1658,15 @@ else
             ok "Installed aide-refresh (run after upgrades: aide-refresh --reason '...')"
         fi
 
+        # --telegram is decided by whether credentials resolve ANYWHERE, not by
+        # whether the legacy /etc file happens to exist. Testing only the old
+        # path meant the daily job was scheduled without --telegram on every
+        # host set up after credentials moved into the checkout - so the
+        # self-check ran, found things, and told no one.
         local args="--quiet"
-        [ -r /etc/server-baseline/selfcheck.env ] && args="--quiet --telegram"
+        if [ -r "$CRED_FILE" ] || [ -r /etc/server-baseline/selfcheck.env ]; then
+            args="--quiet --telegram"
+        fi
 
         {
             echo "# Daily security self-check - only speaks up when something fails"
