@@ -133,7 +133,7 @@ send_telegram() {
         -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
         -d chat_id="${TELEGRAM_CHAT_ID}" \
         -d parse_mode="Markdown" \
-        --data-urlencode text="$1")
+        -d text="$1")
     [ "$code" = "200" ] && return 0
     syslog "Telegram send FAILED with HTTP ${code}"
     return 1
