@@ -599,23 +599,63 @@ header "5. AIDE reporting"
 # Exclude paths that change by design. Without these, every run reports
 # differences - the watchdog alone rewrites /var/lib/server-baseline every
 # minute - and an integrity monitor that always fires is one that gets ignored.
-if [ -f /etc/aide/aide.conf ] && ! grep -q '^!/var/lib/server-baseline' /etc/aide/aide.conf; then
+#
+# Checked rule by rule rather than against a single marker line. The marker
+# approach meant the block could only ever be written once: every later
+# addition here would find the marker present, report the component correct,
+# and never reach a host that was set up before the addition.
+AIDE_EXCLUDES=(
+    '!/var/lib/aide'
+    '!/var/lib/server-baseline'
+    '!/var/lib/containerd'
+    '!/var/lib/systemd'
+    '!/root/\.vscode-server'
+    '!/root/\.cache'
+    '!/root/\.copilot'
+    '!/root/\.bash_history'
+
+    # A git checkout rewrites these on every pull, and this repository is
+    # itself a checkout on every host - so `git pull` alone produced a few
+    # thousand differences the next morning.
+    #
+    # Deliberately NOT the whole .git directory: hooks and config stay
+    # monitored, because a hook is executable code that runs as whoever runs
+    # git. Only the content-addressed churn is excluded.
+    '!.*/\.git/objects'
+    '!.*/\.git/logs'
+    '!.*/\.git/refs'
+    '!.*/\.git/index'
+    '!.*/\.git/FETCH_HEAD'
+    '!.*/\.git/ORIG_HEAD'
+    '!.*/\.git/COMMIT_EDITMSG'
+    '!.*/\.git/packed-refs'
+    '!.*/\.git/modules'
+)
+
+AIDE_MISSING=()
+if [ -f /etc/aide/aide.conf ]; then
+    for rule in "${AIDE_EXCLUDES[@]}"; do
+        grep -qxF "$rule" /etc/aide/aide.conf || AIDE_MISSING+=("$rule")
+    done
+fi
+
+if [ -f /etc/aide/aide.conf ] && [ ${#AIDE_MISSING[@]} -gt 0 ]; then
     aide_excludes_fix() {
         cp /etc/aide/aide.conf "/etc/aide/aide.conf.bak.$(date +%Y%m%d_%H%M%S)"
-        cat >> /etc/aide/aide.conf <<'EOF'
 
-# Added by update-baseline: paths that change by design.
-# The trade-off is explicit: an attacker could alter the watchdog's state
-# files unnoticed. Those files change every minute legitimately, so AIDE
-# could never have told tampering from normal operation there.
-!/var/lib/aide
-!/var/lib/server-baseline
-!/var/lib/containerd
-!/var/lib/systemd
-!/root/\.vscode-server
-!/root/\.cache
-!/root/\.copilot
-!/root/\.bash_history
+        {
+            echo ""
+            echo "# Added by update-baseline $(date +%Y-%m-%d): paths that change by design."
+            echo "# The trade-off is explicit: an attacker could alter these unnoticed."
+            echo "# They change legitimately every minute or every pull, so AIDE could"
+            echo "# never have told tampering from normal operation there anyway."
+            printf '%s\n' "${AIDE_MISSING[@]}"
+        } >> /etc/aide/aide.conf
+
+        # The local block is written once and never again, so anything the
+        # operator added under it survives a later top-up.
+        if ! grep -q '^# LOCAL EXCLUSIONS' /etc/aide/aide.conf; then
+            cat >> /etc/aide/aide.conf <<'EOF'
 
 # ---------------------------------------------------------------------
 # LOCAL EXCLUSIONS - add your own below this line.
@@ -630,7 +670,9 @@ if [ -f /etc/aide/aide.conf ] && ! grep -q '^!/var/lib/server-baseline' /etc/aid
 #   !/home/pos-servers/[^/]+/scanapp-data
 # ---------------------------------------------------------------------
 EOF
-        ok "Added exclusions to /etc/aide/aide.conf"
+        fi
+
+        ok "Added ${#AIDE_MISSING[@]} exclusion(s) to /etc/aide/aide.conf"
         note "Application log/data directories are site-specific - see the LOCAL"
         note "EXCLUSIONS block at the end of /etc/aide/aide.conf to add yours."
         note "Rebuild the baseline afterwards so they take effect:"
@@ -638,16 +680,21 @@ EOF
         return 0
     }
 
+    echo "    Missing from /etc/aide/aide.conf:"
+    printf '      %s\n' "${AIDE_MISSING[@]}"
+
     offer "aide-excludes" "AIDE reports the same churn on every run" \
 "These paths change constantly by design: the security watchdog rewrites its
 state in /var/lib/server-baseline every minute, AIDE leaves aide.db.new behind,
-containerd rewrites snapshot contents, and an open editor session writes logs
-under /root.
+containerd rewrites snapshot contents, an open editor session writes logs under
+/root, and every 'git pull' in a checkout rewrites thousands of objects under
+.git - including this repository's own checkout on this host.
 
 Left in, every scheduled check reports differences forever. That is how a
 working integrity monitor becomes one nobody reads.
 
-Fix: exclude them from /etc/aide/aide.conf. The file is backed up first." \
+Fix: exclude them from /etc/aide/aide.conf. The file is backed up first, and
+.git/hooks and .git/config stay monitored - a hook is executable code." \
         aide_excludes_fix
 else
     [ -f /etc/aide/aide.conf ] && { ok "AIDE excludes the paths that change by design"; CLEAN+=("aide-excludes"); }
