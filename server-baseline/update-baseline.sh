@@ -649,6 +649,7 @@ elif grep -q 'grep "\^Added:"' /usr/local/bin/aide-telegram.sh 2>/dev/null; then
         if [ -f "$SCRIPT_DIR/reporters/aide-telegram.sh" ]; then
             install -m 700 -o root -g root \
                 "$SCRIPT_DIR/reporters/aide-telegram.sh" /usr/local/bin/aide-telegram.sh
+            bake_env_path /usr/local/bin/aide-telegram.sh
             ok "Installed the corrected AIDE reporter"
             note "It decides on the exit code, refuses to refresh the database on an"
             note "AIDE error, and reads credentials from $CRED_FILE"
@@ -795,6 +796,25 @@ else
         RK_REPORTER_BUGGY=true
     fi
 
+    # A second, dumber way to be silent: build the message and never send it.
+    # The clean-scan branch shipped without its send_telegram call, so hosts
+    # with nothing to report said nothing at all - indistinguishable from a
+    # reporter that had stopped running. Checked separately from the drift test
+    # below because it deserves to be named when it fires.
+    if [ -f /usr/local/bin/rkhunter-telegram.sh ] && \
+       ! grep -q '^[[:space:]]*send_telegram "' /usr/local/bin/rkhunter-telegram.sh 2>/dev/null; then
+        RK_REPORTER_BUGGY=true
+        bad "rkhunter-telegram.sh builds a report but never sends it"
+    fi
+
+    # Any other drift from the checkout: newer fixes land without needing a
+    # named detector for each one.
+    if needs_refresh "$SCRIPT_DIR/reporters/rkhunter-telegram.sh" \
+                     /usr/local/bin/rkhunter-telegram.sh; then
+        RK_REPORTER_BUGGY=true
+        note "The installed rkhunter reporter differs from this checkout"
+    fi
+
     if [ "$RK_CONFIG_OK" = true ] && [ "$RK_COMPLETED" = true ] && [ "$RK_REPORTER_BUGGY" = false ]; then
         ok "rkhunter config is valid and the last scan ran to completion"
         CLEAN+=("rkhunter")
@@ -848,6 +868,10 @@ else
                 if [ -f "$SCRIPT_DIR/reporters/rkhunter-telegram.sh" ]; then
                     install -m 700 -o root -g root \
                         "$SCRIPT_DIR/reporters/rkhunter-telegram.sh" /usr/local/bin/rkhunter-telegram.sh
+                    # The repo copy ships ENV_FILE_DEFAULT empty; without this
+                    # the refreshed reporter loses its way to the credentials
+                    # and goes quiet - fixing one silence by causing another.
+                    bake_env_path /usr/local/bin/rkhunter-telegram.sh
                     ok "Installed the corrected rkhunter reporter"
                     note "It requires the 'System checks summary' line as proof the scan"
                     note "completed, so an aborted scan can no longer report All Clear."
@@ -874,6 +898,7 @@ else
                [ -f /usr/local/bin/lynis-telegram.sh ]; then
                 install -m 700 -o root -g root \
                     "$SCRIPT_DIR/reporters/lynis-telegram.sh" /usr/local/bin/lynis-telegram.sh
+                bake_env_path /usr/local/bin/lynis-telegram.sh
                 ok "Refreshed the Lynis reporter (same credential file)"
             fi
 

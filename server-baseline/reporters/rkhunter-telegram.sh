@@ -93,7 +93,6 @@ if [ "${COMPLETED:-0}" -eq 0 ]; then
     MESSAGE+="Last output:%0A<pre>$(tail -8 "$SCAN_LOG" | cut -c1-200 | html_escape)</pre>%0A"
     MESSAGE+="Check the config with: <code>rkhunter --config-check</code>%0A"
     MESSAGE+="Full log: <code>$SCAN_LOG</code>"
-    send_telegram "$MESSAGE"
 
 elif grep -q "^Warning:" "$SCAN_LOG"; then
     WARNINGS=$(grep "^Warning:" "$SCAN_LOG" | head -10)
@@ -103,7 +102,6 @@ elif grep -q "^Warning:" "$SCAN_LOG"; then
     MESSAGE+="Found $WARNING_COUNT warning(s) on <code>$(hostname | html_escape)</code>%0A%0A"
     MESSAGE+="<b>Top warnings:</b>%0A<pre>$(echo "$WARNINGS" | html_escape)</pre>%0A"
     MESSAGE+="Full log: <code>$SCAN_LOG</code>"
-    send_telegram "$MESSAGE"
 
 else
     MESSAGE="<b>✅ Rkhunter Daily Scan</b>%0A%0A"
@@ -111,9 +109,28 @@ else
     MESSAGE+="Status: <b>All Clear</b>%0A"
     MESSAGE+="Date: $(date '+%Y-%m-%d %H:%M')%0A%0A"
     MESSAGE+="Scan completed, no warnings.%0A"
-    MESSAGE+="Scan completed, no warnings.%0A"
     MESSAGE+="Full log: <code>$SCAN_LOG</code>"
 fi
 
+# ONE send, outside the branches.
+#
+# This used to sit inside each branch, and the "All Clear" branch was missing
+# it: a clean scan built the message and dropped it on the floor. Silence then
+# meant either "nothing found" or "the reporter is broken", with no way to tell
+# them apart - which is the whole failure mode this repository exists to close.
+# A branch cannot forget to send if there is nothing to forget.
+if [ -z "${MESSAGE:-}" ]; then
+    echo "$(basename "$0"): no message was built - this is a bug" >&2
+    command -v logger >/dev/null 2>&1 && \
+        logger -t "$(basename "$0")" "no message built; nothing sent"
+    exit 1
+fi
+send_telegram "$MESSAGE"
+SEND_RC=$?
+
 # Keep scan logs for 30 days
 find /var/log -name "rkhunter-scan-*.log" -mtime +30 -delete 2>/dev/null || true
+
+# Exit non-zero when the report did not reach Telegram, so a cron mail or a
+# manual run shows the failure instead of ending on the cleanup's exit code.
+exit "$SEND_RC"

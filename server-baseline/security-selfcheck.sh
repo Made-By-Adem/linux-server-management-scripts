@@ -561,6 +561,43 @@ else
 fi
 
 ###############################################################################
+section "Reporters can actually report"
+#
+# Two bugs of this shape have shipped already: rkhunter-telegram.sh built its
+# "All Clear" message and never sent it, and lynis-telegram.sh curled with
+# >/dev/null 2>&1 so a rejected message looked exactly like a delivered one.
+#
+# Both were invisible from the outside, because the symptom of a broken
+# reporter is silence - and silence is also what a healthy quiet week looks
+# like. These are static checks on the installed copies: cheap, and they fire
+# the same day the file drifts rather than the day you need the alert.
+###############################################################################
+
+for REP in /usr/local/bin/aide-telegram.sh /usr/local/bin/rkhunter-telegram.sh \
+           /usr/local/bin/lynis-telegram.sh /usr/local/bin/aide-refresh.sh; do
+    [ -f "$REP" ] || continue
+    REP_NAME="$(basename "$REP")"
+
+    # Talks to Telegram without ever looking at the HTTP status.
+    if /bin/grep -q 'api\.telegram\.org' "$REP" 2>/dev/null && \
+       ! /bin/grep -q 'http_code\|%{http_code}' "$REP" 2>/dev/null; then
+        fail "$REP_NAME sends without checking the result - a rejected report looks delivered"
+    fi
+
+    # Builds a message it never sends. Counting is deliberate rather than
+    # exact: a reporter that assembles several messages and sends fewer times
+    # than it has branches is worth a look either way.
+    REP_BUILDS=$(/bin/grep -c '^[[:space:]]*MESSAGE="' "$REP" 2>/dev/null || true)
+    REP_SENDS=$(/bin/grep -c '^[[:space:]]*send_telegram "' "$REP" 2>/dev/null || true)
+    if [ "${REP_BUILDS:-0}" -gt 0 ] && [ "${REP_SENDS:-0}" -eq 0 ]; then
+        fail "$REP_NAME builds a report but never calls send_telegram - it is silent by construction"
+    elif [ "${REP_BUILDS:-0}" -gt 1 ] && [ "${REP_SENDS:-0}" -gt 1 ] && \
+         [ "${REP_SENDS:-0}" -lt "${REP_BUILDS:-0}" ]; then
+        warn "$REP_NAME has ${REP_BUILDS} message branches but only ${REP_SENDS} sends - one path may be silent"
+    fi
+done
+
+###############################################################################
 section "Writable filesystem hardening"
 ###############################################################################
 
