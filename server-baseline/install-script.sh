@@ -5861,6 +5861,12 @@ Lynis recommendation: FINT-4350" \
 !/root/\.copilot
 !/root/\.bash_history
 
+# backup.sh opens an SSH ControlMaster socket here, so the directory mtime
+# changes on every backup run. Only this subdirectory: the keys and
+# authorized_keys beside it are among the most important things AIDE watches,
+# and the sockets inside are ephemeral and root-only anyway.
+!/root/\.ssh/cm
+
 # Package metadata, refreshed by apt's own timers. Tampering here is not a
 # useful attack: the indexes are signature-verified, so a modified one fails
 # apt rather than installing anything.
