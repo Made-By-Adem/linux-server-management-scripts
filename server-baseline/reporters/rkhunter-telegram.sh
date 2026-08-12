@@ -48,6 +48,13 @@ if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
 fi
 SCAN_LOG="/var/log/rkhunter-scan-$(date +%Y%m%d).log"
 
+# Telegram's Markdown parser answers HTTP 400 on a single unmatched _ * ` or
+# [ . rkhunter warnings are full of file paths, so real findings would fail to
+# send while clean runs went through. HTML with escaped content instead.
+html_escape() {
+    sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
 send_telegram() {
     local name http_code
     name="$(basename "$0")"
@@ -62,7 +69,7 @@ send_telegram() {
         return 1
     fi
 
-    http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20         -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"         -d chat_id="${TELEGRAM_CHAT_ID}"         -d parse_mode="Markdown"         -d text="$1")
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20         -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"         -d chat_id="${TELEGRAM_CHAT_ID}"         -d parse_mode="HTML"         -d text="$1")
 
     [ "$http_code" = "200" ] && return 0
 
@@ -78,34 +85,34 @@ SCAN_RC=$?
 COMPLETED=$(grep -c "System checks summary" "$SCAN_LOG" 2>/dev/null)
 
 if [ "${COMPLETED:-0}" -eq 0 ]; then
-    MESSAGE="🚨 *RKHUNTER SCAN FAILED*%0A%0A"
-    MESSAGE+="Server: $(hostname)%0A"
+    MESSAGE="<b>🚨 RKHUNTER SCAN FAILED</b>%0A%0A"
+    MESSAGE+="Server: <code>$(hostname | html_escape)</code>%0A"
     MESSAGE+="Date: $(date '+%Y-%m-%d %H:%M')%0A%0A"
     MESSAGE+="The scan did not run to completion (exit ${SCAN_RC}).%0A"
-    MESSAGE+="*This host is currently NOT being scanned for rootkits.*%0A%0A"
-    MESSAGE+="Last output:%0A\`\`\`%0A$(tail -8 "$SCAN_LOG" | cut -c1-200)%0A\`\`\`%0A%0A"
-    MESSAGE+="Check the config with: \`rkhunter --config-check\`%0A"
-    MESSAGE+="Full log: $SCAN_LOG"
+    MESSAGE+="<b>This host is currently NOT being scanned for rootkits.</b>%0A%0A"
+    MESSAGE+="Last output:%0A<pre>$(tail -8 "$SCAN_LOG" | cut -c1-200 | html_escape)</pre>%0A"
+    MESSAGE+="Check the config with: <code>rkhunter --config-check</code>%0A"
+    MESSAGE+="Full log: <code>$SCAN_LOG</code>"
     send_telegram "$MESSAGE"
 
 elif grep -q "^Warning:" "$SCAN_LOG"; then
     WARNINGS=$(grep "^Warning:" "$SCAN_LOG" | head -10)
     WARNING_COUNT=$(grep -c "^Warning:" "$SCAN_LOG")
 
-    MESSAGE="🔍 *Rkhunter Daily Scan*%0A%0A"
-    MESSAGE+="⚠️ Found $WARNING_COUNT warning(s) on $(hostname)%0A%0A"
-    MESSAGE+="*Top warnings:*%0A\`\`\`%0A${WARNINGS}%0A\`\`\`%0A%0A"
-    MESSAGE+="Full log: $SCAN_LOG"
+    MESSAGE="<b>🔍 Rkhunter Daily Scan</b>%0A%0A"
+    MESSAGE+="Found $WARNING_COUNT warning(s) on <code>$(hostname | html_escape)</code>%0A%0A"
+    MESSAGE+="<b>Top warnings:</b>%0A<pre>$(echo "$WARNINGS" | html_escape)</pre>%0A"
+    MESSAGE+="Full log: <code>$SCAN_LOG</code>"
     send_telegram "$MESSAGE"
 
 else
-    MESSAGE="✅ *Rkhunter Daily Scan*%0A%0A"
-    MESSAGE+="Server: $(hostname)%0A"
-    MESSAGE+="Status: *All Clear*%0A"
+    MESSAGE="<b>✅ Rkhunter Daily Scan</b>%0A%0A"
+    MESSAGE+="Server: <code>$(hostname | html_escape)</code>%0A"
+    MESSAGE+="Status: <b>All Clear</b>%0A"
     MESSAGE+="Date: $(date '+%Y-%m-%d %H:%M')%0A%0A"
     MESSAGE+="Scan completed, no warnings.%0A"
-    MESSAGE+="Full log: $SCAN_LOG"
-    send_telegram "$MESSAGE"
+    MESSAGE+="Scan completed, no warnings.%0A"
+    MESSAGE+="Full log: <code>$SCAN_LOG</code>"
 fi
 
 # Keep scan logs for 30 days

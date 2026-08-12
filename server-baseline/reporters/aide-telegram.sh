@@ -2,38 +2,32 @@
 # AIDE integrity check with Telegram notifications
 #
 # The decision to alert is driven by AIDE's EXIT CODE, never by parsing counts
-# out of the report. An earlier version of this script grepped for "^Added:",
-# which never matches - AIDE writes "Added entries:" - so the counters were
-# always zero, the alert branch never fired, and every run reported "no changes"
-# and then ran `aide --update`, absorbing any tampering into the baseline.
+# out of the report. An earlier version grepped for "^Added:", which never
+# matches - AIDE writes "Added entries:" - so the counters were always zero, the
+# alert branch never fired, and every run reported "no changes" and then ran
+# `aide --update`, absorbing any tampering into the baseline.
 #
 # AIDE exit codes:
 #   0        no differences
 #   1|2|4    new / removed / changed entries (bitwise OR, so 1..7)
 #   >= 14    AIDE itself failed (config error, IO error, version mismatch)
 
-# Credentials live in one place. The values below are only a fallback for
-# hosts provisioned before that file existed - a script that holds its own
-# copy of a token is one more place to rotate and one more place to leak.
-# Single source of truth for credentials. No token is ever written into this
-# script: one copy in one root-only file is one place to rotate and one place
-# to leak.
-# Credentials live with the project checkout, not in /etc. Resolution order:
+###############################################################################
+# Credentials - one file, resolved in this order:
 #   1. $CONFIG_FILE                        explicit override
 #   2. $ENV_FILE_DEFAULT                   absolute path recorded at install time
-#   3. .env near this script                for running straight from the checkout
+#   3. .env near this script               running straight from the checkout
 #   4. /etc/server-baseline/selfcheck.env  legacy location, still honoured
-#
-# The recorded path is the fragile part: move or re-clone the project and it
-# stops resolving, which would make every alert silently stop. That is why
-# security-selfcheck fails outright when no credentials resolve anywhere - the
-# breakage shows up within a day instead of as permanent silence.
+###############################################################################
+
 ENV_FILE_DEFAULT=""   # replaced with an absolute path at install time
 
 resolve_env_file() {
     local self_dir c
     self_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" 2>/dev/null && pwd)" || self_dir=""
-    for c in "${CONFIG_FILE:-}" "$ENV_FILE_DEFAULT"              "$self_dir/.env" "$self_dir/../.env" "$self_dir/../../.env"              /etc/server-baseline/selfcheck.env; do
+    for c in "${CONFIG_FILE:-}" "$ENV_FILE_DEFAULT" \
+             "$self_dir/.env" "$self_dir/../.env" "$self_dir/../../.env" \
+             /etc/server-baseline/selfcheck.env; do
         if [ -n "$c" ] && [ -r "$c" ]; then echo "$c"; return 0; fi
     done
     return 1
@@ -43,32 +37,50 @@ CONFIG_FILE="$(resolve_env_file || true)"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 
-if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
-    command -v logger >/dev/null 2>&1 &&         logger -t "$(basename "$0")" "no Telegram credentials in /etc/server-baseline/selfcheck.env; report not sent"
-fi
 LOG_FILE="/var/log/aide-check-$(date +%Y%m%d).log"
 DATE_STAMP=$(date '+%Y-%m-%d %H:%M')
+
+###############################################################################
+# Sending
+#
+# HTML, not Markdown. Telegram's Markdown parser rejects the entire message
+# with HTTP 400 on a single unmatched _ * ` or [ - and AIDE output is nothing
+# but file paths, where underscores are the norm. The result was that every
+# real finding failed to send while clean runs went through: the reports you
+# would actually need were exactly the ones that never arrived.
+###############################################################################
+
+html_escape() {
+    sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
 
 send_telegram() {
     local name http_code
     name="$(basename "$0")"
 
-    # A reporter that cannot send must say so. Curling to
-    # api.telegram.org/bot/sendMessage with an empty token fails, and
-    # >/dev/null 2>&1 turns that into a silent success - the exact failure
-    # class every check in this repository exists to eliminate.
-    if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+    # A reporter that cannot send must say so. Curling with an empty token and
+    # discarding the result turns a failure into a silent success.
+    if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
         echo "$name: no Telegram credentials resolved - report NOT sent" >&2
-        command -v logger >/dev/null 2>&1 &&             logger -t "$name" "no Telegram credentials resolved; report not sent"
+        command -v logger >/dev/null 2>&1 && \
+            logger -t "$name" "no Telegram credentials resolved; report not sent"
         return 1
     fi
 
-    http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20         -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"         -d chat_id="${TELEGRAM_CHAT_ID}"         -d parse_mode="Markdown"         -d text="$1")
+    # -d, not --data-urlencode: line breaks are written as %0A below, which
+    # Telegram decodes from a plain field. Urlencoding would escape the percent
+    # sign and print "%0A" throughout the message.
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+        -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHAT_ID}" \
+        -d parse_mode="HTML" \
+        -d text="$1")
 
     [ "$http_code" = "200" ] && return 0
 
     echo "$name: Telegram rejected the message (HTTP $http_code)" >&2
-    command -v logger >/dev/null 2>&1 &&         logger -t "$name" "Telegram send FAILED with HTTP $http_code"
+    command -v logger >/dev/null 2>&1 && \
+        logger -t "$name" "Telegram send FAILED with HTTP $http_code"
     return 1
 }
 
@@ -77,16 +89,20 @@ summary_count() {
     sed -n "s/^[[:space:]]*$1 entries:[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$LOG_FILE" | head -1
 }
 
-# On Debian and Ubuntu, `aide` does NOT read /etc/aide/aide.conf by itself.
+###############################################################################
+# Resolving AIDE
+#
+# On Debian and Ubuntu, `aide` does not read /etc/aide/aide.conf by itself.
 # aide-common generates /var/lib/aide/aide.conf.autogenerated and ships
 # aide.wrapper to invoke it. A bare `aide --check` fails with "missing
-# configuration" (exit 17), which is indistinguishable from a broken config.
+# configuration" (exit 17), which looks identical to a broken config.
 #
 # This chain must stay identical to the one in security-selfcheck.sh,
 # update-baseline.sh, aide-refresh.sh and install-script.sh. It previously did
-# not: this copy lacked the /etc/aide/aide.conf branch, fell through to a bare
-# `aide`, and reported exit 17 every night on a host whose configuration was
-# perfectly fine.
+# not: this copy lacked the /etc/aide/aide.conf branch and reported exit 17
+# every night on hosts whose configuration was perfectly fine.
+###############################################################################
+
 resolve_aide() {
     if command -v aide.wrapper >/dev/null 2>&1; then
         echo "aide.wrapper"
@@ -102,22 +118,27 @@ resolve_aide() {
 }
 AIDE="$(resolve_aide)"
 
-# Nothing resolved: say that, rather than running a bare `aide` and reporting
-# its exit 17 as though the configuration were at fault.
+HOST_ESC="$(hostname | html_escape)"
+
+# Nothing resolved: say that, rather than running a bare `aide` and blaming its
+# exit code on a configuration that is not at fault.
 if [ -z "$AIDE" ]; then
-    MESSAGE="🚨 *AIDE CANNOT RUN*%0A%0A"
-    MESSAGE+="Server: $(hostname)%0A"
-    MESSAGE+="Date: $(date '+%Y-%m-%d %H:%M')%0A%0A"
+    MESSAGE="<b>🚨 AIDE CANNOT RUN</b>%0A%0A"
+    MESSAGE+="Server: <code>${HOST_ESC}</code>%0A"
+    MESSAGE+="Date: ${DATE_STAMP}%0A%0A"
     MESSAGE+="No usable AIDE configuration was found - no aide.wrapper, no%0A"
     MESSAGE+="generated config, no /etc/aide/aide.conf.%0A%0A"
-    MESSAGE+="*File integrity is UNVERIFIED and no scan is being run.*%0A%0A"
+    MESSAGE+="<b>File integrity is UNVERIFIED and no scan is being run.</b>%0A%0A"
     MESSAGE+="Usually means aide-common is not installed:%0A"
-    MESSAGE+="\`apt-get install -y aide-common && aideinit\`"
+    MESSAGE+="<code>apt-get install -y aide-common &amp;&amp; aideinit</code>"
     send_telegram "$MESSAGE"
     exit 1
 fi
 
-# Run AIDE check
+###############################################################################
+# Run and report
+###############################################################################
+
 $AIDE --check > "$LOG_FILE" 2>&1
 CHECK_RESULT=$?
 
@@ -125,14 +146,16 @@ if [ "$CHECK_RESULT" -ge 14 ]; then
     # AIDE could not complete. This MUST NOT be reported as "no changes" and the
     # database MUST NOT be updated - a failing integrity checker is an incident
     # in itself, not a clean bill of health.
-    MESSAGE="🚨 *AIDE CHECK FAILED*%0A%0A"
-    MESSAGE+="Server: $(hostname)%0A"
+    LAST_OUT=$(tail -5 "$LOG_FILE" | tr '\n' ' ' | cut -c1-300 | html_escape)
+
+    MESSAGE="<b>🚨 AIDE CHECK FAILED</b>%0A%0A"
+    MESSAGE+="Server: <code>${HOST_ESC}</code>%0A"
     MESSAGE+="Date: ${DATE_STAMP}%0A%0A"
-    MESSAGE+="⚠️ AIDE exited with code ${CHECK_RESULT} and could not verify anything.%0A"
-    MESSAGE+="*File integrity is currently UNVERIFIED.*%0A%0A"
+    MESSAGE+="AIDE exited with code ${CHECK_RESULT} and could not verify anything.%0A"
+    MESSAGE+="<b>File integrity is currently UNVERIFIED.</b>%0A%0A"
     MESSAGE+="Last output:%0A"
-    MESSAGE+="\`$(tail -5 "$LOG_FILE" | tr '\n' ' ' | cut -c1-300)\`%0A%0A"
-    MESSAGE+="Full log: \`$LOG_FILE\`"
+    MESSAGE+="<pre>${LAST_OUT}</pre>%0A"
+    MESSAGE+="Full log: <code>${LOG_FILE}</code>"
     send_telegram "$MESSAGE"
 
 elif [ "$CHECK_RESULT" -ne 0 ]; then
@@ -141,27 +164,25 @@ elif [ "$CHECK_RESULT" -ne 0 ]; then
     CHANGED=$(summary_count Changed); CHANGED=${CHANGED:-0}
 
     # AIDE detail lines look like "f++++++++++++++++: /path/to/file"
-    DETAIL=$(grep -E '^[^[:space:]]+: /' "$LOG_FILE" | head -10 | sed 's/^/• /' | tr '\n' '@' | sed 's/@/%0A/g')
+    DETAIL=$(grep -E '^[^[:space:]]+: /' "$LOG_FILE" | head -10 | html_escape | \
+             sed 's/^/- /' | tr '\n' '@' | sed 's/@/%0A/g')
 
-    MESSAGE="🚨 *AIDE Integrity Alert*%0A%0A"
-    MESSAGE+="Server: $(hostname)%0A"
+    MESSAGE="<b>🚨 AIDE Integrity Alert</b>%0A%0A"
+    MESSAGE+="Server: <code>${HOST_ESC}</code>%0A"
     MESSAGE+="Date: ${DATE_STAMP}%0A%0A"
-    MESSAGE+="⚠️ *File changes detected!*%0A%0A"
-    MESSAGE+="Summary:%0A"
-    MESSAGE+="• Added: ${ADDED}%0A"
-    MESSAGE+="• Removed: ${REMOVED}%0A"
-    MESSAGE+="• Changed: ${CHANGED}%0A%0A"
+    MESSAGE+="<b>File changes detected</b>%0A%0A"
+    MESSAGE+="Added: ${ADDED} / Removed: ${REMOVED} / Changed: ${CHANGED}%0A%0A"
     MESSAGE+="First entries:%0A${DETAIL}%0A"
-    MESSAGE+="Full log: \`$LOG_FILE\`%0A%0A"
-    MESSAGE+="_The database was NOT updated. Review first, then if legitimate:_%0A"
-    MESSAGE+="\`sudo aide --update && sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db\`"
+    MESSAGE+="Full log: <code>${LOG_FILE}</code>%0A%0A"
+    MESSAGE+="<i>The database was NOT updated. Review first, then if legitimate:</i>%0A"
+    MESSAGE+="<code>aide-refresh --reason 'reviewed'</code>"
     send_telegram "$MESSAGE"
 
 else
-    MESSAGE="✅ *AIDE Daily Check*%0A%0A"
-    MESSAGE+="Server: $(hostname)%0A"
+    MESSAGE="<b>✅ AIDE Daily Check</b>%0A%0A"
+    MESSAGE+="Server: <code>${HOST_ESC}</code>%0A"
     MESSAGE+="Date: ${DATE_STAMP}%0A"
-    MESSAGE+="Status: *No changes detected*%0A%0A"
+    MESSAGE+="Status: <b>No changes detected</b>%0A%0A"
     MESSAGE+="File integrity verified."
     send_telegram "$MESSAGE"
 
