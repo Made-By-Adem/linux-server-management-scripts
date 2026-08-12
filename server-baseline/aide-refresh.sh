@@ -136,13 +136,23 @@ send_telegram() {
         syslog "no Telegram credentials; record not sent (it is still in $LOG_FILE)"
         return 1
     fi
-    local code
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
-        -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d parse_mode="HTML" \
-        -d text="$1")
-    [ "$code" = "200" ] && return 0
+    # Retried: this message is the record of what the refresh absorbed. Losing
+    # it to a transient network failure means the baseline changes with no
+    # trace of what went into it. Attempts 2 and 3 force IPv4 - the API
+    # resolves to IPv6 first here, and a flapping v6 route returns HTTP 000.
+    local code attempt v4
+    for attempt in 1 2 3; do
+        v4=(); [ "$attempt" -gt 1 ] && v4=(-4)
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+            "${v4[@]}" \
+            -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="HTML" \
+            -d text="$1")
+        [ "$code" = "200" ] && return 0
+        case "$code" in 4*) break ;; esac
+        [ "$attempt" -lt 3 ] && sleep $((attempt * 3))
+    done
     syslog "Telegram send FAILED with HTTP ${code}"
     return 1
 }

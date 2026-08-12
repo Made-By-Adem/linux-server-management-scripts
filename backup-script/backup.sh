@@ -60,13 +60,35 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 
 # --- Telegram notification function ---
 send_telegram() {
-    local message="$1"
-    if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]]; then
-        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    local message="$1" http_code attempt v4
+    if [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
+        echo "[WARN] No Telegram credentials - notification NOT sent" >&2
+        return 1
+    fi
+
+    # This used to be a bare curl with its output discarded, so a failed
+    # backup whose alert never arrived was indistinguishable from a backup
+    # that succeeded quietly - which is the worse of the two to get wrong.
+    #
+    # Retried, with IPv4 forced on attempts 2 and 3: api.telegram.org resolves
+    # to IPv6 first on these hosts and a flapping v6 route returns HTTP 000.
+    for attempt in 1 2 3; do
+        v4=(); [[ $attempt -gt 1 ]] && v4=(-4)
+        http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+            "${v4[@]}" \
+            -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d parse_mode="HTML" \
-            -d text="${message}" > /dev/null 2>&1 || true
-    fi
+            -d text="${message}")
+        [[ "$http_code" == "200" ]] && return 0
+        [[ "$http_code" == 4* ]] && break   # refused; retrying changes nothing
+        [[ $attempt -lt 3 ]] && sleep $((attempt * 3))
+    done
+
+    echo "[WARN] Telegram send failed (HTTP ${http_code:-000}) - notification NOT delivered" >&2
+    command -v logger >/dev/null 2>&1 && \
+        logger -t backup.sh "Telegram send FAILED with HTTP ${http_code:-000}"
+    return 1
 }
 
 # --- Validate SSH key ---

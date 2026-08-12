@@ -67,16 +67,30 @@ send_telegram() {
         return 1
     fi
 
+    # Retried, because there is no queue behind this: an alert that does not
+    # go out is simply gone, and a dropped alert looks exactly like nothing to
+    # report. api.telegram.org resolves to IPv6 first on these hosts, and a
+    # flapping v6 route gives HTTP 000 - no response at all - so attempts 2
+    # and 3 force IPv4.
+    #
     # -d, not --data-urlencode: line breaks are written as %0A below, which
     # Telegram decodes from a plain field. Urlencoding would escape the percent
     # sign and print "%0A" throughout the message.
-    http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
-        -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d parse_mode="HTML" \
-        -d text="$1")
-
-    [ "$http_code" = "200" ] && return 0
+    local attempt v4
+    for attempt in 1 2 3; do
+        v4=(); [ "$attempt" -gt 1 ] && v4=(-4)
+        http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+            "${v4[@]}" \
+            -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="HTML" \
+            -d text="$1")
+        [ "$http_code" = "200" ] && return 0
+        # 4xx is Telegram refusing this message. Sending it again gets the
+        # same answer, so stop rather than hammer the API.
+        case "$http_code" in 4*) break ;; esac
+        [ "$attempt" -lt 3 ] && sleep $((attempt * 3))
+    done
 
     echo "$name: Telegram rejected the message (HTTP $http_code)" >&2
     command -v logger >/dev/null 2>&1 && \

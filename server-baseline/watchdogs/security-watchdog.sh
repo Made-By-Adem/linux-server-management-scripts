@@ -135,13 +135,25 @@ send_telegram() {
         return 1
     fi
 
-    local http_code
-    http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
-        -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d parse_mode="HTML" \
-        -d disable_web_page_preview="true" \
-        --data-urlencode text="$msg")
+    # Retried, and this one matters most: the watchdog is edge-triggered, so a
+    # dropped alert is never re-sent. The state file has already moved on, and
+    # the event - auditd stopping, a new listener appearing - is gone with it.
+    # Attempts 2 and 3 force IPv4: api.telegram.org resolves to IPv6 first on
+    # these hosts, and a flapping v6 route returns HTTP 000, no response at all.
+    local http_code attempt v4
+    for attempt in 1 2 3; do
+        v4=(); [ "$attempt" -gt 1 ] && v4=(-4)
+        http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+            "${v4[@]}" \
+            -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="HTML" \
+            -d disable_web_page_preview="true" \
+            --data-urlencode text="$msg")
+        [ "$http_code" = "200" ] && return 0
+        case "$http_code" in 4*) break ;; esac   # refused; retrying changes nothing
+        [ "$attempt" -lt 3 ] && sleep $((attempt * 3))
+    done
 
     if [ "$http_code" = "200" ]; then
         return 0

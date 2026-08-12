@@ -788,20 +788,72 @@ if [ ${#FAILURES[@]} -gt 0 ] || [ ${#WARNINGS[@]} -gt 0 ]; then
         for w in "${WARNINGS[@]}"; do echo "  [WARN] $w"; done
     fi
 
-    if [ "$TELEGRAM" = true ] && [ -r /etc/server-baseline/selfcheck.env ]; then
-        # shellcheck disable=SC1091
-        . /etc/server-baseline/selfcheck.env
+    ###########################################################################
+    # Alerting
+    #
+    # Three separate reasons this never delivered anything:
+    #
+    #  1. It only read /etc/server-baseline/selfcheck.env. Credentials moved to
+    #     the project checkout, so on every current host that file does not
+    #     exist, the guard was false, and the block never ran at all.
+    #  2. parse_mode=Markdown answers HTTP 400 on a single unmatched _ * ` or
+    #     [ - and these messages are made of paths and unit names. Every
+    #     message with real content would have been rejected.
+    #  3. The result was discarded, so 1 and 2 were indistinguishable from
+    #     a successful send.
+    #
+    # This is the daily "did anything break" layer. Its own alert being dead is
+    # the same class of failure it exists to catch.
+    ###########################################################################
+    if [ "$TELEGRAM" = true ]; then
+        SC_ENV=""
+        SC_SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" 2>/dev/null && pwd)" || SC_SELF_DIR=""
+        for c in "${CONFIG_FILE:-}" \
+                 "$(/bin/grep -oP '^ENV_FILE_DEFAULT="\K[^"]+' /usr/local/bin/security-watchdog.sh 2>/dev/null | head -1)" \
+                 "$SC_SELF_DIR/.env" "$SC_SELF_DIR/../.env" "$SC_SELF_DIR/../../.env" \
+                 /etc/server-baseline/selfcheck.env; do
+            if [ -n "$c" ] && [ -r "$c" ]; then SC_ENV="$c"; break; fi
+        done
+
+        if [ -z "$SC_ENV" ]; then
+            echo "  No alert credentials resolved - this report was NOT sent" >&2
+        else
+            # shellcheck disable=SC1090
+            . "$SC_ENV"
+            TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${SECRET_TOKEN:-}}"
+            TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-${CHAT_ID_PERSON1:-}}"
+        fi
+
         if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-            MSG="🔍 *Security Self-Check*%0A%0A"
-            MSG+="Server: $(/bin/hostname)%0A"
+            sc_escape() { /bin/sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+            MSG="🔍 <b>Security Self-Check</b>%0A%0A"
+            MSG+="Server: <code>$(/bin/hostname | sc_escape)</code>%0A"
             MSG+="Date: $(/bin/date '+%Y-%m-%d %H:%M')%0A%0A"
             MSG+="Failures: ${#FAILURES[@]} • Warnings: ${#WARNINGS[@]}%0A%0A"
-            for f in "${FAILURES[@]}"; do MSG+="🚨 ${f}%0A"; done
-            for w in "${WARNINGS[@]}"; do MSG+="⚠️ ${w}%0A"; done
-            /usr/bin/curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-                -d chat_id="${TELEGRAM_CHAT_ID}" \
-                -d text="${MSG}" \
-                -d parse_mode="Markdown" >/dev/null 2>&1
+            for f in "${FAILURES[@]}"; do MSG+="🚨 $(printf %s "$f" | sc_escape)%0A"; done
+            for w in "${WARNINGS[@]}"; do MSG+="⚠️ $(printf %s "$w" | sc_escape)%0A"; done
+
+            SC_CODE=""
+            for attempt in 1 2 3; do
+                SC_V4=()
+                [ "$attempt" -gt 1 ] && SC_V4=(-4)
+                SC_CODE=$(/usr/bin/curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+                    "${SC_V4[@]}" \
+                    -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                    -d chat_id="${TELEGRAM_CHAT_ID}" \
+                    -d parse_mode="HTML" \
+                    -d text="${MSG}")
+                [ "$SC_CODE" = "200" ] && break
+                case "$SC_CODE" in 4*) break ;; esac   # Telegram refused it; retrying changes nothing
+                [ "$attempt" -lt 3 ] && sleep $((attempt * 3))
+            done
+
+            if [ "$SC_CODE" != "200" ]; then
+                echo "  Telegram send FAILED (HTTP ${SC_CODE:-000}) - this report was NOT delivered" >&2
+                command -v logger >/dev/null 2>&1 && \
+                    logger -t security-selfcheck "Telegram send FAILED with HTTP ${SC_CODE:-000}"
+            fi
         fi
     fi
 fi

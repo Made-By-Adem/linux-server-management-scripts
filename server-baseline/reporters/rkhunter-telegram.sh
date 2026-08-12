@@ -69,11 +69,25 @@ send_telegram() {
         return 1
     fi
 
-    http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20         -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"         -d chat_id="${TELEGRAM_CHAT_ID}"         -d parse_mode="HTML"         -d text="$1")
+    # Retried: there is no queue behind this, so an alert that fails to go out
+    # is gone, and that looks exactly like nothing to report. Attempts 2 and 3
+    # force IPv4 - api.telegram.org resolves to IPv6 first here, and a flapping
+    # v6 route returns HTTP 000, no response at all.
+    local attempt v4
+    for attempt in 1 2 3; do
+        v4=(); [ "$attempt" -gt 1 ] && v4=(-4)
+        http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+            "${v4[@]}" \
+            -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="HTML" \
+            -d text="$1")
+        [ "$http_code" = "200" ] && return 0
+        case "$http_code" in 4*) break ;; esac   # refused; retrying changes nothing
+        [ "$attempt" -lt 3 ] && sleep $((attempt * 3))
+    done
 
-    [ "$http_code" = "200" ] && return 0
-
-    echo "$name: Telegram rejected the message (HTTP $http_code)" >&2
+    echo "$name: Telegram send failed (HTTP $http_code)" >&2
     command -v logger >/dev/null 2>&1 &&         logger -t "$name" "Telegram send FAILED with HTTP $http_code"
     return 1
 }
