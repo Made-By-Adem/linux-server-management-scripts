@@ -5843,6 +5843,23 @@ Lynis recommendation: FINT-4350" \
 !/dev
 !/run
 !/var/lib/docker
+!/var/lib/containerd
+
+# Paths that change by design, and would otherwise make every single run
+# report differences. An integrity monitor that always fires is one that gets
+# ignored, which is the same outcome as not having one.
+#
+# Note what is given up: an attacker could alter the watchdog's state files
+# without AIDE noticing. That is an acceptable trade only because those files
+# change every minute legitimately - AIDE could never have distinguished
+# tampering from normal operation there anyway.
+!/var/lib/aide
+!/var/lib/server-baseline
+!/var/lib/systemd
+!/root/\.vscode-server
+!/root/\.cache
+!/root/\.copilot
+!/root/\.bash_history
 
 # Monitor Docker binaries if installed
 /usr/bin/docker$ R

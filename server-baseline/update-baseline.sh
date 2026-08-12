@@ -564,6 +564,48 @@ fi
 header "5. AIDE reporting"
 ###############################################################################
 
+# Exclude paths that change by design. Without these, every run reports
+# differences - the watchdog alone rewrites /var/lib/server-baseline every
+# minute - and an integrity monitor that always fires is one that gets ignored.
+if [ -f /etc/aide/aide.conf ] && ! grep -q '^!/var/lib/server-baseline' /etc/aide/aide.conf; then
+    aide_excludes_fix() {
+        cp /etc/aide/aide.conf "/etc/aide/aide.conf.bak.$(date +%Y%m%d_%H%M%S)"
+        cat >> /etc/aide/aide.conf <<'EOF'
+
+# Added by update-baseline: paths that change by design.
+# The trade-off is explicit: an attacker could alter the watchdog's state
+# files unnoticed. Those files change every minute legitimately, so AIDE
+# could never have told tampering from normal operation there.
+!/var/lib/aide
+!/var/lib/server-baseline
+!/var/lib/containerd
+!/var/lib/systemd
+!/root/\.vscode-server
+!/root/\.cache
+!/root/\.copilot
+!/root/\.bash_history
+EOF
+        ok "Added exclusions to /etc/aide/aide.conf"
+        note "Rebuild the baseline afterwards so they take effect:"
+        note "  aide-refresh --reason 'after adding exclusions'"
+        return 0
+    }
+
+    offer "aide-excludes" "AIDE reports the same churn on every run" \
+"These paths change constantly by design: the security watchdog rewrites its
+state in /var/lib/server-baseline every minute, AIDE leaves aide.db.new behind,
+containerd rewrites snapshot contents, and an open editor session writes logs
+under /root.
+
+Left in, every scheduled check reports differences forever. That is how a
+working integrity monitor becomes one nobody reads.
+
+Fix: exclude them from /etc/aide/aide.conf. The file is backed up first." \
+        aide_excludes_fix
+else
+    [ -f /etc/aide/aide.conf ] && { ok "AIDE excludes the paths that change by design"; CLEAN+=("aide-excludes"); }
+fi
+
 # Keep every installed reporter in step with this checkout. Without it, a
 # `git pull` that fixes a reporter leaves the old copy running while this
 # script reports the component as correct.
