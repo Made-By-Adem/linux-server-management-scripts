@@ -69,9 +69,17 @@ if [ -n "$ACTUAL_USER" ] && [ "$ACTUAL_USER" != "root" ]; then
         USER_HOME=$(eval echo ~"$ACTUAL_USER")
     fi
 else
-    # Running as root with no regular user found - use /home/docker as fallback
+    # Running as root with no regular user account - common on a freshly built
+    # cloud server reached over an SSH key.
+    #
+    # The service directories go under /home, not /root. /root is mode 700 and
+    # is the administrator's private directory; docker stacks, compose files and
+    # backup jobs are referenced by absolute path from cron, from other hosts
+    # and from this repo's own tooling. Putting them somewhere that depends on
+    # which account happened to run the installer makes those paths differ
+    # between servers that are otherwise identical.
     ACTUAL_USER="root"
-    USER_HOME="/root"
+    USER_HOME="/home"
 fi
 
 # Final check: if USER_HOME is still /root but we have a regular user, fix it
