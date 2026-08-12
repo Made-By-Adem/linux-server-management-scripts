@@ -5861,23 +5861,6 @@ Lynis recommendation: FINT-4350" \
 !/root/\.copilot
 !/root/\.bash_history
 
-# A git checkout rewrites these on every pull, and this repository is itself a
-# checkout on every host - so a single 'git pull' produced a few thousand
-# differences in the next morning's report.
-#
-# Deliberately NOT the whole .git directory: hooks and config stay monitored,
-# because a hook is executable code that runs as whoever runs git. Only the
-# content-addressed churn is excluded.
-!.*/\.git/objects
-!.*/\.git/logs
-!.*/\.git/refs
-!.*/\.git/index
-!.*/\.git/FETCH_HEAD
-!.*/\.git/ORIG_HEAD
-!.*/\.git/COMMIT_EDITMSG
-!.*/\.git/packed-refs
-!.*/\.git/modules
-
 # Package metadata, refreshed by apt's own timers. Tampering here is not a
 # useful attack: the indexes are signature-verified, so a modified one fails
 # apt rather than installing anything.
@@ -5897,6 +5880,36 @@ Lynis recommendation: FINT-4350" \
 /etc/passwd$ p+i+n+u+g+s+b+acl+selinux+xattrs+sha512
 /etc/shadow$ p+i+n+u+g+s+b+acl+selinux+xattrs+sha512
 EOF
+
+            # This repository is a git checkout on the host it manages, and git
+            # rewrites objects, refs and logs on every pull - a few thousand
+            # differences from one 'git pull'.
+            #
+            # Written here rather than in the heredoc above because an AIDE
+            # rule must be a literal path prefix: it has to start with '/', so
+            # there is no way to say "any .git anywhere". A first attempt used
+            # !.*/\.git/objects, which AIDE refuses to parse - the whole config
+            # became invalid and every check exited 17. The real checkout path
+            # is known here, so it is used.
+            #
+            # Deliberately NOT the whole .git directory: hooks and config stay
+            # monitored, because a hook is executable code that runs as whoever
+            # runs git.
+            AIDE_GIT_ROOT="${PROJECT_ROOT//./\\.}"
+            for gp in objects logs refs index FETCH_HEAD ORIG_HEAD \
+                      COMMIT_EDITMSG packed-refs modules; do
+                echo "!${AIDE_GIT_ROOT}/\\.git/${gp}"
+            done | sudo tee -a /etc/aide/aide.conf >/dev/null
+
+            # Never leave a config behind that AIDE cannot read: that is exit 17
+            # on every scheduled run, which reads as "AIDE is broken" long
+            # before anyone works out which line did it.
+            if ! sudo aide --config=/etc/aide/aide.conf --config-check >/dev/null 2>&1; then
+                log_warning "AIDE rejected the generated config - restoring the backup"
+                sudo cp /etc/aide/aide.conf "/etc/aide/aide.conf.rejected.$(date +%Y%m%d_%H%M%S)"
+                LATEST_BAK=$(ls -1t /etc/aide/aide.conf.backup.* 2>/dev/null | head -1)
+                [ -n "$LATEST_BAK" ] && sudo cp "$LATEST_BAK" /etc/aide/aide.conf
+            fi
 
             log_info "AIDE configured with SHA-512 checksums and exclusions"
 

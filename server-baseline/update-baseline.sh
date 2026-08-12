@@ -614,23 +614,6 @@ AIDE_EXCLUDES=(
     '!/root/\.copilot'
     '!/root/\.bash_history'
 
-    # A git checkout rewrites these on every pull, and this repository is
-    # itself a checkout on every host - so `git pull` alone produced a few
-    # thousand differences the next morning.
-    #
-    # Deliberately NOT the whole .git directory: hooks and config stay
-    # monitored, because a hook is executable code that runs as whoever runs
-    # git. Only the content-addressed churn is excluded.
-    '!.*/\.git/objects'
-    '!.*/\.git/logs'
-    '!.*/\.git/refs'
-    '!.*/\.git/index'
-    '!.*/\.git/FETCH_HEAD'
-    '!.*/\.git/ORIG_HEAD'
-    '!.*/\.git/COMMIT_EDITMSG'
-    '!.*/\.git/packed-refs'
-    '!.*/\.git/modules'
-
     # Package metadata, refreshed by apt's own timers. Every host reported
     # these on the first real check. Tampering here is not a useful attack:
     # the indexes are signature-verified, so a modified one fails apt rather
@@ -642,6 +625,23 @@ AIDE_EXCLUDES=(
     '!/var/lib/PackageKit'
 )
 
+# An AIDE rule has to be a literal path prefix - it must start with '/', so
+# there is no way to write "any .git anywhere". The first attempt at this used
+# !.*/\.git/objects; AIDE refused the whole config and every check exited 17,
+# which looks exactly like a broken installation rather than one bad line.
+#
+# The checkout path is known here, so it is used directly. Regex metacharacters
+# in it are escaped: a literal dot would otherwise match any character.
+AIDE_GIT_ROOT="${PROJECT_ROOT//./\\.}"
+for gp in objects logs refs index FETCH_HEAD ORIG_HEAD COMMIT_EDITMSG \
+          packed-refs modules; do
+    AIDE_EXCLUDES+=("!${AIDE_GIT_ROOT}/\\.git/${gp}")
+done
+
+# A stale entry from the version that shipped the unparseable rules. Left in
+# place, AIDE stays dead however many correct rules are added after it.
+AIDE_BROKEN=$(grep -c '^![^/]' /etc/aide/aide.conf 2>/dev/null || true)
+
 AIDE_MISSING=()
 if [ -f /etc/aide/aide.conf ]; then
     for rule in "${AIDE_EXCLUDES[@]}"; do
@@ -649,9 +649,17 @@ if [ -f /etc/aide/aide.conf ]; then
     done
 fi
 
-if [ -f /etc/aide/aide.conf ] && [ ${#AIDE_MISSING[@]} -gt 0 ]; then
+if [ -f /etc/aide/aide.conf ] && \
+   { [ ${#AIDE_MISSING[@]} -gt 0 ] || [ "${AIDE_BROKEN:-0}" -gt 0 ]; }; then
     aide_excludes_fix() {
-        cp /etc/aide/aide.conf "/etc/aide/aide.conf.bak.$(date +%Y%m%d_%H%M%S)"
+        local backup="/etc/aide/aide.conf.bak.$(date +%Y%m%d_%H%M%S)"
+        cp /etc/aide/aide.conf "$backup"
+
+        # Rules that do not start with '/' make AIDE reject the entire file.
+        if [ "${AIDE_BROKEN:-0}" -gt 0 ]; then
+            sed -i '\|^![^/]|d' /etc/aide/aide.conf
+            ok "Removed ${AIDE_BROKEN} rule(s) that AIDE cannot parse"
+        fi
 
         {
             echo ""
@@ -682,7 +690,16 @@ if [ -f /etc/aide/aide.conf ] && [ ${#AIDE_MISSING[@]} -gt 0 ]; then
 EOF
         fi
 
-        ok "Added ${#AIDE_MISSING[@]} exclusion(s) to /etc/aide/aide.conf"
+        # Verify before claiming success. Writing a config AIDE cannot read
+        # means exit 17 on every scheduled run from now on, and the operator
+        # finds out from a 5am alert rather than from the tool that did it.
+        if ! aide --config=/etc/aide/aide.conf --config-check >/dev/null 2>&1; then
+            bad "AIDE rejects the resulting config - restoring $backup"
+            cp "$backup" /etc/aide/aide.conf
+            return 1
+        fi
+
+        ok "Added ${#AIDE_MISSING[@]} exclusion(s), and AIDE parses the result"
         note "Application log/data directories are site-specific - see the LOCAL"
         note "EXCLUSIONS block at the end of /etc/aide/aide.conf to add yours."
         note "Rebuild the baseline afterwards so they take effect:"
