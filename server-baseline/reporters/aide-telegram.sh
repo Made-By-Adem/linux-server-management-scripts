@@ -50,10 +50,26 @@ LOG_FILE="/var/log/aide-check-$(date +%Y%m%d).log"
 DATE_STAMP=$(date '+%Y-%m-%d %H:%M')
 
 send_telegram() {
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHAT_ID}" \
-        -d text="$1" \
-        -d parse_mode="Markdown" >/dev/null 2>&1
+    local name http_code
+    name="$(basename "$0")"
+
+    # A reporter that cannot send must say so. Curling to
+    # api.telegram.org/bot/sendMessage with an empty token fails, and
+    # >/dev/null 2>&1 turns that into a silent success - the exact failure
+    # class every check in this repository exists to eliminate.
+    if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+        echo "$name: no Telegram credentials resolved - report NOT sent" >&2
+        command -v logger >/dev/null 2>&1 &&             logger -t "$name" "no Telegram credentials resolved; report not sent"
+        return 1
+    fi
+
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20         -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"         -d chat_id="${TELEGRAM_CHAT_ID}"         -d parse_mode="Markdown"         -d text="$1")
+
+    [ "$http_code" = "200" ] && return 0
+
+    echo "$name: Telegram rejected the message (HTTP $http_code)" >&2
+    command -v logger >/dev/null 2>&1 &&         logger -t "$name" "Telegram send FAILED with HTTP $http_code"
+    return 1
 }
 
 # Read a count out of AIDE's summary block, e.g. "  Added entries:      3"
