@@ -807,13 +807,10 @@ else
         bad "rkhunter-telegram.sh builds a report but never sends it"
     fi
 
-    # Any other drift from the checkout: newer fixes land without needing a
-    # named detector for each one.
-    if needs_refresh "$SCRIPT_DIR/reporters/rkhunter-telegram.sh" \
-                     /usr/local/bin/rkhunter-telegram.sh; then
-        RK_REPORTER_BUGGY=true
-        note "The installed rkhunter reporter differs from this checkout"
-    fi
+    # Drift from the checkout is not tested here: the reporter refresh loop
+    # further up already reinstalled it before this section runs. The named
+    # check above stays because it fires on the case that loop cannot fix -
+    # a checkout that is itself old or missing.
 
     if [ "$RK_CONFIG_OK" = true ] && [ "$RK_COMPLETED" = true ] && [ "$RK_REPORTER_BUGGY" = false ]; then
         ok "rkhunter config is valid and the last scan ran to completion"
