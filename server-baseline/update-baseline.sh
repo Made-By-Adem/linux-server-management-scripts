@@ -630,6 +630,16 @@ AIDE_EXCLUDES=(
     '!.*/\.git/COMMIT_EDITMSG'
     '!.*/\.git/packed-refs'
     '!.*/\.git/modules'
+
+    # Package metadata, refreshed by apt's own timers. Every host reported
+    # these on the first real check. Tampering here is not a useful attack:
+    # the indexes are signature-verified, so a modified one fails apt rather
+    # than installing anything.
+    '!/var/lib/apt/lists'
+    '!/var/lib/ubuntu-advantage'
+    '!/var/lib/landscape'
+    '!/var/lib/update-notifier'
+    '!/var/lib/PackageKit'
 )
 
 AIDE_MISSING=()
