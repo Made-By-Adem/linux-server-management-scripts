@@ -702,6 +702,7 @@ EOF
         ok "Added ${#AIDE_MISSING[@]} exclusion(s), and AIDE parses the result"
         note "Application log/data directories are site-specific - see the LOCAL"
         note "EXCLUSIONS block at the end of /etc/aide/aide.conf to add yours."
+        note "How to work out which ones: docs/AIDE-TUNING.md in this checkout."
         note "Rebuild the baseline afterwards so they take effect:"
         note "  aide-refresh --reason 'after adding exclusions'"
         return 0

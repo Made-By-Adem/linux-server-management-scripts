@@ -622,6 +622,10 @@ For enterprise or critical systems, consult a professional DevOps engineer.
 - [Server Baseline Setup](server-baseline/README.md)
 - [Backup script](backup-script/README.md)
 - [Docker Container Updates - Full Guide](update-containers/README.md)
+- [Tuning AIDE for a new server](docs/AIDE-TUNING.md) — which paths to exclude,
+  how to work out what churns on your host, and the rule syntax that will
+  otherwise cost you an evening
+- [Remediating an existing server](docs/REMEDIATION-EXISTING-SERVERS.md)
 
 ### Useful Links
 
