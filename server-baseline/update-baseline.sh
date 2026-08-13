@@ -1698,12 +1698,18 @@ else
 
     PUB_UDP=$(published_ports udp)
 
-    UFWDOCKER_PLAN="These rules are created first, while the current ones still apply:
+    if [ -z "$ROUTE_PORTS" ]; then
+        UFWDOCKER_PLAN="The current block opens no container ports at all, so there is nothing
+  to carry over - only the chain itself changes.
 "
-    for p in $ROUTE_PORTS; do
-        UFWDOCKER_PLAN="${UFWDOCKER_PLAN}      ufw route allow proto tcp from any to any port $p
+    else
+        UFWDOCKER_PLAN="These rules are created first, while the current ones still apply:
 "
-    done
+        for p in $ROUTE_PORTS; do
+            UFWDOCKER_PLAN="${UFWDOCKER_PLAN}      ufw route allow proto tcp from any to any port $p
+"
+        done
+    fi
     UFWDOCKER_PLAN="${UFWDOCKER_PLAN}
   Then DOCKER-USER is rewritten to hand container traffic to ufw-user-forward,
   and the port list disappears from /etc/ufw/after.rules.
