@@ -683,6 +683,7 @@ AIDE_EXCLUDES=(
     # the indexes are signature-verified, so a modified one fails apt rather
     # than installing anything.
     '!/var/lib/apt/lists'
+    '!/var/lib/apt/periodic'
     '!/var/lib/ubuntu-advantage'
     '!/var/lib/landscape'
     '!/var/lib/update-notifier'
