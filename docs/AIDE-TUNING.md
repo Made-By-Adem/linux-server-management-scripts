@@ -187,6 +187,54 @@ had failed to notice.
 
 ---
 
+## `Directory: /` on the first of the month — do not exclude this
+
+Once a month the report will contain a single entry:
+
+```
+Changed: 1
+- Directory: /
+```
+
+That is Lynis. Its monthly audit tests whether the root filesystem is writable
+and whether it honours `noexec`, by dropping a probe file in `/`, using it, and
+removing it again. Nothing is left behind except the directory's mtime.
+
+It is tempting to silence it the way everything else on this page is silenced,
+with a rule that watches `/` without its timestamps:
+
+```
+=/ p+u+g+i+n         # DO NOT add this without checking the next paragraph
+```
+
+Do not do that on the assumption it is free. Whether it costs anything depends
+on something you have to look up per host: if the ruleset has no recursive
+entry covering files that sit directly in `/`, then the directory's mtime is
+the **only** signal that something appeared there. Removing it to save one line
+a month would trade away the detection of a file dropped in the root of the
+filesystem — which is a place attackers genuinely use, precisely because it is
+so rarely looked at.
+
+Check before deciding:
+
+```bash
+aide --config=/etc/aide/aide.conf --check 2>&1 | grep -c '^Added'
+echo test > /aide-root-marker
+aide --config=/etc/aide/aide.conf --check 2>&1 | grep -c 'aide-root-marker'
+rm -f /aide-root-marker
+```
+
+If the marker is reported, files in `/` are covered on their own and the
+attribute rule is safe. If it is not, keep the mtime and accept the monthly
+line — it is one entry, on a known date, with a known cause.
+
+That is the whole distinction this page is about. `update-success-stamp`
+changed daily and meant nothing, so it went. This changes monthly, means
+something specific, and you can name it. Those are not the same problem, and
+the fact that both produce a line in the report does not make them so.
+
+---
+
 ## When a server reports nothing
 
 Silence from a healthy host is a real result — but only if a clean run is
