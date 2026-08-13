@@ -5287,9 +5287,33 @@ if [[ ! -z "$SECURITY_TELEGRAM_BOT_TOKEN" ]] && [[ ! -z "$SECURITY_TELEGRAM_CHAT
     # It lives with the project checkout, not in /etc. '.env' is already
     # gitignored, so it cannot be committed by accident.
     PROJECT_ENV="$PROJECT_ROOT/.env"
-    printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' \
-        "$SECURITY_TELEGRAM_BOT_TOKEN" "$SECURITY_TELEGRAM_CHAT_ID" | \
-        sudo tee "$PROJECT_ENV" >/dev/null
+    {
+        printf 'TELEGRAM_BOT_TOKEN=%s\n' "$SECURITY_TELEGRAM_BOT_TOKEN"
+        printf 'TELEGRAM_CHAT_ID=%s\n'   "$SECURITY_TELEGRAM_CHAT_ID"
+        # Written out commented, because a knob nobody knows exists is a knob
+        # nobody turns - and each of these is the difference between a daily
+        # report that gets read and one that gets skimmed.
+        cat <<'ENVDOC'
+
+# --- security-selfcheck tuning ------------------------------------------------
+# All optional. Uncomment and fill in what applies to this host.
+
+# Containers that are SUPPOSED to hold host-level access, so the same lines
+# about Portainer and Netdata do not arrive every single morning until you stop
+# reading them. Format: name=risk,risk
+#SELFCHECK_ACK_HOST_ACCESS="portainer=docker.sock netdata=docker.sock"
+
+# Ports a cloud firewall in front of this machine lets through (Hetzner, AWS
+# security groups, ...). That layer leaves no trace on the host, so without
+# this every port behind it is reported as reachable from the internet.
+# DECLARED, never measured - re-verify from outside when you change it.
+#SELFCHECK_EXTERNAL_ALLOW="888"
+
+# This host's own intended services, on top of SSH and HTTP/HTTPS. Whatever is
+# reachable and NOT listed here is what the report is actually for.
+#SELFCHECK_EXPECTED_PUBLIC=""
+ENVDOC
+    } | sudo tee "$PROJECT_ENV" >/dev/null
     sudo chmod 600 "$PROJECT_ENV"
     log_info "Alert credentials written to $PROJECT_ENV (mode 600)"
     log_warning "If you move or re-clone this checkout, copy .env across."
@@ -7332,8 +7356,9 @@ else
     echo "Docker bypasses UFW. Ports published by containers are reachable from"
     echo "the internet even when UFW shows no rule for them."
     echo ""
-    echo "This adds a DOCKER-USER filter that drops external inbound traffic to"
-    echo "containers by default, with an explicit allowlist."
+    echo "This hands container traffic to UFW instead, so 'ufw route allow' is"
+    echo "the one place a container port gets opened and 'ufw status' lists"
+    echo "every open port on this machine - host and container alike."
     echo ""
     echo "Traffic that stays allowed:"
     echo "  • Established and related connections"
@@ -7347,6 +7372,9 @@ else
     echo ""
     echo "Everything else from the internet to a container port is DROPPED."
     echo ""
+    echo "Open one later with:"
+    echo "  sudo ufw route allow proto tcp from any to any port <port>"
+    echo ""
     read -p "Apply DOCKER-USER filtering? (Y/n): " apply_docker_fw
     apply_docker_fw=${apply_docker_fw:-y}
 
@@ -7358,6 +7386,20 @@ else
         else
             log_info "External interface detected: $EXT_IF"
 
+            # Route rules first, so ufw-user-forward is populated before the
+            # chain starts consulting it.
+            # || true throughout: set -e is on, and a firewall rule that fails
+            # to apply should warn and carry on, not abandon the install
+            # half-way through.
+            if [ "$CLOUDFLARE_ONLY" != true ]; then
+                if sudo ufw route allow proto tcp from any to any port 80  >/dev/null &&
+                   sudo ufw route allow proto tcp from any to any port 443 >/dev/null; then
+                    log_info "Added ufw route rules for 80/tcp and 443/tcp"
+                else
+                    log_warning "Could not add the ufw route rules for 80/443 - ports may end up closed"
+                fi
+            fi
+
             sudo cp /etc/ufw/after.rules /etc/ufw/after.rules.backup.$(date +%Y%m%d_%H%M%S)
 
             # Drop any block a previous run added, so this is re-runnable
@@ -7368,31 +7410,45 @@ else
                 echo "# BEGIN SERVER-BASELINE DOCKER-USER"
                 echo "# Managed by server-baseline install-script.sh - edit between the markers only."
                 echo "# Docker does not traverse UFW's INPUT chain; DOCKER-USER is consulted first"
-                echo "# for all container traffic, so the filter for published ports lives here."
+                echo "# for all container traffic. This hands that traffic to ufw-user-forward,"
+                echo "# so 'ufw route allow' is the one place a container port is opened and"
+                echo "# 'ufw status' shows every open port on the machine."
                 echo "*filter"
+                # after.rules is restored as its own pass, so a chain it jumps to
+                # has to be declared here or iptables-restore rejects the whole
+                # file. Declaring it does not empty it - ufw restores with
+                # --noflush, which leaves an existing chain's rules alone.
+                echo ":ufw-user-forward - [0:0]"
                 echo ":DOCKER-USER - [0:0]"
                 echo "-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN"
                 echo "-A DOCKER-USER -s 10.0.0.0/8 -j RETURN"
                 echo "-A DOCKER-USER -s 172.16.0.0/12 -j RETURN"
                 echo "-A DOCKER-USER -s 192.168.0.0/16 -j RETURN"
-                if [ "$CLOUDFLARE_ONLY" != true ]; then
-                    echo "-A DOCKER-USER -i $EXT_IF -p tcp --dport 80 -j RETURN"
-                    echo "-A DOCKER-USER -i $EXT_IF -p tcp --dport 443 -j RETURN"
-                fi
+                echo "-A DOCKER-USER -j ufw-user-forward"
                 echo "-A DOCKER-USER -i $EXT_IF -j DROP"
                 echo "-A DOCKER-USER -j RETURN"
                 echo "COMMIT"
                 echo "# END SERVER-BASELINE DOCKER-USER"
             } | sudo tee -a /etc/ufw/after.rules >/dev/null
 
-            if sudo ufw reload; then
-                log_info "✓ DOCKER-USER filtering applied via /etc/ufw/after.rules"
-                log_info "  Verify with: sudo iptables -L DOCKER-USER -n -v"
-                log_info "  To add a port:  edit /etc/ufw/after.rules between the markers, then 'sudo ufw reload'"
-                log_info "  To remove:      delete the marked block and reload"
-            else
-                log_warning "✗ UFW reload failed - check /etc/ufw/after.rules syntax"
+            # `ufw reload` prints "Firewall not enabled (skipping reload)" and
+            # exits 0 when ufw is disabled, and a reload that succeeds without
+            # the jump appearing is not a success either. Check the result, not
+            # the exit code.
+            RELOAD_RC=0
+            RELOAD_OUT=$(sudo ufw reload 2>&1) || RELOAD_RC=$?
+            if [ "$RELOAD_RC" -ne 0 ] || printf '%s' "$RELOAD_OUT" | grep -q 'not enabled'; then
+                log_warning "✗ UFW reload did not apply the rules: ${RELOAD_OUT:-no output}"
                 log_warning "  A timestamped backup is in /etc/ufw/"
+            elif ! sudo iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j ufw-user-forward'; then
+                log_warning "✗ DOCKER-USER does not jump to ufw-user-forward"
+                log_warning "  Container traffic is NOT being filtered. Check /etc/ufw/after.rules"
+                log_warning "  A timestamped backup is in /etc/ufw/"
+            else
+                log_info "✓ Container ports now go through UFW"
+                log_info "  Open one with:  sudo ufw route allow proto tcp from any to any port <port>"
+                log_info "  Close one with: sudo ufw route delete allow proto tcp from any to any port <port>"
+                log_info "  See them all:   sudo ufw status"
             fi
         fi
     else
