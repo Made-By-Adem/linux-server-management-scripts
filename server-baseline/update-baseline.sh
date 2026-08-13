@@ -1729,6 +1729,16 @@ else
             return 1
         fi
 
+        # `ufw reload` prints "Firewall not enabled (skipping reload)" and exits
+        # 0 when ufw is disabled. Every check after it would then be reading the
+        # chains that happen to still be resident in the kernel from an earlier
+        # load - a firewall that is not running, described by rules that are.
+        if ! ufw status 2>/dev/null | grep -q '^Status: active'; then
+            bad "UFW is not active, so nothing here would be applied"
+            note "Enable it first:  ufw enable   (check 'ufw status' afterwards)"
+            return 1
+        fi
+
         # Route rules FIRST, while the explicit RETURNs are still in place.
         # The other order leaves a window in which every container port on the
         # host is dropped, and "briefly" is not a property you can promise.
@@ -1803,6 +1813,17 @@ else
             ufwdocker_rollback
             return 1
         fi
+
+        # Exit code 0 is not the same as "it did something". This is the case
+        # the guard above is meant to have caught already; if it shows up here
+        # anyway, ufw was disabled somewhere between then and now, and the
+        # right move is to stop rather than to describe stale chains.
+        case "$reload_out" in
+            *"not enabled"*|*"skipping reload"*)
+                bad "ufw reload did nothing: ${reload_out}"
+                ufwdocker_rollback
+                return 1 ;;
+        esac
 
         # The switch only counts if the chain actually jumps. A reload that
         # succeeds while the block was written wrong is the failure this whole
