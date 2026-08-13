@@ -950,7 +950,17 @@ Fix: install aide-common and build the initial database. Takes 10-20 minutes." \
         if [ -f /usr/local/bin/aide-telegram.sh ] &&                [ /usr/local/bin/aide-telegram.sh -nt /var/lib/aide/aide.db ]; then
                 AIDE_CUTOFF=/usr/local/bin/aide-telegram.sh
         fi
-        local_last=$(find /var/log -maxdepth 1                         \( -name 'aide-check-*.log' -o -name 'aide-refresh-*.log' \)                         -newer "$AIDE_CUTOFF" 2>/dev/null |                      xargs -r ls -1t 2>/dev/null | head -1)
+        # A refresh log never survives an -newer test against the database:
+        # aide-refresh checks first and writes the database last, and aide
+        # closes that database after it has finished printing. So the log of
+        # the run that produced the database is always a moment older than it.
+        # Testing both kinds the same way reported "no AIDE run" on precisely
+        # the hosts that had just refreshed. A refresh log is evidence by
+        # construction; a check log still has to beat the cutoff.
+        local_last=$( { find /var/log -maxdepth 1 -name 'aide-refresh-*.log' 2>/dev/null
+                        find /var/log -maxdepth 1 -name 'aide-check-*.log' \
+                            -newer "$AIDE_CUTOFF" 2>/dev/null
+                      } | xargs -r ls -1t 2>/dev/null | head -1)
         if [ -z "$local_last" ]; then
             note "No AIDE run since the database was built - the first scheduled run is pending."
         elif grep -qE '^(ERROR|.*missing configuration|.*Invalid configure|.*Configuration error)' "$local_last" 2>/dev/null; then

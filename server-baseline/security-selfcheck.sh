@@ -802,7 +802,21 @@ else
     if [ -f /usr/local/bin/aide-telegram.sh ] &&        [ /usr/local/bin/aide-telegram.sh -nt /var/lib/aide/aide.db ]; then
         AIDE_CUTOFF=/usr/local/bin/aide-telegram.sh
     fi
-    LAST_AIDE_LOG=$(/usr/bin/find /var/log -maxdepth 1                         \( -name 'aide-check-*.log' -o -name 'aide-refresh-*.log' \)                         -newer "$AIDE_CUTOFF" 2>/dev/null |                     /usr/bin/xargs -r /bin/ls -1t 2>/dev/null | /usr/bin/head -1)
+    # aide-refresh runs a check, then writes the new database - and aide closes
+    # that database AFTER it has finished printing its report. The database is
+    # therefore always a moment newer than the log of the check that produced
+    # it. Requiring every log to be -newer than the database meant this warned
+    # "no AIDE run since the current setup was put in place" on exactly the
+    # hosts that had just refreshed, which is when you are most certain one ran.
+    #
+    # A refresh log is evidence by construction: aide-refresh cannot write one
+    # without having run a check first. A check log still has to post-date the
+    # cutoff, because that is what rules out a log left behind by the reporter
+    # that used to report success without checking anything.
+    LAST_AIDE_LOG=$( { /usr/bin/find /var/log -maxdepth 1 -name 'aide-refresh-*.log' 2>/dev/null
+                       /usr/bin/find /var/log -maxdepth 1 -name 'aide-check-*.log' \
+                           -newer "$AIDE_CUTOFF" 2>/dev/null
+                     } | /usr/bin/xargs -r /bin/ls -1t 2>/dev/null | /usr/bin/head -1)
 
     if [ "$DEEP" = true ]; then
         echo "  ---- running a full aide --check (10-20 minutes)..."
