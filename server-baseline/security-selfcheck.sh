@@ -445,41 +445,85 @@ EXT_IF=$(ip route show default 2>/dev/null | \
     /usr/bin/awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
 DOCKER_USER_RULES=$(/usr/sbin/iptables -S DOCKER-USER 2>/dev/null | /bin/grep '^-A ' || true)
 
-docker_user_allows() {
-    local port="$1" rule dport lo hi
-    [ -n "$DOCKER_USER_RULES" ] || return 0     # no chain: nothing filters here
-    while IFS= read -r rule; do
-        [ -n "$rule" ] || continue
-        # A new connection is never RELATED or ESTABLISHED.
-        case "$rule" in *"--ctstate"*) continue ;; esac
-        # Source-scoped rules do not match an arbitrary internet address.
-        case "$rule" in *" -s "*) continue ;; esac
-        # Interface-scoped rules only match on the way in from outside.
-        case "$rule" in
-            *" -i "*) [ -n "$EXT_IF" ] || continue
-                      case "$rule" in *" -i $EXT_IF "*) ;; *) continue ;; esac ;;
+# Does an iptables port spec cover this port? Handles a single port, an a:b
+# range, and the comma-separated list that -m multiport --dports produces.
+port_spec_matches() {
+    local spec="$1" port="$2" one lo hi oifs
+    oifs=$IFS; IFS=,
+    for one in $spec; do
+        case "$one" in
+            *:*) lo=${one%%:*}; hi=${one##*:}
+                 if [ "$port" -ge "$lo" ] && [ "$port" -le "$hi" ]; then
+                     IFS=$oifs; return 0
+                 fi ;;
+            *)   if [ "$port" = "$one" ]; then IFS=$oifs; return 0; fi ;;
         esac
-        case "$rule" in
-            *" -p "*) case "$rule" in *" -p tcp "*) ;; *) continue ;; esac ;;
-        esac
-        case "$rule" in
-            *"--dport "*)
-                dport=${rule#*--dport }; dport=${dport%% *}
-                case "$dport" in
-                    *:*) lo=${dport%%:*}; hi=${dport##*:}
-                         { [ "$port" -ge "$lo" ] && [ "$port" -le "$hi" ]; } || continue ;;
-                    *)   [ "$port" = "$dport" ] || continue ;;
-                esac ;;
-        esac
-        case "$rule" in
-            *" -j DROP"*|*" -j REJECT"*)   return 1 ;;
-            *" -j RETURN"*|*" -j ACCEPT"*) return 0 ;;
-            *) continue ;;   # a jump elsewhere; cannot decide from here, keep reading
-        esac
-    done <<EOF
-$DOCKER_USER_RULES
+    done
+    IFS=$oifs
+    return 1
+}
+
+# Echoes accept / drop / fallthrough. Recurses into user chains, because once
+# DOCKER-USER is pointed at ufw-user-forward the answer lives one chain deeper
+# and a walker that stops at the jump would call every open port closed.
+chain_verdict() {
+    local chain="$1" port="$2" depth="${3:-0}" rules rule dport lo hi sub
+    if [ "$depth" -gt 4 ]; then echo fallthrough; return 0; fi
+    rules=$(/usr/sbin/iptables -S "$chain" 2>/dev/null | /bin/grep '^-A ' || true)
+    if [ -n "$rules" ]; then
+        while IFS= read -r rule; do
+            [ -n "$rule" ] || continue
+            # A new connection is never RELATED or ESTABLISHED.
+            case "$rule" in *"--ctstate"*) continue ;; esac
+            # Source-scoped rules do not match an arbitrary internet address.
+            case "$rule" in *" -s "*) continue ;; esac
+            # Interface-scoped rules only match on the way in from outside.
+            case "$rule" in
+                *" -i "*) [ -n "$EXT_IF" ] || continue
+                          case "$rule" in *" -i $EXT_IF "*) ;; *) continue ;; esac ;;
+            esac
+            case "$rule" in
+                *" -p "*) case "$rule" in *" -p tcp "*) ;; *) continue ;; esac ;;
+            esac
+            # --dports (from -m multiport) is checked FIRST: it contains the
+            # substring "--dport", so testing for that one first would treat a
+            # multiport rule as having no port restriction at all - which reads
+            # as "matches every port" and silently mislabels the whole chain.
+            case "$rule" in
+                *"--dports "*)
+                    dport=${rule#*--dports }; dport=${dport%% *}
+                    port_spec_matches "$dport" "$port" || continue ;;
+                *"--dport "*)
+                    dport=${rule#*--dport }; dport=${dport%% *}
+                    port_spec_matches "$dport" "$port" || continue ;;
+            esac
+            case "$rule" in
+                *" -j DROP"*|*" -j REJECT"*) echo drop;   return 0 ;;
+                *" -j ACCEPT"*)              echo accept; return 0 ;;
+                # RETURN leaves this chain. What that MEANS depends on where we
+                # are, so it is reported as-is and the caller decides.
+                *" -j RETURN"*)              echo fallthrough; return 0 ;;
+                *)  sub=${rule##* -j }; sub=${sub%% *}
+                    case "$sub" in ''|-*) continue ;; esac
+                    sub=$(chain_verdict "$sub" "$port" $((depth + 1)))
+                    [ "$sub" = fallthrough ] || { echo "$sub"; return 0; } ;;
+            esac
+        done <<EOF
+$rules
 EOF
-    return 0                 # fell off the end of the chain: not filtered here
+    fi
+    echo fallthrough
+}
+
+# At the top of DOCKER-USER, falling through means the packet goes back to
+# FORWARD and on into Docker's own chains, which accept a published port. So
+# anything that is not an explicit drop is reachable.
+docker_user_allows() {
+    [ -n "$DOCKER_USER_RULES" ] || return 0     # no chain: nothing filters here
+    case "$(chain_verdict DOCKER-USER "$1")" in
+        drop) return 1 ;;
+        *)    return 0 ;;
+    esac
 }
 
 # --- The layer this host cannot see ------------------------------------------

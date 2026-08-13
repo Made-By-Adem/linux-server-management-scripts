@@ -1634,6 +1634,170 @@ cloud-init dumps are removed; any other crash dumps are left untouched." \
 fi
 
 ###############################################################################
+header "8e. Docker obeys UFW"
+###############################################################################
+#
+# Exposure is currently described in two places, in two syntaxes: `ufw status`
+# for host ports, and a hand-maintained list of RETURN rules inside
+# /etc/ufw/after.rules for container ports. The second list does not appear in
+# `ufw status` at all.
+#
+# That is not a cosmetic split. It is how a port ends up believed-closed and
+# open at the same time: you read `ufw status`, it does not mention 21118, and
+# the conclusion is wrong. Every layer you have to remember separately is a
+# layer you will eventually forget.
+#
+# Pointing DOCKER-USER at ufw-user-forward collapses the two into one. After
+# this, `ufw route allow ...` is how a container port gets opened, and
+# `ufw status` lists every open port on the machine, host or container.
+
+if ! command -v docker >/dev/null 2>&1 || ! command -v ufw >/dev/null 2>&1; then
+    note "Docker or UFW not present - skipping"
+elif ! grep -q 'BEGIN SERVER-BASELINE DOCKER-USER' /etc/ufw/after.rules 2>/dev/null; then
+    note "No DOCKER-USER block yet - section 8 installs it first"
+elif grep -q 'j ufw-user-forward' /etc/ufw/after.rules 2>/dev/null; then
+    ok "Container ports go through UFW (ufw route rules)"
+    CLEAN+=("ufw-docker")
+else
+    # The ports the current block lets through. These are exactly what has to
+    # exist as ufw route rules before the jump replaces them, or the switch
+    # takes working services down with it.
+    ROUTE_PORTS=$(sed -n '/# BEGIN SERVER-BASELINE DOCKER-USER/,/# END SERVER-BASELINE DOCKER-USER/p' \
+                      /etc/ufw/after.rules 2>/dev/null | \
+                  grep -oE '\-\-dport [0-9]+' | awk '{print $2}' | sort -un | tr '\n' ' ')
+    ROUTE_PORTS=$(echo "$ROUTE_PORTS" | sed 's/ *$//')
+
+    # Published container ports, one per line, ranges expanded. Ranges have to
+    # be expanded: "21115-21119" collapsed to its first port understates by
+    # four exactly which ports stay closed, and a plan that quietly understates
+    # what it leaves shut is worse than no plan.
+    published_ports() {   # $1 = tcp | udp
+        docker ps --format '{{.Ports}}' 2>/dev/null | tr ',' '\n' | \
+            awk -v want="$1" '
+                $0 !~ /^[[:space:]]*(0\.0\.0\.0|\[?::+\]?):/ { next }
+                {
+                    proto = ($0 ~ /\/udp/) ? "udp" : "tcp"
+                    if (proto != want) next
+                    if (match($0, /:[0-9]+(-[0-9]+)?->/)) {
+                        s = substr($0, RSTART + 1, RLENGTH - 3)
+                        n = split(s, a, "-")
+                        lo = a[1] + 0; hi = (n > 1) ? a[2] + 0 : lo
+                        if (hi > lo + 1024) hi = lo + 1024
+                        for (p = lo; p <= hi; p++) print p
+                    }
+                }' | sort -un | tr '\n' ' ' | sed 's/ *$//'
+    }
+
+    # Published but with no exception: dropped today, dropped after. Listed so
+    # the plan accounts for every published port rather than only the open ones.
+    PUB_TCP=$(published_ports tcp)
+    STILL_DROPPED=""
+    for p in $PUB_TCP; do
+        case " $ROUTE_PORTS " in *" $p "*) ;; *) STILL_DROPPED="$STILL_DROPPED $p" ;; esac
+    done
+
+    PUB_UDP=$(published_ports udp)
+
+    UFWDOCKER_PLAN="These rules are created first, while the current ones still apply:
+"
+    for p in $ROUTE_PORTS; do
+        UFWDOCKER_PLAN="${UFWDOCKER_PLAN}      ufw route allow proto tcp from any to any port $p
+"
+    done
+    UFWDOCKER_PLAN="${UFWDOCKER_PLAN}
+  Then DOCKER-USER is rewritten to hand container traffic to ufw-user-forward,
+  and the port list disappears from /etc/ufw/after.rules.
+
+  Reachability does not change. These stay open: ${ROUTE_PORTS:-none}"
+    [ -n "$STILL_DROPPED" ] && UFWDOCKER_PLAN="${UFWDOCKER_PLAN}
+  Published but dropped today, and still dropped after:$STILL_DROPPED"
+    [ -n "$PUB_UDP" ] && UFWDOCKER_PLAN="${UFWDOCKER_PLAN}
+  Published over UDP:$PUB_UDP - the current rules are all -p tcp, so these are
+  dropped now and stay dropped. Open one with: ufw route allow proto udp ..."
+
+    ufwdocker_fix() {
+        local ext_if p bk
+        ext_if=$(ip -4 route show default | awk '{print $5; exit}')
+        if [ -z "$ext_if" ]; then
+            bad "Could not detect the external interface"
+            return 1
+        fi
+
+        # Route rules FIRST, while the explicit RETURNs are still in place.
+        # The other order leaves a window in which every container port on the
+        # host is dropped, and "briefly" is not a property you can promise.
+        for p in $ROUTE_PORTS; do
+            if ! ufw route allow proto tcp from any to any port "$p" >/dev/null; then
+                bad "ufw route allow for port $p failed - nothing was switched over"
+                return 1
+            fi
+            ok "ufw route allow tcp/$p"
+        done
+
+        # Verify they landed before removing what they replace. An empty
+        # ufw-user-forward plus the new jump is a host with every container
+        # port closed.
+        for p in $ROUTE_PORTS; do
+            if ! iptables -S ufw-user-forward 2>/dev/null | grep -qE -- "--dports? [0-9,:]*\b$p\b"; then
+                bad "port $p is not in ufw-user-forward - refusing to switch over"
+                return 1
+            fi
+        done
+
+        bk="/etc/ufw/after.rules.bak.$(date +%Y%m%d_%H%M%S)"
+        cp /etc/ufw/after.rules "$bk"
+        sed -i '/# BEGIN SERVER-BASELINE DOCKER-USER/,/# END SERVER-BASELINE DOCKER-USER/d' \
+            /etc/ufw/after.rules
+        {
+            echo ""
+            echo "# BEGIN SERVER-BASELINE DOCKER-USER"
+            echo "# Docker bypasses UFW's INPUT chain. This hands container traffic to"
+            echo "# ufw-user-forward instead, so 'ufw route allow' is the one place a"
+            echo "# container port is opened and 'ufw status' shows every open port."
+            echo "*filter"
+            echo ":DOCKER-USER - [0:0]"
+            echo "-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN"
+            echo "-A DOCKER-USER -s 10.0.0.0/8 -j RETURN"
+            echo "-A DOCKER-USER -s 172.16.0.0/12 -j RETURN"
+            echo "-A DOCKER-USER -s 192.168.0.0/16 -j RETURN"
+            echo "-A DOCKER-USER -j ufw-user-forward"
+            echo "-A DOCKER-USER -i $ext_if -j DROP"
+            echo "-A DOCKER-USER -j RETURN"
+            echo "COMMIT"
+            echo "# END SERVER-BASELINE DOCKER-USER"
+        } >> /etc/ufw/after.rules
+
+        if ! ufw reload >/dev/null; then
+            bad "ufw reload failed - restoring $bk"
+            cp "$bk" /etc/ufw/after.rules
+            ufw reload >/dev/null 2>&1
+            return 1
+        fi
+
+        # The switch only counts if the chain actually jumps. A reload that
+        # succeeds while the block was written wrong is the failure this whole
+        # repository keeps running into.
+        if ! iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j ufw-user-forward'; then
+            bad "DOCKER-USER does not jump to ufw-user-forward - restoring $bk"
+            cp "$bk" /etc/ufw/after.rules
+            ufw reload >/dev/null 2>&1
+            return 1
+        fi
+
+        ok "Container ports now go through UFW"
+        note "Open one later with: ufw route allow proto tcp from any to any port <port>"
+        note "Close one with:      ufw route delete allow proto tcp from any to any port <port>"
+        note "Previous rules kept at: $bk"
+        note "Verify FROM ANOTHER MACHINE - from here everything looks reachable."
+        return 0
+    }
+
+    offer "ufw-docker" "Container ports are open in a list UFW never shows you" \
+"$UFWDOCKER_PLAN" \
+        ufwdocker_fix
+fi
+
+###############################################################################
 header "9. Security self-check"
 ###############################################################################
 
