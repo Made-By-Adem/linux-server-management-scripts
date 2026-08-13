@@ -1746,12 +1746,28 @@ else
         for p in $ROUTE_PORTS; do
             if ! iptables -S ufw-user-forward 2>/dev/null | grep -qE -- "--dports? [0-9,:]*\b$p\b"; then
                 bad "port $p is not in ufw-user-forward - refusing to switch over"
+                note "The route rules added above are left in place. They change nothing"
+                note "while DOCKER-USER still has its own list, and re-running is safe."
                 return 1
             fi
         done
 
         bk="/etc/ufw/after.rules.bak.$(date +%Y%m%d_%H%M%S)"
         cp /etc/ufw/after.rules "$bk"
+
+        # Restoring is itself an operation that can fail, and a rollback whose
+        # result is thrown away leaves a half-loaded firewall looking like a
+        # clean abort. Say which of the two happened.
+        ufwdocker_rollback() {
+            cp "$bk" /etc/ufw/after.rules
+            if ufw reload >/dev/null 2>&1; then
+                note "Restored $bk - the firewall is back to its previous state"
+            else
+                bad "THE RESTORE ALSO FAILED. The firewall may be partially loaded."
+                bad "Run now:  cp $bk /etc/ufw/after.rules && ufw reload && ufw status"
+            fi
+        }
+
         sed -i '/# BEGIN SERVER-BASELINE DOCKER-USER/,/# END SERVER-BASELINE DOCKER-USER/d' \
             /etc/ufw/after.rules
         {
@@ -1761,6 +1777,13 @@ else
             echo "# ufw-user-forward instead, so 'ufw route allow' is the one place a"
             echo "# container port is opened and 'ufw status' shows every open port."
             echo "*filter"
+            # after.rules is restored as its own pass, and a chain it references
+            # has to be declared in it or iptables-restore refuses the whole
+            # file with "Chain 'ufw-user-forward' does not exist". Declaring it
+            # does NOT empty it: ufw restores with --noflush, under which a
+            # chain line creates a missing chain and leaves an existing one -
+            # and the route rules in it - alone.
+            echo ":ufw-user-forward - [0:0]"
             echo ":DOCKER-USER - [0:0]"
             echo "-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN"
             echo "-A DOCKER-USER -s 10.0.0.0/8 -j RETURN"
@@ -1775,8 +1798,7 @@ else
 
         if ! ufw reload >/dev/null; then
             bad "ufw reload failed - restoring $bk"
-            cp "$bk" /etc/ufw/after.rules
-            ufw reload >/dev/null 2>&1
+            ufwdocker_rollback
             return 1
         fi
 
@@ -1785,10 +1807,21 @@ else
         # repository keeps running into.
         if ! iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j ufw-user-forward'; then
             bad "DOCKER-USER does not jump to ufw-user-forward - restoring $bk"
-            cp "$bk" /etc/ufw/after.rules
-            ufw reload >/dev/null 2>&1
+            ufwdocker_rollback
             return 1
         fi
+
+        # The jump is worth nothing if the rules it jumps to were emptied. This
+        # is the failure the ":ufw-user-forward - [0:0]" line above could cause
+        # if ufw ever restored without --noflush, and it would present as every
+        # container port silently going dark.
+        for p in $ROUTE_PORTS; do
+            if ! iptables -S ufw-user-forward 2>/dev/null | grep -qE -- "--dports? [0-9,:]*\b$p\b"; then
+                bad "port $p vanished from ufw-user-forward during the switch - restoring $bk"
+                ufwdocker_rollback
+                return 1
+            fi
+        done
 
         ok "Container ports now go through UFW"
         note "Open one later with: ufw route allow proto tcp from any to any port <port>"
