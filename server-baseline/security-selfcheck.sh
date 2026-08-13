@@ -19,6 +19,11 @@
 #   sudo bash security-selfcheck.sh --quiet      # only output when something is wrong
 #   sudo bash security-selfcheck.sh --telegram   # send failures to Telegram
 #   sudo bash security-selfcheck.sh --deep       # also run a full aide --check (10-20 min)
+#   sudo bash security-selfcheck.sh --test-alert # send even when there is nothing wrong
+#
+# --test-alert is how you prove the alert path works. The daily run is silent
+# on a healthy host, and silence is also what a broken reporter looks like -
+# so there has to be one command that forces the message out.
 #
 # Configuration comes from the .env beside the project checkout (the legacy
 # /etc/server-baseline/selfcheck.env is still read if that is where yours is):
@@ -55,14 +60,21 @@ set -u
 QUIET=false
 TELEGRAM=false
 DEEP=false
+TEST_ALERT=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --quiet)    QUIET=true; shift ;;
         --telegram) TELEGRAM=true; shift ;;
         --deep)     DEEP=true; shift ;;
+        # Implies --telegram: asking to test the alert without sending one is
+        # not a thing anybody wants.
+        --test-alert) TEST_ALERT=true; TELEGRAM=true; shift ;;
         --help|-h)
-            /bin/sed -n '2,30p' "$0"
+            # To the end of the header block, not to a line number: the header
+            # has grown three times today and a hard-coded range silently cuts
+            # the newest option out of the help text.
+            /bin/sed -n '3,/^#####/p' "$0" | /bin/sed '$d'
             exit 0
             ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -1176,7 +1188,16 @@ if [ "$QUIET" = false ]; then
     echo ""
 fi
 
-if [ ${#FAILURES[@]} -gt 0 ] || [ ${#WARNINGS[@]} -gt 0 ]; then
+# --test-alert forces the send even when there is nothing to report.
+#
+# Without it there is no way to tell a healthy host from a broken reporter:
+# both are silent. That is not a hypothetical - rkhunter's reporter built its
+# "All Clear" message and never sent it, and nobody noticed for months, because
+# the symptom of a dead reporter is indistinguishable from a quiet week.
+#
+# So: silence stays the default for the daily run, and this is the one command
+# that proves the path still works end to end.
+if [ ${#FAILURES[@]} -gt 0 ] || [ ${#WARNINGS[@]} -gt 0 ] || [ "$TEST_ALERT" = true ]; then
     if [ "$QUIET" = true ]; then
         echo "Security self-check on $(/bin/hostname): ${#FAILURES[@]} failures, ${#WARNINGS[@]} warnings"
         for f in "${FAILURES[@]}"; do echo "  [FAIL] $f"; done
@@ -1212,12 +1233,21 @@ if [ ${#FAILURES[@]} -gt 0 ] || [ ${#WARNINGS[@]} -gt 0 ]; then
         if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
             sc_escape() { /bin/sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 
-            MSG="🔍 <b>Security Self-Check</b>%0A%0A"
+            if [ "$TEST_ALERT" = true ]; then
+                MSG="🧪 <b>Security Self-Check</b> (test)%0A%0A"
+            else
+                MSG="🔍 <b>Security Self-Check</b>%0A%0A"
+            fi
             MSG+="Server: <code>$(/bin/hostname | sc_escape)</code>%0A"
             MSG+="Date: $(/bin/date '+%Y-%m-%d %H:%M')%0A%0A"
             MSG+="Failures: ${#FAILURES[@]} • Warnings: ${#WARNINGS[@]}%0A%0A"
             for f in "${FAILURES[@]}"; do MSG+="🚨 $(printf %s "$f" | sc_escape)%0A"; done
             for w in "${WARNINGS[@]}"; do MSG+="⚠️ $(printf %s "$w" | sc_escape)%0A"; done
+            if [ ${#FAILURES[@]} -eq 0 ] && [ ${#WARNINGS[@]} -eq 0 ]; then
+                MSG+="✅ ${#PASSES[@]} checks passed, nothing to report.%0A%0A"
+                MSG+="<i>This message exists only to prove the alert path still works. "
+                MSG+="The daily run stays silent when there is nothing wrong.</i>"
+            fi
 
             SC_CODE=""
             for attempt in 1 2 3; do
