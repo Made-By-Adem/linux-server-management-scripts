@@ -31,6 +31,12 @@
 #   # which is how you learn to stop reading them. Format: name=risk,risk
 #   SELFCHECK_ACK_HOST_ACCESS="portainer=docker.sock netdata=docker.sock"
 #
+#   # Ports a cloud firewall in front of this machine lets through. That layer
+#   # leaves no trace on the host, so without this every port behind it is
+#   # reported as internet-reachable. DECLARED, never measured - re-verify from
+#   # outside whenever you change the provider's rules.
+#   SELFCHECK_EXTERNAL_ALLOW="888 1000"
+#
 # Exit codes: 0 = all checks passed, 1 = at least one FAIL, 2 = only WARNs.
 ###############################################################################
 
@@ -425,6 +431,82 @@ EOF
     return 1
 }
 
+# --- What DOCKER-USER would do with a new connection from the internet -------
+# The old check grepped this chain for the word DROP and passed if it found
+# one. That is not a result, it is the presence of a rule: on AC3 that single
+# "pass" was the only thing standing between eleven published container ports
+# and the internet, and it would have said exactly the same had every one of
+# them been deliberately opened.
+#
+# So walk the chain the way a packet does - first matching rule wins - for a
+# NEW inbound TCP connection from an arbitrary internet address arriving on
+# the default-route interface.
+EXT_IF=$(ip route show default 2>/dev/null | \
+    /usr/bin/awk '/^default/{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
+DOCKER_USER_RULES=$(/usr/sbin/iptables -S DOCKER-USER 2>/dev/null | /bin/grep '^-A ' || true)
+
+docker_user_allows() {
+    local port="$1" rule dport lo hi
+    [ -n "$DOCKER_USER_RULES" ] || return 0     # no chain: nothing filters here
+    while IFS= read -r rule; do
+        [ -n "$rule" ] || continue
+        # A new connection is never RELATED or ESTABLISHED.
+        case "$rule" in *"--ctstate"*) continue ;; esac
+        # Source-scoped rules do not match an arbitrary internet address.
+        case "$rule" in *" -s "*) continue ;; esac
+        # Interface-scoped rules only match on the way in from outside.
+        case "$rule" in
+            *" -i "*) [ -n "$EXT_IF" ] || continue
+                      case "$rule" in *" -i $EXT_IF "*) ;; *) continue ;; esac ;;
+        esac
+        case "$rule" in
+            *" -p "*) case "$rule" in *" -p tcp "*) ;; *) continue ;; esac ;;
+        esac
+        case "$rule" in
+            *"--dport "*)
+                dport=${rule#*--dport }; dport=${dport%% *}
+                case "$dport" in
+                    *:*) lo=${dport%%:*}; hi=${dport##*:}
+                         { [ "$port" -ge "$lo" ] && [ "$port" -le "$hi" ]; } || continue ;;
+                    *)   [ "$port" = "$dport" ] || continue ;;
+                esac ;;
+        esac
+        case "$rule" in
+            *" -j DROP"*|*" -j REJECT"*)   return 1 ;;
+            *" -j RETURN"*|*" -j ACCEPT"*) return 0 ;;
+            *) continue ;;   # a jump elsewhere; cannot decide from here, keep reading
+        esac
+    done <<EOF
+$DOCKER_USER_RULES
+EOF
+    return 0                 # fell off the end of the chain: not filtered here
+}
+
+# --- The layer this host cannot see ------------------------------------------
+# A cloud firewall (Hetzner, AWS security groups, ...) sits in front of the NIC
+# and leaves no trace on the machine. Declaring what it permits keeps the ports
+# it already blocks out of the daily report.
+#
+# This is a DECLARATION, not a measurement. Nothing here notices when someone
+# opens a port in the provider console, which is exactly why the report keeps
+# saying so out loud rather than quietly treating the host as safe.
+#
+#   SELFCHECK_EXTERNAL_ALLOW="888 1000"
+EXT_ALLOW="${SELFCHECK_EXTERNAL_ALLOW:-}"
+
+ext_allows() {
+    local port="$1" spec lo hi
+    for spec in $EXT_ALLOW; do
+        spec=${spec%%/*}
+        case "$spec" in
+            *:*) lo=${spec%%:*}; hi=${spec##*:}
+                 [ "$port" -ge "$lo" ] && [ "$port" -le "$hi" ] && return 0 ;;
+            *)   [ "$port" = "$spec" ] && return 0 ;;
+        esac
+    done
+    return 1
+}
+
 PUBLIC_LISTENERS=$(/bin/ss -tlnH 2>/dev/null | \
     /usr/bin/awk '{print $4}' | \
     /bin/grep -E '^(0\.0\.0\.0|\*|\[::\]):' | \
@@ -436,22 +518,37 @@ else
     ufw_init
     DOCKER_PUB=$(docker_published_ports)
 
-    REACHABLE=""; FIREWALLED=""; VIA_DOCKER=""
+    REACHABLE=""; VIA_DOCKER=""; BLOCKED_UFW=""; BLOCKED_DU=""; BLOCKED_EXT=""
     for p in $PUBLIC_LISTENERS; do
         if printf '%s\n' "$DOCKER_PUB" | /bin/grep -qx "$p"; then
-            REACHABLE="$REACHABLE $p"; VIA_DOCKER="$VIA_DOCKER $p"
-        elif ufw_allows "$p"; then
-            REACHABLE="$REACHABLE $p"
-        else
-            FIREWALLED="$FIREWALLED $p"
+            # Published by Docker: UFW never sees it, DOCKER-USER is the filter.
+            if docker_user_allows "$p"; then
+                VIA_DOCKER="$VIA_DOCKER $p"
+            else
+                BLOCKED_DU="$BLOCKED_DU $p"; continue
+            fi
+        elif ! ufw_allows "$p"; then
+            BLOCKED_UFW="$BLOCKED_UFW $p"; continue
         fi
+        # Survived every filter that exists on this machine. The cloud firewall
+        # is the last layer and it is not visible from in here.
+        if [ -n "$EXT_ALLOW" ] && ! ext_allows "$p"; then
+            BLOCKED_EXT="$BLOCKED_EXT $p"; continue
+        fi
+        REACHABLE="$REACHABLE $p"
     done
 
     # Informational, not a verdict - the verdicts follow below.
     if [ "$QUIET" = false ]; then
         echo "  ---- bound to all interfaces:$(printf ' %s' $PUBLIC_LISTENERS)"
-        [ -n "$VIA_DOCKER" ] && echo "  ---- published by Docker (UFW does not apply):$VIA_DOCKER"
-        [ -n "$FIREWALLED" ] && echo "  ---- bound but dropped by UFW:$FIREWALLED"
+        [ -n "$VIA_DOCKER" ]  && echo "  ---- published by Docker, allowed by DOCKER-USER:$VIA_DOCKER"
+        [ -n "$BLOCKED_DU" ]  && echo "  ---- published by Docker, dropped by DOCKER-USER:$BLOCKED_DU"
+        [ -n "$BLOCKED_UFW" ] && echo "  ---- bound on the host, dropped by UFW:$BLOCKED_UFW"
+        if [ -n "$BLOCKED_EXT" ]; then
+            echo "  ---- past UFW and DOCKER-USER, declared blocked upstream:$BLOCKED_EXT"
+            echo "       SELFCHECK_EXTERNAL_ALLOW is a declaration, not a measurement."
+            echo "       Re-verify from outside whenever the cloud firewall changes."
+        fi
     fi
 
     UNEXPECTED=""
@@ -465,8 +562,9 @@ else
     done
 
     if [ -z "$MGMT_EXPOSED" ] && [ -z "$UNEXPECTED" ]; then
-        if [ -n "$FIREWALLED" ]; then
-            pass "Reachable ports are only the expected ones (SSH, HTTP/HTTPS);$FIREWALLED bound but firewalled"
+        BLOCKED_ANY="$BLOCKED_UFW$BLOCKED_DU$BLOCKED_EXT"
+        if [ -n "$BLOCKED_ANY" ]; then
+            pass "Reachable ports are only the expected ones;$BLOCKED_ANY bound but filtered before they get here"
         else
             pass "Only expected ports (SSH, HTTP/HTTPS) are open on all interfaces"
         fi
@@ -474,8 +572,10 @@ else
 
     # Named per port so the message says why it is a verdict and not a listing.
     port_path() {
-        case " $VIA_DOCKER " in *" $1 "*) echo "published by Docker, UFW does not filter it" ;;
-                                *)        echo "UFW allows it" ;; esac
+        case " $VIA_DOCKER " in
+            *" $1 "*) echo "published by Docker and let through by DOCKER-USER" ;;
+            *)        echo "UFW allows it" ;;
+        esac
     }
 
     if [ -n "$MGMT_EXPOSED" ]; then
@@ -797,14 +897,26 @@ if command -v docker >/dev/null 2>&1; then
         pass "No unexpected Docker daemons"
     fi
 
-    # Container ports published on all interfaces. These are reachable from the
-    # internet whatever UFW says.
-    PUBLIC_PORTS=$(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | /bin/grep -E '0\.0\.0\.0:|:::' || true)
-    if [ -n "$PUBLIC_PORTS" ]; then
-        if /usr/sbin/iptables -L DOCKER-USER -n 2>/dev/null | /bin/grep -q DROP; then
-            pass "Containers publish on 0.0.0.0 but DOCKER-USER has a DROP rule"
+    # Container ports published on all interfaces. UFW does not gate these -
+    # DOCKER-USER does, or nothing does.
+    #
+    # This used to grep the chain for the word DROP and pass on finding one.
+    # A chain that drops nothing relevant contains that word just as readily as
+    # a chain that drops everything, so the check could not tell a working
+    # filter from a decorative one. It now asks per port.
+    if [ -n "${DOCKER_PUB:-}" ]; then
+        DU_OPEN=""
+        for p in $DOCKER_PUB; do
+            docker_user_allows "$p" && DU_OPEN="$DU_OPEN $p"
+        done
+        DU_PUB_N=$(printf '%s ' $DOCKER_PUB | /usr/bin/wc -w)
+        DU_OPEN_N=$(printf '%s ' $DU_OPEN | /usr/bin/wc -w)
+        if [ "$DU_OPEN_N" -eq 0 ]; then
+            pass "DOCKER-USER drops all $DU_PUB_N container port(s) published on all interfaces"
+        elif [ "$DU_OPEN_N" -lt "$DU_PUB_N" ]; then
+            pass "DOCKER-USER filters container ports - $DU_OPEN_N of $DU_PUB_N are let through:$DU_OPEN"
         else
-            warn "Containers published on all interfaces with no DOCKER-USER filter: $(echo "$PUBLIC_PORTS" | /bin/tr '\n' '; ')"
+            fail "DOCKER-USER filters none of the $DU_PUB_N container ports published on all interfaces"
         fi
     else
         pass "No containers published on all interfaces"
