@@ -1796,8 +1796,10 @@ else
             echo "# END SERVER-BASELINE DOCKER-USER"
         } >> /etc/ufw/after.rules
 
-        if ! ufw reload >/dev/null; then
+        local reload_out
+        if ! reload_out=$(ufw reload 2>&1); then
             bad "ufw reload failed - restoring $bk"
+            echo "$reload_out" | sed 's/^/      /'
             ufwdocker_rollback
             return 1
         fi
@@ -1805,8 +1807,27 @@ else
         # The switch only counts if the chain actually jumps. A reload that
         # succeeds while the block was written wrong is the failure this whole
         # repository keeps running into.
+        #
+        # Sampled twice, three seconds apart. dockerd reconciles its own
+        # iptables state when it notices its chains were rebuilt, and if that
+        # is what wipes the jump then the two samples differ - which is a
+        # different problem with a different fix than a block that never
+        # applied at all. Guessing between the two on a live host is how you
+        # break something while trying to describe it.
         if ! iptables -S DOCKER-USER 2>/dev/null | grep -q -- '-j ufw-user-forward'; then
             bad "DOCKER-USER does not jump to ufw-user-forward - restoring $bk"
+            echo "    ---- DOCKER-USER right after the reload:"
+            iptables -S DOCKER-USER 2>&1 | sed 's/^/      /'
+            sleep 3
+            echo "    ---- DOCKER-USER three seconds later:"
+            iptables -S DOCKER-USER 2>&1 | sed 's/^/      /'
+            echo "    ---- ufw-user-forward:"
+            iptables -S ufw-user-forward 2>&1 | head -20 | sed 's/^/      /'
+            echo "    ---- the block as written to after.rules:"
+            sed -n '/# BEGIN SERVER-BASELINE DOCKER-USER/,/# END SERVER-BASELINE DOCKER-USER/p' \
+                /etc/ufw/after.rules | sed 's/^/      /'
+            echo "    ---- ufw reload said:"
+            printf '%s\n' "${reload_out:-(nothing)}" | sed 's/^/      /'
             ufwdocker_rollback
             return 1
         fi
