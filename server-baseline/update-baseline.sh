@@ -1733,9 +1733,16 @@ else
         # 0 when ufw is disabled. Every check after it would then be reading the
         # chains that happen to still be resident in the kernel from an earlier
         # load - a firewall that is not running, described by rules that are.
-        if ! ufw status 2>/dev/null | grep -q '^Status: active'; then
-            bad "UFW is not active, so nothing here would be applied"
-            note "Enable it first:  ufw enable   (check 'ufw status' afterwards)"
+        #
+        # Both signals are needed. On AC3 `ufw status` said "Status: active"
+        # while ufw.conf said ENABLED=no, because status reports on the loaded
+        # chains and reload reads the config. Asking only the first is how this
+        # guard got written too weak the first time.
+        if ! ufw status 2>/dev/null | grep -q '^Status: active' || \
+           ! grep -qi '^ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null; then
+            bad "UFW is not enabled, so nothing here would survive a reload"
+            note "'ufw status' can say active on stale kernel rules - ufw.conf is the truth"
+            note "Enable it first:  ufw enable"
             return 1
         fi
 

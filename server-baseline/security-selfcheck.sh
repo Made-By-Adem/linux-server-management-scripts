@@ -562,6 +562,18 @@ else
     ufw_init
     DOCKER_PUB=$(docker_published_ports)
 
+    # `ufw status` reported "Status: active" on a host whose ufw.conf said
+    # ENABLED=no: the chains were still resident in the kernel from an earlier
+    # load, so the firewall looked healthy in every way you would normally
+    # look, and would simply not have come back after a reboot. A rule that is
+    # loaded is not a firewall that is running. Both have to agree.
+    if command -v ufw >/dev/null 2>&1 && \
+       ufw status 2>/dev/null | /bin/grep -q '^Status: active' && \
+       ! /bin/grep -qi '^ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null; then
+        fail "UFW rules are loaded but ufw.conf says ENABLED=no - the firewall will not come back after a reboot"
+        warn "  Re-enable it with: ufw enable"
+    fi
+
     REACHABLE=""; VIA_DOCKER=""; BLOCKED_UFW=""; BLOCKED_DU=""; BLOCKED_EXT=""
     for p in $PUBLIC_LISTENERS; do
         if printf '%s\n' "$DOCKER_PUB" | /bin/grep -qx "$p"; then
@@ -608,7 +620,11 @@ else
     if [ -z "$MGMT_EXPOSED" ] && [ -z "$UNEXPECTED" ]; then
         BLOCKED_ANY="$BLOCKED_UFW$BLOCKED_DU$BLOCKED_EXT"
         if [ -n "$BLOCKED_ANY" ]; then
-            pass "Reachable ports are only the expected ones;$BLOCKED_ANY bound but filtered before they get here"
+            # Counted, not listed: the three ---- lines above already name every
+            # one of them, and a verdict that runs to twelve port numbers stops
+            # being read as a verdict.
+            BLOCKED_N=$(printf '%s ' $BLOCKED_ANY | /usr/bin/wc -w)
+            pass "Reachable ports are only the expected ones ($BLOCKED_N more are bound but filtered before they arrive)"
         else
             pass "Only expected ports (SSH, HTTP/HTTPS) are open on all interfaces"
         fi
