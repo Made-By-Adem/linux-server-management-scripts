@@ -37,6 +37,10 @@
 #   # outside whenever you change the provider's rules.
 #   SELFCHECK_EXTERNAL_ALLOW="888 1000"
 #
+#   # This host's own intended services, on top of SSH and HTTP/HTTPS. Anything
+#   # reachable and not listed here is what the report is actually for.
+#   SELFCHECK_EXPECTED_PUBLIC="1000"
+#
 # Exit codes: 0 = all checks passed, 1 = at least one FAIL, 2 = only WARNs.
 ###############################################################################
 
@@ -354,7 +358,12 @@ section "Listeners on all interfaces"
 # Everything else is worth a second look, especially management interfaces:
 # 9443 Portainer, 8000 Portainer agent, 19999 Netdata, 8120 the bot API.
 
-EXPECTED_PUBLIC="22 888 80 443"
+# SELFCHECK_EXPECTED_PUBLIC adds this host's own intended services. Port 1000
+# on AC1 is a deliberate one, and re-confirming it every morning is how a list
+# of intended exposures turns into a list you scroll past. Declaring it moves
+# it from "verify this" to "you already did" - and anything NOT declared still
+# stands out, which is the entire point of keeping the list short.
+EXPECTED_PUBLIC="22 888 80 443 ${SELFCHECK_EXPECTED_PUBLIC:-}"
 MGMT_PORTS="9443 8000 19999 8120 2375 2376 5432 3306 6379 27017"
 
 # --- Ports Docker publishes on all interfaces --------------------------------
@@ -971,12 +980,24 @@ if command -v docker >/dev/null 2>&1; then
         done
         DU_PUB_N=$(printf '%s ' $DOCKER_PUB | /usr/bin/wc -w)
         DU_OPEN_N=$(printf '%s ' $DU_OPEN | /usr/bin/wc -w)
-        if [ "$DU_OPEN_N" -eq 0 ]; then
+
+        # "Filters none of them" is not the same as "does not filter". On a
+        # host that publishes one port and deliberately opens it, zero drops is
+        # the correct outcome, and the first version of this check called that
+        # a failure. What actually matters is whether a port nobody opened
+        # would be dropped - so ask about ports nobody published.
+        DU_PROBE_OPEN=true
+        for probe in 64999 49998 38471; do
+            case " $DOCKER_PUB " in *" $probe "*) continue ;; esac
+            docker_user_allows "$probe" || { DU_PROBE_OPEN=false; break; }
+        done
+
+        if [ "$DU_PROBE_OPEN" = true ]; then
+            fail "DOCKER-USER lets through ports nobody published - container traffic is unfiltered"
+        elif [ "$DU_OPEN_N" -eq 0 ]; then
             pass "DOCKER-USER drops all $DU_PUB_N container port(s) published on all interfaces"
-        elif [ "$DU_OPEN_N" -lt "$DU_PUB_N" ]; then
-            pass "DOCKER-USER filters container ports - $DU_OPEN_N of $DU_PUB_N are let through:$DU_OPEN"
         else
-            fail "DOCKER-USER filters none of the $DU_PUB_N container ports published on all interfaces"
+            pass "DOCKER-USER filters container traffic - $DU_OPEN_N of $DU_PUB_N published port(s) deliberately open:$DU_OPEN"
         fi
     else
         pass "No containers published on all interfaces"
