@@ -719,15 +719,20 @@ section "Reporters can actually report"
 # the same day the file drifts rather than the day you need the alert.
 ###############################################################################
 
+REP_FOUND=0
+REP_BAD=0
+
 for REP in /usr/local/bin/aide-telegram.sh /usr/local/bin/rkhunter-telegram.sh \
            /usr/local/bin/lynis-telegram.sh /usr/local/bin/aide-refresh.sh; do
     [ -f "$REP" ] || continue
     REP_NAME="$(basename "$REP")"
+    REP_FOUND=$((REP_FOUND + 1))
 
     # Talks to Telegram without ever looking at the HTTP status.
     if /bin/grep -q 'api\.telegram\.org' "$REP" 2>/dev/null && \
        ! /bin/grep -q 'http_code\|%{http_code}' "$REP" 2>/dev/null; then
         fail "$REP_NAME sends without checking the result - a rejected report looks delivered"
+        REP_BAD=$((REP_BAD + 1))
     fi
 
     # Builds a message it never sends. Counting is deliberate rather than
@@ -737,11 +742,23 @@ for REP in /usr/local/bin/aide-telegram.sh /usr/local/bin/rkhunter-telegram.sh \
     REP_SENDS=$(/bin/grep -c '^[[:space:]]*send_telegram "' "$REP" 2>/dev/null || true)
     if [ "${REP_BUILDS:-0}" -gt 0 ] && [ "${REP_SENDS:-0}" -eq 0 ]; then
         fail "$REP_NAME builds a report but never calls send_telegram - it is silent by construction"
+        REP_BAD=$((REP_BAD + 1))
     elif [ "${REP_BUILDS:-0}" -gt 1 ] && [ "${REP_SENDS:-0}" -gt 1 ] && \
          [ "${REP_SENDS:-0}" -lt "${REP_BUILDS:-0}" ]; then
         warn "$REP_NAME has ${REP_BUILDS} message branches but only ${REP_SENDS} sends - one path may be silent"
+        REP_BAD=$((REP_BAD + 1))
     fi
 done
+
+# A healthy result here used to print nothing at all: an empty section under a
+# heading, indistinguishable from a section that failed to run. In a script
+# whose entire subject is controls that are quietly doing nothing, that is not
+# a cosmetic problem. Say what was checked, or say that nothing was.
+if [ "$REP_FOUND" -eq 0 ]; then
+    warn "No reporters are installed - nothing on this host would send you an alert"
+elif [ "$REP_BAD" -eq 0 ]; then
+    pass "$REP_FOUND reporters check their send result and send on every path"
+fi
 
 ###############################################################################
 section "Writable filesystem hardening"
