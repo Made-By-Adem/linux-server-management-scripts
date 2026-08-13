@@ -5919,6 +5919,13 @@ Lynis recommendation: FINT-4350" \
 # apt rather than installing anything.
 !/var/lib/apt/lists
 !/var/lib/apt/periodic
+
+# rkhunter copies /etc/passwd and /etc/group here on every scan to diff them
+# against the previous run. The copies change whenever a user is added and on
+# every scan regardless. The diff rkhunter draws from them is the control;
+# these are its scratch space, and /var/lib/rkhunter/db beside them is not
+# excluded.
+!/var/lib/rkhunter/tmp
 !/var/lib/ubuntu-advantage
 !/var/lib/landscape
 !/var/lib/update-notifier

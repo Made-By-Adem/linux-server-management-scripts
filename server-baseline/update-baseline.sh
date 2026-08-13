@@ -684,6 +684,11 @@ AIDE_EXCLUDES=(
     # than installing anything.
     '!/var/lib/apt/lists'
     '!/var/lib/apt/periodic'
+
+    # rkhunter copies /etc/passwd and /etc/group here on every scan to diff
+    # them against the previous run. The diff is the control; these are its
+    # scratch space. /var/lib/rkhunter/db beside them stays watched.
+    '!/var/lib/rkhunter/tmp'
     '!/var/lib/ubuntu-advantage'
     '!/var/lib/landscape'
     '!/var/lib/update-notifier'
