@@ -748,6 +748,15 @@ AIDE_EXCLUDES=(
     '!/var/lib/landscape'
     '!/var/lib/update-notifier'
     '!/var/lib/PackageKit'
+
+    # tailscaled's own rotating logs and its netmap cache, rewritten on every
+    # network change. Every host in this fleet runs Tailscale, and each one
+    # produced this alert separately before the rule made it into the shipped
+    # set. Deliberately NOT the whole directory: tailscaled.state beside these
+    # holds the node key, and that changing is exactly what you want to see -
+    # it means this machine re-authenticated as someone.
+    '!/var/lib/tailscale/tailscaled\.log'
+    '!/var/lib/tailscale/profile-data/[^/]+/netmap-cache'
 )
 
 # An AIDE rule has to be a literal path prefix - it must start with '/', so

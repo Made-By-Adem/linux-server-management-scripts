@@ -6062,6 +6062,13 @@ Lynis recommendation: FINT-4350" \
 !/var/lib/update-notifier
 !/var/lib/PackageKit
 
+# tailscaled's rotating logs and its netmap cache, rewritten on every network
+# change. NOT the whole directory: tailscaled.state beside these holds the
+# node key, and that changing means this machine re-authenticated as someone -
+# which is exactly what an integrity monitor is for.
+!/var/lib/tailscale/tailscaled\.log
+!/var/lib/tailscale/profile-data/[^/]+/netmap-cache
+
 # Monitor Docker binaries if installed
 /usr/bin/docker$ R
 /usr/bin/docker-compose$ R
