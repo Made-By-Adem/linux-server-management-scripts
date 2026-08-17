@@ -1075,8 +1075,12 @@ fi
 # duplicate line; the next `systemctl daemon-reload` dropped its noexec while
 # /tmp and /var/tmp - single entries - kept theirs. Nothing was logged. The
 # mount had been hardened and verified ten minutes earlier.
+# Swap lines carry "none" or "swap" where a mount point would be, and several
+# of them is normal - counting those as duplicates reported a problem on a host
+# that simply had two swap entries.
 FSTAB_DUPES=$(/bin/grep -vE '^[[:space:]]*(#|$)' /etc/fstab 2>/dev/null | \
-              /usr/bin/awk 'NF>=2 {print $2}' | sort | uniq -d | /bin/tr '\n' ' ')
+              /usr/bin/awk 'NF>=3 && $2 != "none" && $2 != "swap" && $3 != "swap" {print $2}' | \
+              sort | uniq -d | /bin/tr '\n' ' ')
 if [ -n "$FSTAB_DUPES" ]; then
     fail "/etc/fstab has more than one entry for: $FSTAB_DUPES"
     warn "  Keep one line per mount point - a duplicate silently costs the mount its flags"

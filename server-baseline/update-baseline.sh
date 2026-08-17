@@ -1692,11 +1692,23 @@ if ! systemctl is-active ssh.socket >/dev/null 2>&1; then
     ok "No socket activation - sshd_config is the only place ports are set"
     CLEAN+=("ssh-port-single-source")
 elif [ -f "$SSH_GEN" ] && [ -z "$SSH_ETC_DROPIN" ]; then
-    ok "Ports come from sshd_config, compiled into ssh.socket by sshd-socket-generator"
-    note "Change them there, then: systemctl daemon-reload && systemctl restart ssh.socket"
-    note "Restarting ssh.service alone changes nothing. Do NOT delete the Port lines:"
-    note "they are the source, not a leftover."
-    CLEAN+=("ssh-port-single-source")
+    if grep -qE '^Port +[0-9]+' /etc/ssh/sshd_config 2>/dev/null; then
+        ok "Ports come from sshd_config, compiled into ssh.socket by sshd-socket-generator"
+        note "Change them there, then: systemctl daemon-reload && systemctl restart ssh.socket"
+        note "Restarting ssh.service alone changes nothing. Do NOT delete the Port lines:"
+        note "they are the source, not a leftover."
+        CLEAN+=("ssh-port-single-source")
+    else
+        # No Port line at all is not "one source of truth", it is none: the
+        # generator falls back to sshd's default of 22 at the next
+        # daemon-reload, whatever the socket is serving today.
+        bad "sshd_config sets no Port - the generator falls back to 22 on the next reload"
+        note "  Listening now: $(ss -tlnpH 2>/dev/null | grep -i sshd | grep -oE ':[0-9]+ ' | tr -d ': ' | sort -u | tr '\n' ' ')"
+        note "  Generated:     $(grep -oE ':[0-9]+' "$SSH_GEN" 2>/dev/null | tr -d ':' | sort -u | tr '\n' ' ')"
+        note "  Put the port you actually use in /etc/ssh/sshd_config, then, from a"
+        note "  SECOND session: systemctl daemon-reload && systemctl restart ssh.socket"
+        ADVISORY+=("ssh-port-single-source")
+    fi
 elif [ -f "$SSH_GEN" ] && [ -n "$SSH_ETC_DROPIN" ]; then
     bad "Ports are set in two places that both feed ssh.socket"
     note "  generated from sshd_config: $SSH_GEN"
