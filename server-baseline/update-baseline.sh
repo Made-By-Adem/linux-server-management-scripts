@@ -1116,15 +1116,29 @@ else
                 # THIS repo's install script. It is not an rkhunter option, and
                 # its presence aborted every scan while the daily report kept
                 # saying "All Clear".
-                cp /etc/rkhunter.conf "/etc/rkhunter.conf.bak.$(date +%Y%m%d_%H%M%S)"
+                # Both files. rkhunter reads /etc/rkhunter.conf.local as a
+                # supplement all by itself, and that is where hand-added
+                # options tend to live - on one host the fix reported five
+                # options commented out and the errors did not change, because
+                # every one of them sat in the .local this loop never touched.
+                local rk_files="/etc/rkhunter.conf"
+                [ -f /etc/rkhunter.conf.local ] && rk_files="$rk_files /etc/rkhunter.conf.local"
+                local f
+                for f in $rk_files; do
+                    cp "$f" "$f.bak.$(date +%Y%m%d_%H%M%S)"
+                done
 
+                # [A-Za-z_], not [A-Z_]: 'include=' is rejected too, and being
+                # lowercase it slipped straight through the old pattern.
                 local unknown opt
                 unknown=$(rkhunter --config-check 2>&1 | \
-                          grep -oE 'Unknown configuration file option: [A-Z_]+' | \
+                          grep -oE 'Unknown configuration file option: [A-Za-z_]+' | \
                           awk '{print $NF}' | sort -u)
 
                 for opt in $unknown; do
-                    sed -i "s/^${opt}=/# DISABLED - not a valid rkhunter option: ${opt}=/" /etc/rkhunter.conf
+                    for f in $rk_files; do
+                        sed -i "s/^${opt}=/# DISABLED - not a valid rkhunter option: ${opt}=/" "$f"
+                    done
                     ok "Commented out invalid option: $opt"
                 done
 
