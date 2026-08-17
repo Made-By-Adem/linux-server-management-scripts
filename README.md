@@ -619,6 +619,9 @@ For enterprise or critical systems, consult a professional DevOps engineer.
 
 ### Documentation
 
+- [Command reference](docs/COMMANDS.md) — every operator command in one place:
+  provisioning, verification, AIDE, the scheduled jobs and what to run when a
+  report does not arrive
 - [Server Baseline Setup](server-baseline/README.md)
 - [Backup script](backup-script/README.md)
 - [Docker Container Updates - Full Guide](update-containers/README.md)
