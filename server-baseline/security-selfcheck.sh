@@ -1052,6 +1052,24 @@ for m in /tmp /var/tmp /dev/shm; do
     fi
 done
 
+# Being noexec now is not the same as being noexec on Monday. systemd mounts
+# /dev/shm itself as an API filesystem, and where the fstab entry generates no
+# unit - no dev-shm.mount anywhere in `systemctl list-units -t mount --all` -
+# a remount is all that stands between this host and an executable /dev/shm,
+# until the next reboot silently removes it. /tmp and /var/tmp do get units
+# from fstab, so they are not checked here.
+if /bin/findmnt -no OPTIONS /dev/shm 2>/dev/null | /bin/grep -q noexec; then
+    if /bin/systemctl list-units -t mount --all 2>/dev/null | /bin/grep -q 'dev-shm\.mount'; then
+        pass "/dev/shm noexec is backed by a mount unit - it survives a reboot"
+    elif /bin/systemctl is-enabled shm-noexec.service >/dev/null 2>&1; then
+        pass "/dev/shm noexec is re-applied at every boot by shm-noexec.service"
+    else
+        fail "/dev/shm is noexec now, but nothing re-applies it after a reboot"
+        warn "  systemd owns this mount; the fstab entry generates no unit on this host."
+        warn "  Fix: sudo update-baseline   (installs shm-noexec.service)"
+    fi
+fi
+
 # Two entries for one mount point make the result unpredictable, and it fails
 # in the direction that costs you the hardening. On one host /dev/shm had a
 # duplicate line; the next `systemctl daemon-reload` dropped its noexec while

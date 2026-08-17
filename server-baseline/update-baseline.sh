@@ -1212,6 +1212,14 @@ mounts_need_fix() {
     for m in /tmp /var/tmp /dev/shm; do
         findmnt -no OPTIONS "$m" 2>/dev/null | grep -q noexec || return 0
     done
+    # All three are noexec right now - but on /dev/shm that is often only a
+    # runtime remount with nothing to re-apply it after a reboot. "Correct
+    # today, gone on Monday" is the state this whole repository exists to catch,
+    # so it counts as needing a fix.
+    if ! systemctl list-units -t mount --all 2>/dev/null | grep -q 'dev-shm\.mount' && \
+       ! systemctl is-enabled shm-noexec.service >/dev/null 2>&1; then
+        return 0
+    fi
     return 1
 }
 
@@ -1255,12 +1263,58 @@ mounts_fix() {
     _harden /var/tmp "/var/tmp /var/tmp none  rw,noexec,nosuid,nodev,bind  0 0"
     _harden /dev/shm "tmpfs    /dev/shm tmpfs rw,noexec,nosuid,nodev       0 0"
 
+    _persist_shm_noexec
+
     note "To undo: mount -o remount,exec /tmp  and remove the line from /etc/fstab"
     return 0
 }
 
+# /dev/shm is not like the other two. systemd mounts it itself, early, as an
+# API filesystem, and on these hosts the fstab entry generates no unit at all -
+# `systemctl list-units -t mount --all` knows no dev-shm.mount and
+# /run/systemd/generator holds nothing for it. So the remount above is the only
+# thing applying noexec, and it is gone after the next reboot, silently.
+#
+# /tmp and /var/tmp do get units from fstab, which is why their flags hold.
+#
+# A remount service rather than a replacement dev-shm.mount unit: overriding
+# systemd's own mount means unmounting it, which takes down everything holding
+# shared memory - databases in particular. A remount changes the flags on the
+# live mount and interrupts nothing.
+_persist_shm_noexec() {
+    [ -d /run/systemd/system ] || return 0
+
+    if systemctl list-units -t mount --all 2>/dev/null | grep -q 'dev-shm\.mount'; then
+        note "/dev/shm has a mount unit on this host - its flags already survive a reboot"
+        return 0
+    fi
+
+    cat > /etc/systemd/system/shm-noexec.service <<'EOF'
+[Unit]
+Description=Apply noexec,nosuid,nodev to /dev/shm
+Documentation=https://github.com/Made-By-Adem/linux-server-management-scripts
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/mount -o remount,noexec,nosuid,nodev /dev/shm
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 /etc/systemd/system/shm-noexec.service
+    systemctl daemon-reload
+    if systemctl enable --now shm-noexec.service >/dev/null 2>&1 && \
+       findmnt -no OPTIONS /dev/shm 2>/dev/null | grep -q noexec; then
+        ok "shm-noexec.service installed - /dev/shm is re-hardened at every boot"
+    else
+        bad "shm-noexec.service did not take effect - check: systemctl status shm-noexec"
+    fi
+}
+
 if mounts_need_fix; then
-    offer "noexec-mounts" "/tmp, /var/tmp or /dev/shm allow execution" \
+    offer "noexec-mounts" "/tmp, /var/tmp or /dev/shm allow execution, now or after a reboot" \
 "Dropper malware writes a payload to a world-writable directory and runs it.
 noexec removes the second half. This blocks the staging path outright rather
 than detecting it afterwards (Lynis FILE-6310).
@@ -1269,7 +1323,12 @@ Note: 'bash /tmp/script.sh' keeps working - noexec blocks execve(), not an
 interpreter reading a file. /dev/shm noexec breaks Chromium and Electron apps;
 harmless on a headless server.
 
-Fix: add bind mounts with noexec,nosuid,nodev to /etc/fstab and apply now." \
+/dev/shm is the awkward one: systemd mounts it itself and the fstab entry
+generates no unit on these hosts, so a remount holds only until the next
+reboot. That half gets a small oneshot service instead.
+
+Fix: bind mounts with noexec,nosuid,nodev in /etc/fstab for /tmp and /var/tmp,
+applied now, plus shm-noexec.service to re-apply /dev/shm at every boot." \
         mounts_fix
 else
     ok "/tmp, /var/tmp and /dev/shm are all noexec"

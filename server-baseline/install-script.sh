@@ -3647,6 +3647,43 @@ Known trade-offs:
             harden_writable_mount /var/tmp "/var/tmp /var/tmp none  rw,noexec,nosuid,nodev,bind  0 0"
             harden_writable_mount /dev/shm "tmpfs    /dev/shm tmpfs rw,noexec,nosuid,nodev       0 0"
 
+            # /dev/shm is not like the other two. systemd mounts it itself,
+            # early, as an API filesystem, and on Ubuntu 24.04 the fstab entry
+            # generates no unit at all: `systemctl list-units -t mount --all`
+            # knows no dev-shm.mount and /run/systemd/generator holds nothing
+            # for it. The remount above is then the only thing applying noexec,
+            # and it is gone after the next reboot without a word.
+            #
+            # A remount service rather than a replacement dev-shm.mount unit:
+            # overriding systemd's own mount means unmounting it, which takes
+            # down everything holding shared memory. A remount interrupts
+            # nothing.
+            if [ -d /run/systemd/system ] && \
+               ! systemctl list-units -t mount --all 2>/dev/null | grep -q 'dev-shm\.mount'; then
+                cat <<'EOF' | sudo tee /etc/systemd/system/shm-noexec.service >/dev/null
+[Unit]
+Description=Apply noexec,nosuid,nodev to /dev/shm
+Documentation=https://github.com/Made-By-Adem/linux-server-management-scripts
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/mount -o remount,noexec,nosuid,nodev /dev/shm
+
+[Install]
+WantedBy=multi-user.target
+EOF
+                sudo chmod 644 /etc/systemd/system/shm-noexec.service
+                sudo systemctl daemon-reload
+                if sudo systemctl enable --now shm-noexec.service >/dev/null 2>&1 && \
+                   findmnt -no OPTIONS /dev/shm 2>/dev/null | grep -q noexec; then
+                    log_info "✓ shm-noexec.service installed - /dev/shm is re-hardened at every boot"
+                else
+                    log_warning "shm-noexec.service did not take effect - check: systemctl status shm-noexec"
+                fi
+            fi
+
             log_info "Writable filesystem hardening applied"
             log_info "To undo:  sudo mount -o remount,exec /tmp   (and remove the line from /etc/fstab)"
         fi
