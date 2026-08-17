@@ -1218,8 +1218,28 @@ mounts_need_fix() {
 mounts_fix() {
     cp /etc/fstab "/etc/fstab.bak.$(date +%Y%m%d_%H%M%S)"
 
+    # More than one entry for the same mount point is worse than none: the flags
+    # stop surviving a daemon-reload, and nothing says so. Collapse duplicates
+    # before touching anything, rather than adding a third line to the pile.
+    _dedupe_fstab() {
+        local target="$1" dupes
+        dupes=$(awk -v t="$target" '$1 !~ /^#/ && $2 == t' /etc/fstab 2>/dev/null | wc -l)
+        [ "${dupes:-0}" -gt 1 ] || return 0
+
+        awk -v t="$target" '$1 ~ /^#/ || $2 != t || !seen++' /etc/fstab > /etc/fstab.dedupe 2>/dev/null
+        if [ -s /etc/fstab.dedupe ] && \
+           [ "$(awk -v t="$target" '$1 !~ /^#/ && $2 == t' /etc/fstab.dedupe | wc -l)" -eq 1 ]; then
+            mv /etc/fstab.dedupe /etc/fstab
+            ok "Collapsed $((dupes - 1)) duplicate fstab entry/entries for $target"
+        else
+            rm -f /etc/fstab.dedupe
+            note "Could not safely deduplicate the $target entries in /etc/fstab - do it by hand"
+        fi
+    }
+
     _harden() {
         local target="$1" line="$2"
+        _dedupe_fstab "$target"
         grep -qE "^[^#]*[[:space:]]${target}[[:space:]]" /etc/fstab || \
             echo "$line" >> /etc/fstab
         mountpoint -q "$target" 2>/dev/null || mount --bind "$target" "$target" 2>/dev/null

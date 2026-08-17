@@ -25,6 +25,7 @@
 #     root-keys                   authorized_keys for root and admin users
 #     persistence-files           /etc/profile, /root/.profile, /etc/cron* contents
 #     tmpfs-exec                  executable files appearing in /tmp, /var/tmp, /dev/shm
+#     mount-flags                 noexec/nosuid/nodev disappearing from a mount
 #     path-hijack                 .local/bin under a system path, shim directories
 #     hidden-dirs                 hidden working directories under system paths
 #     ld-preload                  /etc/ld.so.preload is non-empty
@@ -51,7 +52,7 @@
 #   TELEGRAM_CHAT_ID=...
 #   WATCH_UNITS="auditd fail2ban acct"
 #   WATCH_JAIL="sshd"                   # "" disables the jail check
-#   WATCH_MONITORS="listeners root-keys persistence-files tmpfs-exec path-hijack hidden-dirs ld-preload ufw docker-daemons container-images boot-id"
+#   WATCH_MONITORS="listeners root-keys persistence-files tmpfs-exec mount-flags path-hijack hidden-dirs ld-preload ufw docker-daemons container-images boot-id"
 #
 # Drop any monitor from WATCH_MONITORS that turns out to be too noisy for your
 # environment. Each one is independent.
@@ -89,14 +90,17 @@ TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${SECRET_TOKEN:-}}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-${CHAT_ID_PERSON1:-}}"
 WATCH_UNITS="${WATCH_UNITS:-auditd fail2ban acct}"
 WATCH_JAIL="${WATCH_JAIL-sshd}"
-WATCH_MONITORS="${WATCH_MONITORS:-listeners root-keys persistence-files tmpfs-exec path-hijack hidden-dirs ld-preload ufw docker-daemons container-images boot-id}"
+WATCH_MONITORS="${WATCH_MONITORS:-listeners root-keys persistence-files tmpfs-exec mount-flags path-hijack hidden-dirs ld-preload ufw docker-daemons container-images boot-id}"
 
 MODE="check"
 case "${1:-}" in
     --test)   MODE="test" ;;
     --status) MODE="status" ;;
     --reset)  MODE="reset" ;;
-    --help|-h) sed -n '2,55p' "$0"; exit 0 ;;
+    # To the end of the header block, not to a line number: the header grows
+    # whenever a monitor is added, and a hard-coded range silently cuts the
+    # newest one out of the help text.
+    --help|-h) sed -n '2,/^#####/p' "$0" | sed '$d'; exit 0 ;;
     "") : ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
 esac
@@ -220,6 +224,7 @@ monitor_title() {
         root-keys)         echo "AUTHORIZED SSH KEYS CHANGED" ;;
         persistence-files) echo "STARTUP OR CRON FILE CHANGED" ;;
         tmpfs-exec)        echo "EXECUTABLE IN A TEMPORARY DIRECTORY" ;;
+        mount-flags)       echo "MOUNT HARDENING CHANGED" ;;
         path-hijack)      echo "PATH HIJACK DETECTED" ;;
         hidden-dirs)      echo "HIDDEN DIRECTORY UNDER A SYSTEM PATH" ;;
         ld-preload)       echo "LD_PRELOAD HIJACK DETECTED" ;;
@@ -241,6 +246,8 @@ monitor_impact() {
             echo "A file that runs automatically changed - a login shell profile or a cron entry. This is where persistence is installed: one appended line survives every reboot. Package upgrades legitimately touch /etc/cron.daily, so check whether an upgrade ran." ;;
         tmpfs-exec)
             echo "An executable file appeared in a world-writable directory. This is the standard staging pattern: write the payload somewhere anyone can write, then run it. If these directories are mounted noexec it cannot execute, but its presence still needs explaining." ;;
+        mount-flags)
+            echo "A mount lost or gained one of noexec, nosuid, nodev or ro. Losing noexec on /tmp, /var/tmp or /dev/shm re-opens the standard dropper staging path, and it happens silently: a duplicate fstab entry was enough to make one host drop it at the next daemon-reload, ten minutes after the hardening was applied and verified." ;;
         hidden-dirs)
             echo "A hidden directory appeared where nothing legitimate lives. This kit family used /usr/bin/wbin for its second Docker daemon, /var/.i.* and /tmp/.t.* as working directories, and /dev/shm/.config for proxyware configuration." ;;
         path-hijack)
@@ -265,7 +272,7 @@ monitor_impact() {
 monitor_level() {
     case "$1" in
         path-hijack|ld-preload|docker-daemons|hidden-dirs) echo "crit" ;;
-        persistence-files|tmpfs-exec)          echo "warn" ;;
+        persistence-files|tmpfs-exec|mount-flags) echo "warn" ;;
         boot-id)                               echo "info" ;;
         *)                                     echo "warn" ;;
     esac
@@ -323,6 +330,24 @@ monitor_snapshot() {
 
     tmpfs-exec)
         find /tmp /var/tmp /dev/shm -maxdepth 3 -type f -executable 2>/dev/null | head -50
+        true
+        ;;
+
+    mount-flags)
+        # tmpfs-exec above watches for payloads appearing; this watches whether
+        # the mount that is supposed to stop them running is still in force.
+        #
+        # It reverts silently. On one host /dev/shm had two identical fstab
+        # entries and the next `systemctl daemon-reload` dropped its noexec,
+        # ten minutes after the hardening had been applied and verified. Nothing
+        # was logged, /tmp and /var/tmp were unaffected, and the only reason it
+        # surfaced was a self-check run by hand that same afternoon.
+        for m in /tmp /var/tmp /dev/shm /home /var; do
+            findmnt -no OPTIONS "$m" 2>/dev/null | \
+                tr ',' '\n' | grep -xE 'noexec|nosuid|nodev|ro' | sort | \
+                tr '\n' ',' | sed "s|^|${m} |; s|,\$||"
+            echo ""
+        done | grep -v '^$'
         true
         ;;
 

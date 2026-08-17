@@ -3601,6 +3601,24 @@ Known trade-offs:
                 local target="$1"
                 local fstab_line="$2"
 
+                # More than one entry for the same mount point is worse than
+                # none: the flags stop surviving a daemon-reload, and nothing
+                # reports it. Collapse duplicates before adding anything.
+                local dupes
+                dupes=$(awk -v t="$target" '$1 !~ /^#/ && $2 == t' /etc/fstab 2>/dev/null | wc -l)
+                if [ "${dupes:-0}" -gt 1 ]; then
+                    awk -v t="$target" '$1 ~ /^#/ || $2 != t || !seen++' /etc/fstab | \
+                        sudo tee /etc/fstab.dedupe >/dev/null
+                    if [ -s /etc/fstab.dedupe ] && \
+                       [ "$(awk -v t="$target" '$1 !~ /^#/ && $2 == t' /etc/fstab.dedupe | wc -l)" -eq 1 ]; then
+                        sudo mv /etc/fstab.dedupe /etc/fstab
+                        log_info "Collapsed $((dupes - 1)) duplicate fstab entry/entries for $target"
+                    else
+                        sudo rm -f /etc/fstab.dedupe
+                        log_warning "Could not safely deduplicate the $target entries in /etc/fstab"
+                    fi
+                fi
+
                 if grep -qE "^[^#]*[[:space:]]${target}[[:space:]]" /etc/fstab; then
                     log_info "$target already has an fstab entry - leaving it alone"
                 else

@@ -342,6 +342,37 @@ fi
 # changed nothing at all.
 CONF_PORTS=$(/bin/grep -oE '^Port +[0-9]+' /etc/ssh/sshd_config 2>/dev/null | /bin/grep -oE '[0-9]+' | sort -u | /bin/tr '\n' ' ')
 
+# What ssh.socket WOULD open on its next start, against what is bound today.
+#
+# These drift apart in silence, and the drift is only discovered by the reboot
+# that acts on it. One host had its sshd_config Port lines removed as "ignored
+# leftovers"; the generated socket went back to port 22 while the running
+# socket kept serving 888. Everything worked, every check passed, and the host
+# was one reboot away from coming up on a port its firewall did not allow.
+if [ "$SOCKET_ON" = true ]; then
+    NEXT_PORTS=$(/bin/systemctl show ssh.socket -p Listen 2>/dev/null | \
+                 /bin/grep -oE ':[0-9]+ ' | /bin/tr -d ': ' | sort -u | /bin/tr '\n' ' ')
+    BOUND_NOW=$(/bin/ss -tlnH 2>/dev/null | /bin/grep -oE ':[0-9]+ ' | /bin/tr -d ': ' | sort -u)
+
+    if [ -z "$NEXT_PORTS" ]; then
+        warn "Could not read the ports ssh.socket would open on its next start"
+    else
+        SSH_DRIFT=""
+        for p in $NEXT_PORTS; do
+            echo "$BOUND_NOW" | /bin/grep -qx "$p" || SSH_DRIFT="$SSH_DRIFT $p"
+        done
+        if [ -n "$SSH_DRIFT" ]; then
+            fail "ssh.socket would open port(s)$SSH_DRIFT on its next start - nothing is listening there now"
+            warn "  A reboot or 'systemctl restart ssh.socket' moves SSH to those ports."
+            warn "  Currently reachable on: ${SSH_PORTS}. Reconcile BEFORE rebooting."
+            warn "  With sshd-socket-generator the source is sshd_config; otherwise it is"
+            warn "  the drop-in under /etc/systemd/system/ssh.socket.d/."
+        else
+            pass "The ports ssh.socket would open are the ones listening now ($NEXT_PORTS)"
+        fi
+    fi
+fi
+
 if [ "$SOCKET_ON" = true ] && [ "$SOCKET_GEN" = true ]; then
     if [ -n "$CONF_PORTS" ]; then
         pass "Ports come from sshd_config ($CONF_PORTS), compiled in by sshd-socket-generator"
@@ -1020,6 +1051,21 @@ for m in /tmp /var/tmp /dev/shm; do
         warn "$m is executable - payloads dropped there can be run directly"
     fi
 done
+
+# Two entries for one mount point make the result unpredictable, and it fails
+# in the direction that costs you the hardening. On one host /dev/shm had a
+# duplicate line; the next `systemctl daemon-reload` dropped its noexec while
+# /tmp and /var/tmp - single entries - kept theirs. Nothing was logged. The
+# mount had been hardened and verified ten minutes earlier.
+FSTAB_DUPES=$(/bin/grep -vE '^[[:space:]]*(#|$)' /etc/fstab 2>/dev/null | \
+              /usr/bin/awk 'NF>=2 {print $2}' | sort | uniq -d | /bin/tr '\n' ' ')
+if [ -n "$FSTAB_DUPES" ]; then
+    fail "/etc/fstab has more than one entry for: $FSTAB_DUPES"
+    warn "  Keep one line per mount point - a duplicate silently costs the mount its flags"
+    warn "  on the next daemon-reload, and nothing reports it."
+else
+    pass "No duplicate mount points in /etc/fstab"
+fi
 
 TMP_EXEC=$(/usr/bin/find /tmp /var/tmp /dev/shm -maxdepth 2 -type f -executable 2>/dev/null | /usr/bin/head -5)
 if [ -n "$TMP_EXEC" ]; then
