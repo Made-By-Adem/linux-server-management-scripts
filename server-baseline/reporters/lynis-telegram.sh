@@ -165,6 +165,25 @@ MESSAGE+="<b>View commands:</b>%0A"
 MESSAGE+="<code>cat ${RECOMMENDATIONS_FILE}</code>%0A"
 MESSAGE+="<code>lynis show details TEST-ID</code>"
 
+# Say it here, in the message that arrives first.
+#
+# Lynis tests whether the root filesystem honours noexec by writing a probe
+# file into /, using it, and removing it. Nothing is left behind except the
+# directory's mtime - which AIDE reports the next morning as a single changed
+# entry. Every operator meets that alert once, spends a while working out where
+# it came from, and by the following month has forgotten again.
+#
+# Only mentioned where AIDE actually runs. On a host without it the note would
+# be advice about an alert that can never arrive.
+if command -v aide >/dev/null 2>&1 && [ -f /var/lib/aide/aide.db ]; then
+    MESSAGE+="%0A%0Aℹ️ <b>This audit will trigger one AIDE alert.</b>%0A"
+    MESSAGE+="The noexec probe touches <code>/</code>, so the next check reports%0A"
+    MESSAGE+="<code>Changed: 1 - Directory: /</code>. That entry is this run.%0A"
+    MESSAGE+="Absorb it with:%0A"
+    MESSAGE+="<code>aide-refresh --reason 'lynis monthly audit'</code>%0A"
+    MESSAGE+="Anything else in that report is not from Lynis."
+fi
+
 send_telegram "$MESSAGE"
 SEND_RC=$?
 
