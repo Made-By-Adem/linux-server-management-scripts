@@ -5023,8 +5023,33 @@ if [[ $install_rkhunter == "y" ]] || [[ $install_rkhunter == "Y" ]]; then
 
     # Add settings if they don't exist
     grep -q "^ALLOW_SSH_ROOT_USER=" /etc/rkhunter.conf || echo "ALLOW_SSH_ROOT_USER=prohibit-password" | sudo tee -a /etc/rkhunter.conf >/dev/null
-    grep -q "^PORT_NUMBER=" /etc/rkhunter.conf || echo "PORT_NUMBER=888" | sudo tee -a /etc/rkhunter.conf >/dev/null
+    # NO PORT_NUMBER LINE HERE. There used to be one, fourteen lines below the
+    # block above that removes it and explains that it aborts every scan - so
+    # every fresh install wrote back the exact option the code above had just
+    # deleted, and shipped a host whose rootkit scanner never ran.
     grep -q "^WEB_CMD=" /etc/rkhunter.conf || echo "WEB_CMD=/bin/false" | sudo tee -a /etc/rkhunter.conf >/dev/null
+
+    # Verify instead of assuming. One option this build rejects aborts every
+    # scan from here on - silently, because an aborted scan produces no warning
+    # lines at all. WEB_CMD is the one that varies between distributions:
+    # /bin/false is refused as a "relative pathname" by some builds on usrmerge
+    # systems, where /bin is a symlink into /usr/bin.
+    if sudo rkhunter --config-check >/dev/null 2>&1; then
+        log_info "rkhunter configuration is valid"
+    else
+        log_warning "rkhunter rejected its configuration - trying the merged path for WEB_CMD"
+        sudo sed -i 's|^WEB_CMD=.*|WEB_CMD=/usr/bin/false|' /etc/rkhunter.conf
+        if ! sudo rkhunter --config-check >/dev/null 2>&1; then
+            sudo sed -i 's|^WEB_CMD=|# DISABLED - rejected by this rkhunter build: WEB_CMD=|' /etc/rkhunter.conf
+        fi
+        if sudo rkhunter --config-check >/dev/null 2>&1; then
+            log_info "rkhunter configuration is valid"
+        else
+            log_warning "rkhunter still rejects its configuration - scans will abort:"
+            sudo rkhunter --config-check 2>&1 | head -5 | sed 's/^/  /'
+            log_warning "Fix these before trusting any rkhunter report from this host."
+        fi
+    fi
 
     # Update rkhunter database
     log_info "Updating rkhunter file properties database..."

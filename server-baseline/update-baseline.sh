@@ -192,7 +192,29 @@ bake_env_path() {
     sed -i "s|^ENV_FILE_DEFAULT=.*|ENV_FILE_DEFAULT=\"$CRED_FILE\"   # recorded at install time|" "$target"
 }
 
-if [ -r "$CRED_FILE" ] && grep -q 'TELEGRAM_BOT_TOKEN=.' "$CRED_FILE" 2>/dev/null; then
+# A credential is only a credential once it survives expansion. The repo copies
+# of the reporters carry TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}" as a
+# placeholder, and that string passes every naive "is there something after the
+# = sign" test while expanding to nothing at all. A .env full of placeholders
+# therefore looks configured everywhere and sends nowhere.
+usable_secret() {
+    case "${1:-}" in
+        ''|*'$'*|*'{'*|*REPLACE_*|*CHANGEME*|*your_*) return 1 ;;
+    esac
+    return 0
+}
+
+# Read one credential out of a file, and return nothing at all unless it is a
+# real value. Handles both the quoted form the generated reporters use and the
+# bare KEY=value of an .env, because this reads from both.
+harvest_secret() {
+    local v
+    v="$(read_env_value "$1" "$2")"
+    usable_secret "$v" || return 0
+    printf %s "$v"
+}
+
+if [ -r "$CRED_FILE" ] && usable_secret "$(read_env_value TELEGRAM_BOT_TOKEN "$CRED_FILE")"; then
     ok "Alert credentials are configured ($CRED_FILE)"
     CLEAN+=("alert-credentials")
     for t in /usr/local/bin/security-watchdog.sh /usr/local/bin/security-selfcheck.sh \
@@ -206,14 +228,14 @@ else
     for f in /usr/local/bin/aide-telegram.sh /usr/local/bin/rkhunter-telegram.sh \
              /usr/local/bin/lynis-telegram.sh; do
         [ -r "$f" ] || continue
-        [ -z "$FOUND_TOKEN" ] && FOUND_TOKEN=$(grep -oP '^TELEGRAM_BOT_TOKEN="\K[^"]+' "$f" 2>/dev/null | grep -v REPLACE_ | head -1)
-        [ -z "$FOUND_CHAT" ]  && FOUND_CHAT=$(grep -oP '^TELEGRAM_CHAT_ID="\K[^"]+' "$f" 2>/dev/null | grep -v REPLACE_ | head -1)
+        [ -z "$FOUND_TOKEN" ] && FOUND_TOKEN=$(harvest_secret TELEGRAM_BOT_TOKEN "$f")
+        [ -z "$FOUND_CHAT" ]  && FOUND_CHAT=$(harvest_secret TELEGRAM_CHAT_ID "$f")
     done
 
     # Also honour the legacy /etc location as a source
     if [ -z "$FOUND_TOKEN" ] && [ -r /etc/server-baseline/selfcheck.env ]; then
-        FOUND_TOKEN=$(grep -oP '^TELEGRAM_BOT_TOKEN=\K.+' /etc/server-baseline/selfcheck.env 2>/dev/null | head -1)
-        FOUND_CHAT=$(grep -oP '^TELEGRAM_CHAT_ID=\K.+' /etc/server-baseline/selfcheck.env 2>/dev/null | head -1)
+        FOUND_TOKEN=$(harvest_secret TELEGRAM_BOT_TOKEN /etc/server-baseline/selfcheck.env)
+        FOUND_CHAT=$(harvest_secret TELEGRAM_CHAT_ID /etc/server-baseline/selfcheck.env)
     fi
 
     write_creds() {
@@ -573,11 +595,15 @@ EOF
         systemctl is-active security-watchdog.timer >/dev/null 2>&1 || return 1
         ok "Watchdog timer active (checks every minute)"
 
-        if [ -r /etc/server-baseline/selfcheck.env ]; then
+        # Look where the watchdog actually looks. Checking only the legacy
+        # location told operators to create a file they did not need, on hosts
+        # where section 0 had just written the project .env - and implied the
+        # alert path was dead when it was fine.
+        if [ -r "$CRED_FILE" ] || [ -r /etc/server-baseline/selfcheck.env ]; then
             note "Verify the alert path now: sudo security-watchdog --test"
         else
-            note "No credentials yet. Create /etc/server-baseline/selfcheck.env with"
-            note "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, then: security-watchdog --test"
+            note "No credentials yet. Put TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in"
+            note "$CRED_FILE, then: security-watchdog --test"
         fi
         return 0
     }
@@ -828,6 +854,22 @@ fi
 for r in aide rkhunter lynis; do
     if [ -f "/usr/local/bin/${r}-telegram.sh" ] && \
        needs_refresh "$SCRIPT_DIR/reporters/${r}-telegram.sh" "/usr/local/bin/${r}-telegram.sh"; then
+
+        # This loop sits outside offer(), so it used to run in --check and
+        # --dry-run as well - while the header promised nothing would change.
+        #
+        # That was not a cosmetic violation. On a host that has not been
+        # migrated to a .env yet, the generated reporters hold the ONLY copy of
+        # the Telegram credentials. Overwriting them with the repo copies
+        # destroys that copy, and section 0 then has nothing left to recover
+        # from: it harvests the placeholder out of the fresh reporter and
+        # writes a .env that expands to an empty token. The host goes silent,
+        # and the cautious "run --check first" is what caused it.
+        if [ "$MODE" = "check" ] || [ "$DRY_RUN" = true ]; then
+            note "${r}-telegram.sh differs from this checkout - would refresh it"
+            continue
+        fi
+
         install -m 700 -o root -g root \
             "$SCRIPT_DIR/reporters/${r}-telegram.sh" "/usr/local/bin/${r}-telegram.sh"
         ok "Refreshed the ${r} reporter from this checkout"
@@ -1045,29 +1087,51 @@ else
                 # THIS repo's install script. It is not an rkhunter option, and
                 # its presence aborted every scan while the daily report kept
                 # saying "All Clear".
-                local unknown
+                cp /etc/rkhunter.conf "/etc/rkhunter.conf.bak.$(date +%Y%m%d_%H%M%S)"
+
+                local unknown opt
                 unknown=$(rkhunter --config-check 2>&1 | \
                           grep -oE 'Unknown configuration file option: [A-Z_]+' | \
                           awk '{print $NF}' | sort -u)
 
-                if [ -z "$unknown" ]; then
-                    note "The errors above are not unknown-option errors - fix them by hand,"
-                    note "then re-run this script."
-                    return 1
-                fi
-
-                cp /etc/rkhunter.conf "/etc/rkhunter.conf.bak.$(date +%Y%m%d_%H%M%S)"
                 for opt in $unknown; do
                     sed -i "s/^${opt}=/# DISABLED - not a valid rkhunter option: ${opt}=/" /etc/rkhunter.conf
                     ok "Commented out invalid option: $opt"
                 done
 
+                # WEB_CMD is rejected in a different way and needs its own fix.
+                # This repo's installer writes /bin/false to stop rkhunter
+                # fetching anything; on a usrmerge system - /bin is a symlink
+                # into /usr/bin - some builds refuse it as a "relative
+                # pathname" and abort every scan from then on.
+                #
+                # The value only has to be something this build accepts and
+                # will not download with, so try the merged path, then drop the
+                # option and let the packaged default stand.
+                if ! rkhunter --config-check >/dev/null 2>&1 && \
+                   rkhunter --config-check 2>&1 | grep -q 'WEB_CMD'; then
+                    local candidate
+                    for candidate in /usr/bin/false ""; do
+                        if [ -n "$candidate" ]; then
+                            sed -i "s|^WEB_CMD=.*|WEB_CMD=$candidate|" /etc/rkhunter.conf
+                        else
+                            sed -i 's|^WEB_CMD=|# DISABLED - rejected by this rkhunter build: WEB_CMD=|' \
+                                /etc/rkhunter.conf
+                        fi
+                        if rkhunter --config-check >/dev/null 2>&1; then
+                            ok "WEB_CMD accepted as '${candidate:-(removed)}'"
+                            break
+                        fi
+                    done
+                fi
+
                 if rkhunter --config-check >/dev/null 2>&1; then
                     ok "Configuration is valid again"
                     RK_CONFIG_OK=true
                 else
-                    bad "Still invalid after removing the unknown options:"
+                    bad "Still invalid - the remaining errors need a hand:"
                     rkhunter --config-check 2>&1 | head -10 | sed 's/^/      /'
+                    note "The previous config is at /etc/rkhunter.conf.bak.*"
                     return 1
                 fi
             fi

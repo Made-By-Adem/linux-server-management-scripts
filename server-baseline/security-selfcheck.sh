@@ -933,6 +933,28 @@ for REP in /usr/local/bin/aide-telegram.sh /usr/local/bin/rkhunter-telegram.sh \
     # Builds a message it never sends. Counting is deliberate rather than
     # exact: a reporter that assembles several messages and sends fewer times
     # than it has branches is worth a look either way.
+    # An installed reporter that nothing runs is the same as no reporter, and it
+    # is invisible from the outside: a quiet night and a missing cron line look
+    # identical. On one host aide-telegram.sh was installed, correct and
+    # scheduled nowhere for four days, while every check in this section passed
+    # and a manual aide-refresh log kept the AIDE section happy too.
+    #
+    # aide-refresh is deliberately exempt: it is a manual command, run when you
+    # have reviewed an alert and decided to absorb it.
+    case "$REP_NAME" in
+        aide-refresh.sh) ;;
+        *)
+            if ! /bin/grep -rqsE "^[^#]*${REP_NAME}" \
+                    /etc/cron.d/ /etc/cron.daily/ /etc/cron.hourly/ /etc/crontab \
+                    /var/spool/cron/crontabs/ /etc/systemd/system/ 2>/dev/null; then
+                fail "$REP_NAME is installed but nothing schedules it - it never runs"
+                warn "  Nothing on this host would send that report. Add it to /etc/cron.d/security-scans:"
+                warn "    0 5 * * * root /usr/local/bin/$REP_NAME"
+                REP_BAD=$((REP_BAD + 1))
+            fi
+            ;;
+    esac
+
     REP_BUILDS=$(/bin/grep -c '^[[:space:]]*MESSAGE="' "$REP" 2>/dev/null || true)
     REP_SENDS=$(/bin/grep -c '^[[:space:]]*send_telegram "' "$REP" 2>/dev/null || true)
     if [ "${REP_BUILDS:-0}" -gt 0 ] && [ "${REP_SENDS:-0}" -eq 0 ]; then
@@ -1131,6 +1153,20 @@ section "Alerting is able to alert"
 
 # Resolve the same way the installed scripts do: read back the path they
 # recorded, rather than assuming a location.
+
+# A token is only real once it survives expansion. Reject the shell placeholder
+# the repo copies ship with, which a "is there anything after the = sign" test
+# happily accepts.
+alert_token_is_real() {
+    local v
+    v=$(/bin/grep -E '^[[:space:]]*TELEGRAM_BOT_TOKEN=' "$1" 2>/dev/null | \
+        /usr/bin/head -1 | /usr/bin/cut -d= -f2- | /usr/bin/tr -d "\"' ")
+    case "$v" in
+        ''|*'$'*|*'{'*|*REPLACE_*|*CHANGEME*) return 1 ;;
+    esac
+    return 0
+}
+
 ALERT_ENV=""
 if [ -f /usr/local/bin/security-watchdog.sh ]; then
     ALERT_ENV=$(/bin/grep -oP '^ENV_FILE_DEFAULT="\K[^"]+' /usr/local/bin/security-watchdog.sh 2>/dev/null | head -1)
@@ -1148,6 +1184,15 @@ elif [ ! -r "$ALERT_ENV" ]; then
     warn "  Usually means the project checkout moved or was re-cloned without .env."
 elif ! /bin/grep -q 'TELEGRAM_BOT_TOKEN=.' "$ALERT_ENV" 2>/dev/null; then
     fail "$ALERT_ENV exists but holds no bot token - alerting is silent"
+elif ! alert_token_is_real "$ALERT_ENV"; then
+    # "Something after the = sign" is not a credential. The repo copies of the
+    # reporters carry TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}", and an
+    # update-baseline run once harvested that placeholder into a real .env:
+    # every check here passed, every reporter expanded it to an empty string,
+    # and the host sent nothing for as long as nobody ran --test by hand.
+    fail "$ALERT_ENV holds a placeholder, not a token - alerting is silent"
+    warn "  A value like \${TELEGRAM_BOT_TOKEN:-} passes a naive check and expands to nothing."
+    warn "  Put the real token in $ALERT_ENV, then: sudo security-watchdog --test"
 else
     pass "Alert credentials resolve ($ALERT_ENV)"
     PERMS=$(/usr/bin/stat -c %a "$ALERT_ENV" 2>/dev/null)
