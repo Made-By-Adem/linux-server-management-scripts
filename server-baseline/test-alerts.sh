@@ -39,7 +39,10 @@ set -u
 QUICK=false
 case "${1:-}" in
     --quick)   QUICK=true ;;
-    --help|-h) sed -n '3,31p' "$0"; exit 0 ;;
+    # To the end of the header block, not to a line number: that range goes
+    # stale the first time the header grows, and then quietly hides the newest
+    # paragraph from the help output.
+    --help|-h) sed -n '3,/^#####/p' "$0" | sed '$d'; exit 0 ;;
     "")        : ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
 esac
@@ -57,8 +60,17 @@ FAILED=0; SENT=0; MISSING=0
 # The scripts in /usr/local/bin are what cron runs. Testing the copies in the
 # checkout would answer a question nobody asked - the installed copy is the one
 # that has to work, and it is the one that drifts.
+
+# run_job <label> <script> <ok_codes> <exit_proves_delivery> [args...]
+#
+# The fourth argument matters. The three reporters end on `exit "$SEND_RC"`, so
+# a zero exit really does mean Telegram accepted the message. The self-check
+# does not: its code describes the HOST - 1 for a failing control, 2 for
+# warnings - and it returns those whether or not anything was delivered.
+# Printing "sent" for it would be the same lie this script exists to expose, so
+# it says "ran" and the syslog scan at the end judges its delivery.
 run_job() {
-    local label="$1" script="$2" ok_codes="$3"; shift 3
+    local label="$1" script="$2" ok_codes="$3" proves="$4"; shift 4
 
     if [ ! -x "$script" ]; then
         printf "${YELLOW}  --  %-34s not installed (%s)${NC}\n" "$label" "$script"
@@ -72,10 +84,15 @@ run_job() {
 
     case " $ok_codes " in
         *" $rc "*)
-            printf "${GREEN}  OK  %-34s exit %s, sent${NC}\n" "$label" "$rc"
-            SENT=$((SENT + 1)) ;;
+            if [ "$proves" = yes ]; then
+                printf "${GREEN}  OK  %-34s exit %s - sent${NC}\n" "$label" "$rc"
+                SENT=$((SENT + 1))
+            else
+                printf "${GREEN}  OK  %-34s exit %s - ran (delivery judged from syslog)${NC}\n" \
+                    "$label" "$rc"
+            fi ;;
         *)
-            printf "${RED}  !!  %-34s exit %s, FAILED${NC}\n" "$label" "$rc"
+            printf "${RED}  !!  %-34s exit %s - FAILED${NC}\n" "$label" "$rc"
             FAILED=$((FAILED + 1)) ;;
     esac
 }
@@ -88,13 +105,13 @@ echo "==========================================================================
 [ "$QUICK" = true ]  && echo "  Quick mode: skipping rkhunter, Lynis and AIDE."
 echo ""
 
-run_job "watchdog test alert"    /usr/local/bin/security-watchdog.sh  "0"     --test
+run_job "watchdog test alert"    /usr/local/bin/security-watchdog.sh  "0"     yes --test
 
 # The self-check's exit code describes the HOST (0 clean, 1 a failing control,
 # 2 warnings only), not whether its message went out. A host with a genuine
 # finding must not read as a broken alert path, so every code counts as "ran"
 # and delivery is judged from syslog at the end.
-run_job "self-check (06:00)"     /usr/local/bin/security-selfcheck.sh "0 1 2" --quiet --test-alert
+run_job "self-check (06:00)"     /usr/local/bin/security-selfcheck.sh "0 1 2" no  --quiet --test-alert
 
 if [ "$QUICK" = false ]; then
     # AIDE first, and not for cosmetic reasons. rkhunter rewrites its own
@@ -106,9 +123,9 @@ if [ "$QUICK" = false ]; then
     #
     # In this order AIDE sees the host as the 05:00 cron would, and whatever
     # the two scanners touch afterwards is absorbed by the next refresh.
-    run_job "AIDE (05:00)"                /usr/local/bin/aide-telegram.sh     "0"
-    run_job "rkhunter (03:00)"            /usr/local/bin/rkhunter-telegram.sh "0"
-    run_job "Lynis (1st of month, 04:00)" /usr/local/bin/lynis-telegram.sh    "0"
+    run_job "AIDE (05:00)"                /usr/local/bin/aide-telegram.sh     "0" yes
+    run_job "rkhunter (03:00)"            /usr/local/bin/rkhunter-telegram.sh "0" yes
+    run_job "Lynis (1st of month, 04:00)" /usr/local/bin/lynis-telegram.sh    "0" yes
 fi
 
 ###############################################################################
@@ -120,7 +137,11 @@ fi
 echo ""
 echo -e "${CYAN}Send failures logged since ${START_STAMP} (nothing here is the good outcome):${NC}"
 if command -v journalctl >/dev/null 2>&1; then
-    LOGGED=$(journalctl --since "$START_STAMP" --no-pager -p warning 2>/dev/null \
+    # No -p filter. Every reporter logs through plain `logger`, which defaults
+    # to user.notice, so asking for warning-or-worse hid precisely the lines
+    # this scan exists to find. It reported "(none)" on a host whose watchdog
+    # had just logged an HTTP 401 four seconds earlier.
+    LOGGED=$(journalctl --since "$START_STAMP" --no-pager 2>/dev/null \
                 -t security-watchdog -t security-selfcheck \
                 -t aide-telegram.sh -t rkhunter-telegram.sh -t lynis-telegram.sh \
              | grep -iE 'fail|no telegram credentials|not sent' | tail -20)
