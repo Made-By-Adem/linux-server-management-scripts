@@ -117,6 +117,19 @@ read_env_value() {
     printf %s "$v"
 }
 
+# Does the root filesystem live on an SD card? A Pi booting from mmc wears out
+# from writes in a way an SSD does not, which changes what a per-minute timer
+# and a daily hashing scan are worth. Only used to decide whether to PRINT that
+# advice - nothing behaves differently, because the trade is the operator's to
+# make. See docs/RASPBERRY-PI.md.
+root_on_sd() {
+    local src pk
+    src=$(findmnt -no SOURCE / 2>/dev/null) || return 1
+    pk=$(lsblk -no PKNAME "$src" 2>/dev/null | head -1)
+    case "${pk:-$src}" in *mmcblk*) return 0 ;; esac
+    return 1
+}
+
 # offer <id> <title> <why> <fix_function>
 # The caller has already established that the fix is needed.
 offer() {
@@ -599,6 +612,17 @@ EOF
         # location told operators to create a file they did not need, on hosts
         # where section 0 had just written the project .env - and implied the
         # alert path was dead when it was fine.
+        if root_on_sd; then
+            note "This host boots from an SD card. The timer fires every minute and"
+            note "rewrites its state each run; on flash media that adds up. To trade"
+            note "detection speed for wear - five minutes instead of one:"
+            note "  sed -i 's/^OnUnitActiveSec=1min/OnUnitActiveSec=5min/' \\"
+            note "      /etc/systemd/system/security-watchdog.timer"
+            note "  systemctl daemon-reload && systemctl restart security-watchdog.timer"
+            note "This script rewrites the timer whenever the watchdog is updated, so"
+            note "re-apply it after an update. See docs/RASPBERRY-PI.md."
+        fi
+
         if [ -r "$CRED_FILE" ] || [ -r /etc/server-baseline/selfcheck.env ]; then
             note "Verify the alert path now: sudo security-watchdog --test"
         else
@@ -1322,6 +1346,10 @@ than detecting it afterwards (Lynis FILE-6310).
 Note: 'bash /tmp/script.sh' keeps working - noexec blocks execve(), not an
 interpreter reading a file. /dev/shm noexec breaks Chromium and Electron apps;
 harmless on a headless server.
+
+Running a desktop on this machine? Decline, and apply /tmp and /var/tmp by
+hand - those two are safe everywhere. docs/RASPBERRY-PI.md has the commands.
+All three are offered together here, so 'n' declines all three.
 
 /dev/shm is the awkward one: systemd mounts it itself and the fstab entry
 generates no unit on these hosts, so a remount holds only until the next

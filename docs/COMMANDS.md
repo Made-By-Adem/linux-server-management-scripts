@@ -452,6 +452,8 @@ accepted, because it is used to build a path that gets sourced. See
 ## See also
 
 - [AIDE-TUNING.md](AIDE-TUNING.md) — which paths to exclude and why
+- [RASPBERRY-PI.md](RASPBERRY-PI.md) — the same baseline on a Pi: SD-card wear,
+  a deliberately absent AIDE, and noexec on a desktop
 - [REMEDIATION-EXISTING-SERVERS.md](REMEDIATION-EXISTING-SERVERS.md) — bringing
   an already-running server up to this baseline
 - [server-baseline/README.md](../server-baseline/README.md)

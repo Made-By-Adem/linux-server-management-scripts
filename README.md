@@ -629,6 +629,9 @@ For enterprise or critical systems, consult a professional DevOps engineer.
   how to work out what churns on your host, and the rule syntax that will
   otherwise cost you an evening
 - [Remediating an existing server](docs/REMEDIATION-EXISTING-SERVERS.md)
+- [Running this baseline on a Raspberry Pi](docs/RASPBERRY-PI.md) — which
+  controls earn their cost on a Pi, what changes on an SD card, and what to do
+  when AIDE is deliberately absent
 
 ### Useful Links
 
