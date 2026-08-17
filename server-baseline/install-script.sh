@@ -3871,7 +3871,34 @@ else
         SSH_SOCKET_ACTIVATED=false
     fi
 
-    if [ "$SSH_SOCKET_ACTIVATED" = true ]; then
+    # Socket activation comes in two flavours, and only one of them makes
+    # sshd_config's Port directives dead weight. Ubuntu 24.04 ships
+    # sshd-socket-generator, which reads those directives and compiles them into
+    # ssh.socket at every daemon-reload - there they are the SOURCE.
+    SSH_SOCKET_GENERATOR=false
+    [ -f /run/systemd/generator/ssh.socket.d/addresses.conf ] && SSH_SOCKET_GENERATOR=true
+
+    if [ "$SSH_SOCKET_ACTIVATED" = true ] && [ "$SSH_SOCKET_GENERATOR" = true ]; then
+        # Keep the ports in sshd_config and let the generator compile them.
+        #
+        # This script used to delete them on every socket-activated host, which
+        # here removes the only place the port is defined. Nothing changes at
+        # the time - the socket is already listening - so it looks like it
+        # worked. The next reboot regenerates the socket from an sshd_config
+        # with no Port line, sshd comes back on 22, and the hardened port is
+        # gone on a machine whose firewall only allows the hardened port.
+        sudo sed -i '/^#\?Port /d' /etc/ssh/sshd_config
+        if [ "$DESKTOP_MODE" = true ]; then
+            sudo sed -i '1i Port 22' /etc/ssh/sshd_config
+        else
+            sudo sed -i '1i Port 22\nPort 888' /etc/ssh/sshd_config
+        fi
+        sudo sshd -t 2>/dev/null && log_info "sshd config validates with the Port directives in place" || \
+            log_warning "sshd -t did not pass - check /etc/ssh/sshd_config before restarting"
+        log_info "Socket activation with sshd-socket-generator: sshd_config carries the ports"
+        log_info "  Apply changes with: systemctl daemon-reload && systemctl restart ssh.socket"
+        log_info "  Restarting ssh.service alone does nothing"
+    elif [ "$SSH_SOCKET_ACTIVATED" = true ]; then
         # ssh.socket owns the ports. Keep sshd_config free of Port directives so
         # there is nothing to contradict it and nothing misleading to edit.
         sudo sed -i '/^#\?Port /d' /etc/ssh/sshd_config
@@ -4029,6 +4056,21 @@ else
     if [ "${SSH_SOCKET_ACTIVATED:-false}" = true ]; then
         log_info "Detected systemd socket activation, configuring ssh.socket..."
 
+    # On a generator host there is nothing to write here: the Port directives
+    # kept in sshd_config above are the source, and a ports.conf would become a
+    # SECOND drop-in feeding the same unit - after which which one wins depends
+    # on drop-in ordering and on whether the /etc file resets the list.
+    if [ "${SSH_SOCKET_GENERATOR:-false}" = true ]; then
+        if [ -f /etc/systemd/system/ssh.socket.d/ports.conf ]; then
+            # Renamed, not deleted, and to something systemd does not read:
+            # only *.conf is picked up as a drop-in.
+            sudo mv /etc/systemd/system/ssh.socket.d/ports.conf \
+                    "/etc/systemd/system/ssh.socket.d/ports.conf.superseded.$(date +%Y%m%d_%H%M%S)"
+            log_info "Moved an older ports.conf aside - sshd_config is the source on this host"
+        fi
+        log_info "Ports come from sshd_config, compiled into ssh.socket by sshd-socket-generator"
+    else
+
         # Create systemd override directory
         sudo mkdir -p /etc/systemd/system/ssh.socket.d
 
@@ -4071,6 +4113,7 @@ ListenStream=[::]:888
 EOF
             log_info "SSH socket configured for ports 22 and 888 (IPv4 + IPv6)"
         fi
+    fi
 
         # Reload systemd configuration and restart SSH socket
         log_info "Reloading systemd daemon..."
