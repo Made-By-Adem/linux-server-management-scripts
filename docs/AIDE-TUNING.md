@@ -27,6 +27,7 @@ You do not have to do anything for these:
 | `/var/lib/containerd`, `/var/lib/docker` | container snapshot contents |
 | `/var/lib/systemd` | systemd's own bookkeeping |
 | `/var/lib/apt/lists`, `/var/lib/ubuntu-advantage`, `/var/lib/landscape`, `/var/lib/update-notifier`, `/var/lib/PackageKit` | package metadata, refreshed by apt's timers |
+| `/var/lib/rkhunter/tmp`, `/var/lib/rkhunter/db` | rkhunter's scratch copies and its own properties database, both rewritten daily |
 | `/root/.cache`, `/root/.vscode-server`, `/root/.copilot`, `/root/.bash_history` | editor and shell session data |
 | `<checkout>/.git/{objects,logs,refs,index,…}` | git rewrites these on every pull |
 
@@ -35,6 +36,16 @@ Two of these are worth understanding rather than just accepting.
 **Package metadata costs nothing to exclude.** Apt indexes are
 signature-verified, so a tampered index makes apt fail rather than install
 something. There was no attack here that AIDE was catching.
+
+**rkhunter's own database was kept monitored, and that was wrong.** The
+reasoning was sound — an attacker who edits `rkhunter_prop_list.dat` makes
+rkhunter blind, so watching it seems like exactly what AIDE is for. But the
+file is rewritten by every scan and by rkhunter's apt hook, so it changes for
+legitimate reasons every single day. AIDE could never have distinguished
+tampering from normal operation there, and what it produced instead was a
+nightly alert on every host. That is the same trade already accepted for
+`/var/lib/aide` and `/var/lib/server-baseline`: a control you cannot read is
+worth less than one you can.
 
 **The `.git` exclusion is deliberately partial.** `hooks` and `config` stay
 monitored, because a git hook is executable code that runs as whoever runs

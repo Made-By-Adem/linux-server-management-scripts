@@ -6043,12 +6043,20 @@ Lynis recommendation: FINT-4350" \
 !/var/lib/apt/lists
 !/var/lib/apt/periodic
 
-# rkhunter copies /etc/passwd and /etc/group here on every scan to diff them
-# against the previous run. The copies change whenever a user is added and on
-# every scan regardless. The diff rkhunter draws from them is the control;
-# these are its scratch space, and /var/lib/rkhunter/db beside them is not
-# excluded.
+# rkhunter copies /etc/passwd and /etc/group into tmp/ on every scan to diff
+# them against the previous run, and rewrites db/rkhunter_prop_list.dat - its
+# own file-properties baseline - whenever a scan or an apt operation refreshes
+# it. Both change by design, daily.
+#
+# db/ was deliberately kept monitored at first, on the reasoning that an
+# attacker who edits rkhunter's baseline makes rkhunter blind. That reasoning
+# is sound and the conclusion was still wrong: the file changes every single
+# day for legitimate reasons, so AIDE cannot tell tampering from normal
+# operation there - the same trade already accepted for /var/lib/aide and
+# /var/lib/server-baseline. Left in, it produced a nightly alert, and a nightly
+# alert is how the whole report stops being read.
 !/var/lib/rkhunter/tmp
+!/var/lib/rkhunter/db
 !/var/lib/ubuntu-advantage
 !/var/lib/landscape
 !/var/lib/update-notifier

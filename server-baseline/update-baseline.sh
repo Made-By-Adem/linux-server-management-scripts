@@ -737,8 +737,13 @@ AIDE_EXCLUDES=(
 
     # rkhunter copies /etc/passwd and /etc/group here on every scan to diff
     # them against the previous run. The diff is the control; these are its
-    # scratch space. /var/lib/rkhunter/db beside them stays watched.
+    # scratch space, and db/rkhunter_prop_list.dat - rkhunter's own baseline -
+    # is rewritten by scans and apt hooks alike. Keeping db/ monitored sounded
+    # right (tamper with it and rkhunter goes blind) but produced a nightly
+    # alert, because the file legitimately changes every day. Same trade as
+    # /var/lib/aide and /var/lib/server-baseline.
     '!/var/lib/rkhunter/tmp'
+    '!/var/lib/rkhunter/db'
     '!/var/lib/ubuntu-advantage'
     '!/var/lib/landscape'
     '!/var/lib/update-notifier'

@@ -23,9 +23,12 @@
 # hand after changing anything about alerting, and once a month or so to prove
 # the chain is still intact. Never schedule it.
 #
-# Two things happen as a side effect, both deliberate:
+# Three things happen as a side effect, all deliberate:
 #   - a clean AIDE run refreshes the baseline, exactly as the 05:00 cron does
 #   - rkhunter and Lynis write fresh logs, which the daily self-check reads
+#   - rkhunter rewrites its properties database and Lynis touches /, both AFTER
+#     the AIDE run above. Absorb them with one aide-refresh when you are done
+#     testing, or let tomorrow's 05:00 report them once.
 #
 # Exit codes: 0 = every job delivered, otherwise the number that did not.
 ###############################################################################
@@ -94,9 +97,18 @@ run_job "watchdog test alert"    /usr/local/bin/security-watchdog.sh  "0"     --
 run_job "self-check (06:00)"     /usr/local/bin/security-selfcheck.sh "0 1 2" --quiet --test-alert
 
 if [ "$QUICK" = false ]; then
-    run_job "rkhunter (03:00)"          /usr/local/bin/rkhunter-telegram.sh "0"
-    run_job "Lynis (1st of month, 04:00)" /usr/local/bin/lynis-telegram.sh  "0"
-    run_job "AIDE (05:00)"              /usr/local/bin/aide-telegram.sh     "0"
+    # AIDE first, and not for cosmetic reasons. rkhunter rewrites its own
+    # properties database on a scan, and Lynis drops a probe file in / to test
+    # whether the root filesystem honours noexec - it removes the file but the
+    # directory mtime stays changed. Running either of them before AIDE
+    # guarantees the integrity check reports differences, refuses to refresh
+    # the baseline, and hands you an alert that this very script caused.
+    #
+    # In this order AIDE sees the host as the 05:00 cron would, and whatever
+    # the two scanners touch afterwards is absorbed by the next refresh.
+    run_job "AIDE (05:00)"                /usr/local/bin/aide-telegram.sh     "0"
+    run_job "rkhunter (03:00)"            /usr/local/bin/rkhunter-telegram.sh "0"
+    run_job "Lynis (1st of month, 04:00)" /usr/local/bin/lynis-telegram.sh    "0"
 fi
 
 ###############################################################################
