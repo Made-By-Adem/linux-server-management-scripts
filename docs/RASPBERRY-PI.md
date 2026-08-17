@@ -164,6 +164,21 @@ sudo bash server-baseline/test-alerts.sh --quick     # prove the alert path
 On a Pi that is a long afternoon; `--quick` proves the watchdog and self-check
 in seconds and leaves the rest to the scheduled runs.
 
+And the closing sequence — after pulling changes, this updates everything and
+then proves it. Without AIDE the two `aide-refresh` steps from the server
+version drop out:
+
+```bash
+git pull --ff-only origin main \
+ && sudo bash server-baseline/update-baseline.sh \
+ && sudo bash server-baseline/test-alerts.sh; \
+ sudo security-selfcheck | tail -3
+```
+
+Four messages instead of five — the AIDE job is reported as "not installed"
+rather than silently skipped, which is the honest version of a host that made
+that choice on purpose.
+
 ---
 
 ## See also

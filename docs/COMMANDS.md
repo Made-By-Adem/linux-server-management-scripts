@@ -126,6 +126,20 @@ Set the `--reason` texts to the actual date and occasion: they end up in the
 Telegram record and `/var/log/aide-refresh-*.log`, and a month later they are
 how you answer what was absorbed when.
 
+**On a host without AIDE** (deliberate on the Pi — see
+[RASPBERRY-PI.md](RASPBERRY-PI.md)) both refresh steps drop out, and with them
+the reason the connectors were mixed:
+
+```bash
+git pull --ff-only origin main \
+ && sudo bash server-baseline/update-baseline.sh \
+ && sudo bash server-baseline/test-alerts.sh; \
+ sudo security-selfcheck | tail -3
+```
+
+Expect four messages instead of five — the AIDE job is reported as "not
+installed" rather than silently skipped.
+
 The watchdog is edge-triggered: it alerts the moment something changes and is
 silent the rest of the time.
 
