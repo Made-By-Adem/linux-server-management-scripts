@@ -39,6 +39,7 @@ TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 
 LOG_FILE="/var/log/aide-check-$(date +%Y%m%d).log"
 DATE_STAMP=$(date '+%Y-%m-%d %H:%M')
+SEND_RC=1
 
 ###############################################################################
 # Sending
@@ -145,7 +146,7 @@ if [ -z "$AIDE" ]; then
     MESSAGE+="<b>File integrity is UNVERIFIED and no scan is being run.</b>%0A%0A"
     MESSAGE+="Usually means aide-common is not installed:%0A"
     MESSAGE+="<code>apt-get install -y aide-common &amp;&amp; aideinit</code>"
-    send_telegram "$MESSAGE"
+    send_telegram "$MESSAGE"; SEND_RC=$?
     exit 1
 fi
 
@@ -170,7 +171,7 @@ if [ "$CHECK_RESULT" -ge 14 ]; then
     MESSAGE+="Last output:%0A"
     MESSAGE+="<pre>${LAST_OUT}</pre>%0A"
     MESSAGE+="Full log: <code>${LOG_FILE}</code>"
-    send_telegram "$MESSAGE"
+    send_telegram "$MESSAGE"; SEND_RC=$?
 
 elif [ "$CHECK_RESULT" -ne 0 ]; then
     ADDED=$(summary_count Added);     ADDED=${ADDED:-0}
@@ -190,7 +191,7 @@ elif [ "$CHECK_RESULT" -ne 0 ]; then
     MESSAGE+="Full log: <code>${LOG_FILE}</code>%0A%0A"
     MESSAGE+="<i>The database was NOT updated. Review first, then if legitimate:</i>%0A"
     MESSAGE+="<code>aide-refresh --reason 'reviewed'</code>"
-    send_telegram "$MESSAGE"
+    send_telegram "$MESSAGE"; SEND_RC=$?
 
 else
     MESSAGE="<b>✅ AIDE Daily Check</b>%0A%0A"
@@ -198,7 +199,7 @@ else
     MESSAGE+="Date: ${DATE_STAMP}%0A"
     MESSAGE+="Status: <b>No changes detected</b>%0A%0A"
     MESSAGE+="File integrity verified."
-    send_telegram "$MESSAGE"
+    send_telegram "$MESSAGE"; SEND_RC=$?
 
     # Only refresh the baseline when the check genuinely came back clean.
     $AIDE --update >/dev/null 2>&1
@@ -207,3 +208,10 @@ fi
 
 # Keep logs for 30 days
 find /var/log -name "aide-check-*.log" -mtime +30 -delete 2>/dev/null || true
+
+# Exit non-zero when the report did not reach Telegram, so a cron mail or a
+# manual run shows the failure instead of the cleanup's exit code. The other
+# two reporters already did this; this one ended on `find` and returned 0 even
+# when Telegram had refused the message - which makes "run it by hand and see
+# if it works" answer the wrong question.
+exit "$SEND_RC"
