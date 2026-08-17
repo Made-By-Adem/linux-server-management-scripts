@@ -749,6 +749,13 @@ AIDE_EXCLUDES=(
     '!/var/lib/update-notifier'
     '!/var/lib/PackageKit'
 
+    # The release-upgrade check: update-manager periodically rewrites its
+    # is-there-a-new-LTS metadata here. Same family as update-notifier above,
+    # found the same way - a timer fired in the minutes between a baseline
+    # refresh and the next check, and produced an alert about nothing.
+    '!/var/lib/ubuntu-release-upgrader'
+    '!/var/lib/update-manager'
+
     # tailscaled's own rotating logs and its netmap cache, rewritten on every
     # network change. Every host in this fleet runs Tailscale, and each one
     # produced this alert separately before the rule made it into the shipped

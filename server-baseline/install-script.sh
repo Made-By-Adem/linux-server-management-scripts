@@ -6061,6 +6061,8 @@ Lynis recommendation: FINT-4350" \
 !/var/lib/landscape
 !/var/lib/update-notifier
 !/var/lib/PackageKit
+!/var/lib/ubuntu-release-upgrader
+!/var/lib/update-manager
 
 # tailscaled's rotating logs and its netmap cache, rewritten on every network
 # change. NOT the whole directory: tailscaled.state beside these holds the
