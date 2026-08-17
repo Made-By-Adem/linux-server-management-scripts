@@ -90,6 +90,42 @@ deliver, and a job that is not installed is reported rather than skipped
 silently. Two deliberate side effects: a clean AIDE run refreshes the baseline
 (exactly as the 05:00 cron does), and rkhunter and Lynis write fresh logs.
 
+### The full round: update everything, then prove it
+
+After a day of changes — pulling fixes, running `update-baseline`, editing
+configs — this is the closing sequence. One line, run from the checkout:
+
+```bash
+git pull --ff-only origin main \
+ && sudo bash server-baseline/update-baseline.sh \
+ && sudo aide-refresh --reason 'pre-test baseline' \
+ && sudo bash server-baseline/test-alerts.sh; \
+ sudo aide-refresh --reason 'post-test: scanner footprints'; \
+ sudo security-selfcheck | tail -3
+```
+
+The order is the entire point:
+
+1. **Pull, then update-baseline** — every file change lands first, including
+   the refreshed copies in `/usr/local/bin`. Refreshing AIDE before this would
+   bake a baseline that those updates immediately invalidate.
+2. **First refresh** — absorbs the day's deliberate changes, so the AIDE run
+   inside the test is clean and sends the `✅` you actually want to see.
+3. **test-alerts.sh** — five real messages, one per scheduled job.
+4. **Second refresh** — rkhunter rewrote its properties database and Lynis
+   touched `/` during the test; this absorbs their footprints so tomorrow's
+   05:00 is genuinely silent. Expect nothing beyond those entries in its
+   record — anything else deserves reading before you accept it.
+5. **Self-check tail** — the closing score.
+
+The connectors matter too: `&&` up to and including the test, so a failed step
+stops the chain — then `;`, because the post-test refresh and the final score
+must run even when a job failed. Do not swap those.
+
+Set the `--reason` texts to the actual date and occasion: they end up in the
+Telegram record and `/var/log/aide-refresh-*.log`, and a month later they are
+how you answer what was absorbed when.
+
 The watchdog is edge-triggered: it alerts the moment something changes and is
 silent the rest of the time.
 
