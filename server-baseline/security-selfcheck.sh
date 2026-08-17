@@ -91,6 +91,13 @@ pass() { PASSES+=("$1");   [ "$QUIET" = false ] && echo -e "  ${GREEN}[PASS]${NC
 warn() { WARNINGS+=("$1"); [ "$QUIET" = false ] && echo -e "  ${YELLOW}[WARN]${NC} $1"; return 0; }
 fail() { FAILURES+=("$1"); [ "$QUIET" = false ] && echo -e "  ${RED}[FAIL]${NC} $1"; return 0; }
 
+# Context attached to a PASS - never a warning. The daily run alerts on any
+# warning at all, so three lines of unchanging advice recorded as warnings mean
+# three lines in every message, on every host, every morning. That is how a
+# report stops being read, which is the failure this whole script exists to
+# prevent.
+hint() { [ "$QUIET" = false ] && echo "  ---- $1"; return 0; }
+
 section() { [ "$QUIET" = false ] && { echo ""; echo "── $1"; }; return 0; }
 
 ###############################################################################
@@ -376,9 +383,9 @@ fi
 if [ "$SOCKET_ON" = true ] && [ "$SOCKET_GEN" = true ]; then
     if [ -n "$CONF_PORTS" ]; then
         pass "Ports come from sshd_config ($CONF_PORTS), compiled in by sshd-socket-generator"
-        warn "  Changes there need: systemctl daemon-reload && systemctl restart ssh.socket"
-        warn "  Restarting ssh.service alone does nothing - and do not delete those"
-        warn "  Port lines: they are the source, not a leftover."
+        hint "Changing them needs: systemctl daemon-reload && systemctl restart ssh.socket"
+        hint "Restarting ssh.service alone does nothing, and the Port lines are the"
+        hint "source here - deleting them puts this host back on 22 at the next reload."
     else
         pass "Ports come from ssh.socket (generated, sshd_config sets none)"
     fi
