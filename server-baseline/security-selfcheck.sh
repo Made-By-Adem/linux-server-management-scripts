@@ -304,15 +304,27 @@ SSH_PORTS=${SSH_PORTS:-none}
 SOCKET_ON=false
 /bin/systemctl is-active ssh.socket >/dev/null 2>&1 && SOCKET_ON=true
 
+# Socket activation comes in two flavours and they need opposite advice.
+# Ubuntu 24.04 ships sshd-socket-generator, which reads the Port lines out of
+# sshd_config and compiles them into the socket at every daemon-reload - so
+# there sshd_config is the SOURCE, not a leftover. Elsewhere the ports live in
+# a drop-in and the Port lines really are dead weight.
+SOCKET_GEN=false
+[ -f /run/systemd/generator/ssh.socket.d/addresses.conf ] && SOCKET_GEN=true
+
 if [ "$SSH_PORTS" = "none" ]; then
     warn "Could not determine which ports sshd is listening on"
 elif echo "$SSH_PORTS" | /bin/grep -qw 22; then
     if echo "$SSH_PORTS" | /bin/grep -qw 888; then
         warn "sshd listens on: $SSH_PORTS - port 22 is still open alongside 888"
         warn "  Close it only from a SECOND session after verifying 888 works:"
-        if [ "$SOCKET_ON" = true ]; then
-            warn "  sudo sed -i '/:22\$/d' /etc/systemd/system/ssh.socket.d/ports.conf"
+        if [ "$SOCKET_ON" = true ] && [ "$SOCKET_GEN" = true ]; then
+            warn "  sudo sed -i 's/^Port 22\$/#Port 22/' /etc/ssh/sshd_config"
             warn "  sudo systemctl daemon-reload && sudo systemctl restart ssh.socket"
+        elif [ "$SOCKET_ON" = true ]; then
+            warn "  Edit the ssh.socket drop-in that sets the ports - find it with:"
+            warn "  grep -rl ListenStream /etc/systemd/system/ssh.socket.d/"
+            warn "  then: sudo systemctl daemon-reload && sudo systemctl restart ssh.socket"
         else
             warn "  sudo sed -i '/^Port 22\$/d' /etc/ssh/sshd_config && sudo systemctl restart ssh"
         fi
@@ -330,11 +342,20 @@ fi
 # changed nothing at all.
 CONF_PORTS=$(/bin/grep -oE '^Port +[0-9]+' /etc/ssh/sshd_config 2>/dev/null | /bin/grep -oE '[0-9]+' | sort -u | /bin/tr '\n' ' ')
 
-if [ "$SOCKET_ON" = true ]; then
+if [ "$SOCKET_ON" = true ] && [ "$SOCKET_GEN" = true ]; then
+    if [ -n "$CONF_PORTS" ]; then
+        pass "Ports come from sshd_config ($CONF_PORTS), compiled in by sshd-socket-generator"
+        warn "  Changes there need: systemctl daemon-reload && systemctl restart ssh.socket"
+        warn "  Restarting ssh.service alone does nothing - and do not delete those"
+        warn "  Port lines: they are the source, not a leftover."
+    else
+        pass "Ports come from ssh.socket (generated, sshd_config sets none)"
+    fi
+elif [ "$SOCKET_ON" = true ]; then
     if [ -n "$CONF_PORTS" ]; then
         warn "Socket activation is in use, but sshd_config still sets Port: $CONF_PORTS"
         warn "  Those lines are IGNORED. Editing them will not change anything."
-        warn "  The real ports live in /etc/systemd/system/ssh.socket.d/ports.conf"
+        warn "  The real ports live in a drop-in under /etc/systemd/system/ssh.socket.d/"
     else
         pass "Port configured in one place only (ssh.socket)"
     fi

@@ -1589,9 +1589,43 @@ header "8c. SSH port configured in two places"
 # Leaving them there is not merely untidy: it is a trap. Deleting "Port 22" from
 # sshd_config on such a host looks like it closed the port and changes nothing.
 
+# Three mechanisms, needing opposite advice - and this section used to see only
+# two of them:
+#
+#   1. no ssh.socket                  sshd_config, restart ssh
+#   2. ssh.socket + sshd-socket-generator (Ubuntu 24.04's default)
+#                                     sshd_config IS the source; the generator
+#                                     compiles its Port lines into the socket
+#                                     at every daemon-reload
+#   3. ssh.socket + a drop-in in /etc  the drop-in wins, sshd_config is dead
+#                                     weight and safe to clean up
+#
+# Case 2 was treated as case 3, which deleted the only place the port was
+# defined. Nothing changed at the time - the socket was already listening - so
+# it verified clean. The damage would surface at the next reboot, with sshd
+# back on 22 and the custom port gone, on a host whose firewall only allows the
+# custom port. A remediation script that arranges a lockout weeks later is
+# worse than the untidiness it set out to fix.
+SSH_GEN=/run/systemd/generator/ssh.socket.d/addresses.conf
+SSH_ETC_DROPIN=$(grep -rlE '^[[:space:]]*ListenStream=' /etc/systemd/system/ssh.socket.d/ 2>/dev/null | head -1)
+
 if ! systemctl is-active ssh.socket >/dev/null 2>&1; then
     ok "No socket activation - sshd_config is the only place ports are set"
     CLEAN+=("ssh-port-single-source")
+elif [ -f "$SSH_GEN" ] && [ -z "$SSH_ETC_DROPIN" ]; then
+    ok "Ports come from sshd_config, compiled into ssh.socket by sshd-socket-generator"
+    note "Change them there, then: systemctl daemon-reload && systemctl restart ssh.socket"
+    note "Restarting ssh.service alone changes nothing. Do NOT delete the Port lines:"
+    note "they are the source, not a leftover."
+    CLEAN+=("ssh-port-single-source")
+elif [ -f "$SSH_GEN" ] && [ -n "$SSH_ETC_DROPIN" ]; then
+    bad "Ports are set in two places that both feed ssh.socket"
+    note "  generated from sshd_config: $SSH_GEN"
+    note "  drop-in in /etc:            $SSH_ETC_DROPIN"
+    note "Which one wins depends on drop-in ordering and on whether the /etc file"
+    note "resets the list with a bare 'ListenStream='. Untangle this by hand - no"
+    note "automatic edit here is safe enough, and being wrong locks you out."
+    ADVISORY+=("ssh-port-single-source")
 elif ! grep -qE '^Port +[0-9]+' /etc/ssh/sshd_config 2>/dev/null; then
     ok "Ports are configured in one place only (ssh.socket)"
     CLEAN+=("ssh-port-single-source")
