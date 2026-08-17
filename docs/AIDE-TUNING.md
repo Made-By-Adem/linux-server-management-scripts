@@ -151,6 +151,78 @@ it, stop. That is the case AIDE was installed for.
 
 ---
 
+## Working an alert down to zero
+
+The procedure above assumes you are tuning a fresh baseline. More often the
+starting point is a Telegram alert with ten entries and a count of two hundred,
+and the question is which handful of rules makes tomorrow silent. That is an
+iterative drill-down, and it converges fast — one fleet went from 210 changed
+entries to structurally zero in three rounds of exactly this.
+
+**Round: concentrate, drill, name, exclude.**
+
+```bash
+LOG=/var/log/aide-check-$(date +%Y%m%d).log
+
+# Where do the changes concentrate? Start shallow.
+grep -E '^[^[:space:]]+: /' "$LOG" \
+  | sed 's/.*: //' | cut -d/ -f1-5 | sort | uniq -c | sort -rn | head -10
+
+# Then drill into the biggest group, one path level deeper each time,
+# until the count splits into directories you can NAME:
+grep -E ': /home/docker/myapp' "$LOG" \
+  | sed 's/.*: //' | cut -d/ -f1-9 | sort | uniq -c | sort -rn | head -10
+```
+
+Stop drilling when every group is attributable — "that is the database's WAL",
+"those are the app's own logs". A group you cannot name is not an exclusion
+candidate; it is the finding.
+
+**The categories that keep coming back.** Every churn source found across six
+hosts fell into one of these, and the same reasoning applies each time:
+
+| Category | Examples | Why AIDE never had signal there |
+|---|---|---|
+| Live database files | `postgres/pg_wal`, sqlite `-wal`/`-shm` | change on every transaction |
+| Rotated logs and dated backups | `tailscaled.log1.txt`, `backup-20260817.sql.gz` | rewritten or rotated daily by design |
+| Agent/session state | sqlite session stores, `sessions/`, `state/` | rewritten every run |
+| App-managed content | a skills/plugins dir the app syncs itself | the sync source is the authority, not the copy on disk |
+| Tool scratch space | `rkhunter/tmp`, `rkhunter/db`, apt metadata | rewritten by the tool's own timers |
+
+The last two deserve a named trade when you exclude them: app-managed content
+can be *code the app executes*, and a scanner's own database is what keeps the
+scanner honest. Both were deliberately kept monitored at first, on sound
+reasoning — and both produced an alert every single day, which meant the whole
+report stopped being read. A file that changes daily for legitimate reasons is
+one AIDE cannot police, whatever it contains. Write the trade into the comment
+above the rule, so the decision survives you.
+
+**One rule can cover a file family.** Rules are prefix regexes, so
+
+```
+!/var/www/remotely/Remotely\.db
+```
+
+matches `Remotely.db`, `Remotely.db-wal` and `Remotely.db-shm` in one line.
+The flip side of the same property: an unescaped dot or a too-short prefix
+matches more than you meant — check with the marker test below.
+
+**Timing: never edit aide.conf mid-sequence.** If a maintenance round with a
+closing refresh is still running, wait for it. Editing the config after the
+final refresh means the next check reports your own exclusion rules as a
+change; editing it during a run means two AIDE processes and a report about
+half a state. The order is always: sequence finishes → add rules →
+`--config-check` → one `aide-refresh` with a reason naming what was excluded.
+
+**Expect a tail.** Agent-style workloads invent new state directories — the
+first round caught the session store, the second caught the WAL, the third
+caught a skills sync. Each round is five minutes with the drill above. The
+trend is what matters: if the counts shrink toward the known monthly entries,
+you are done; if a new group appears that you cannot name, that is not tuning
+noise anymore.
+
+---
+
 ## Always validate, then rebuild
 
 ```bash
