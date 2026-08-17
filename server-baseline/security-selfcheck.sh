@@ -297,13 +297,26 @@ SSH_PORTS=$(/bin/ss -tlnp 2>/dev/null | /bin/grep -i sshd | \
             /bin/grep -oE ':[0-9]+ ' | /bin/tr -d ': ' | sort -u | /bin/tr '\n' ' ')
 SSH_PORTS=${SSH_PORTS:-none}
 
+# Established here rather than in the section below, because it decides which
+# advice is correct. Handing someone the sshd_config edit on a socket-activated
+# host sends them to restart sshd, see port 22 still listening, and conclude
+# either that they did it wrong or that it is closed when it is not.
+SOCKET_ON=false
+/bin/systemctl is-active ssh.socket >/dev/null 2>&1 && SOCKET_ON=true
+
 if [ "$SSH_PORTS" = "none" ]; then
     warn "Could not determine which ports sshd is listening on"
 elif echo "$SSH_PORTS" | /bin/grep -qw 22; then
     if echo "$SSH_PORTS" | /bin/grep -qw 888; then
         warn "sshd listens on: $SSH_PORTS - port 22 is still open alongside 888"
         warn "  Close it only from a SECOND session after verifying 888 works:"
-        warn "  sudo sed -i '/^Port 22\$/d' /etc/ssh/sshd_config && sudo systemctl restart ssh"
+        if [ "$SOCKET_ON" = true ]; then
+            warn "  sudo sed -i '/:22\$/d' /etc/systemd/system/ssh.socket.d/ports.conf"
+            warn "  sudo systemctl daemon-reload && sudo systemctl restart ssh.socket"
+        else
+            warn "  sudo sed -i '/^Port 22\$/d' /etc/ssh/sshd_config && sudo systemctl restart ssh"
+        fi
+        warn "  Then: sudo ufw delete allow 22/tcp   and confirm: ss -tlnp | grep ':22 '"
     else
         warn "sshd listens on port 22 only - the hardened port 888 is not active"
     fi
@@ -315,8 +328,6 @@ fi
 # directive in sshd_config is ignored entirely, so a leftover "Port 22" there is
 # both misleading and a trap: deleting it looks like it closed the port when it
 # changed nothing at all.
-SOCKET_ON=false
-/bin/systemctl is-active ssh.socket >/dev/null 2>&1 && SOCKET_ON=true
 CONF_PORTS=$(/bin/grep -oE '^Port +[0-9]+' /etc/ssh/sshd_config 2>/dev/null | /bin/grep -oE '[0-9]+' | sort -u | /bin/tr '\n' ' ')
 
 if [ "$SOCKET_ON" = true ]; then
