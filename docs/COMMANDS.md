@@ -75,6 +75,21 @@ sudo security-selfcheck --deep           # also run a real aide --check (10-20 m
 sudo security-selfcheck --test-alert     # send even when nothing is wrong — proves the alert path
 ```
 
+To prove the whole chain at once — every scheduled job, run now, with a verdict
+per job on whether it actually reached Telegram:
+
+```bash
+sudo bash server-baseline/test-alerts.sh           # every job (25-35 min; AIDE is 10-20)
+sudo bash server-baseline/test-alerts.sh --quick   # only the jobs that finish in seconds
+```
+
+It sends real messages — five on a fully equipped host — so run it by hand
+after changing anything about alerting, and once a month to confirm the chain
+is intact. Never schedule it. Exit code is the number of jobs that did not
+deliver, and a job that is not installed is reported rather than skipped
+silently. Two deliberate side effects: a clean AIDE run refreshes the baseline
+(exactly as the 05:00 cron does), and rkhunter and Lynis write fresh logs.
+
 The watchdog is edge-triggered: it alerts the moment something changes and is
 silent the rest of the time.
 
@@ -352,6 +367,9 @@ ls -l /etc/server-baseline/selfcheck.env      # or the .env beside the checkout
 sudo security-selfcheck --test-alert
 sudo security-watchdog --test
 sudo /usr/local/bin/aide-telegram.sh          # 10-20 minutes
+
+# Or all of them at once, with a verdict per job
+sudo bash server-baseline/test-alerts.sh
 ```
 
 ---
