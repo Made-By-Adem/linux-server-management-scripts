@@ -1,10 +1,14 @@
-# Force Unix line endings for shell scripts
+# Everything is LF in the repo and LF in the working tree.
+# Git auto-detects binaries and leaves those alone.
+# Without this rule a Windows checkout (or a Stack sync from Windows) rewrites
+# files to CRLF and every line shows up as changed.
+* text=auto eol=lf
+
+# Explicit for the files that must never be CRLF, even if detection is unsure:
+# a shell script or systemd unit with CRLF fails on the server.
 *.sh text eol=lf
-
-# Force Unix line endings for systemd configs
 *.conf text eol=lf
-
-# Force Unix line endings for other config files
 *.service text eol=lf
 *.env text eol=lf
 *.env.* text eol=lf
+*.template text eol=lf
