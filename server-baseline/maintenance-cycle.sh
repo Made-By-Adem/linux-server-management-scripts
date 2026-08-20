@@ -131,8 +131,27 @@ fi
 ###############################################################################
 if [ "$DO_PULL" = true ]; then
     step "1. Pulling the checkout"
-    git -C "$PROJECT_ROOT" pull --ff-only origin main
-    record "git pull" $?
+    # Pull as whoever owns the checkout, not as root.
+    #
+    # This script needs root for the baselines, but a checkout living in a
+    # user's home belongs to that user - mba-home keeps it under /home/adem.
+    # Git refuses to work on a repository owned by someone else and says so
+    # ("detected dubious ownership"), which is how this surfaced.
+    #
+    # The fix git itself suggests, adding the path to safe.directory, is the
+    # wrong one here: root would then pull successfully and leave root-owned
+    # files behind in a user's checkout, so the owner can no longer pull it
+    # themselves. Dropping to the owner keeps the ownership consistent and
+    # needs no configuration. -H so git reads that user's config, not root's.
+    CHECKOUT_OWNER="$(stat -c '%U' "$PROJECT_ROOT" 2>/dev/null || echo root)"
+    if [ "$CHECKOUT_OWNER" = "root" ]; then
+        git -C "$PROJECT_ROOT" pull --ff-only origin main
+        record "git pull" $?
+    else
+        echo "  Checkout belongs to ${CHECKOUT_OWNER}; pulling as that user"
+        sudo -u "$CHECKOUT_OWNER" -H git -C "$PROJECT_ROOT" pull --ff-only origin main
+        record "git pull (as ${CHECKOUT_OWNER})" $?
+    fi
 else
     SKIPPED+=("git pull (--no-pull)")
 fi
