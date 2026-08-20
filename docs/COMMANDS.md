@@ -27,7 +27,15 @@ to run it for the copies to catch up:
 | `security-selfcheck` | `/usr/local/bin/security-selfcheck.sh` |
 | `security-watchdog` | `/usr/local/bin/security-watchdog.sh` |
 | `aide-refresh` | `/usr/local/bin/aide-refresh.sh` |
+| `maintenance-cycle` | a **symlink** to `<checkout>/server-baseline/maintenance-cycle.sh` |
 | — | `/usr/local/bin/aide-telegram.sh`, `rkhunter-telegram.sh`, `lynis-telegram.sh` |
+
+Everything above is a copy with its credential path baked in, except
+`maintenance-cycle`. That one is a symlink on purpose: it pulls the checkout
+and runs `test-alerts.sh` out of it, so it has to resolve back to where it
+actually lives. The checkout sits in a different place on every host — only the
+last path component is fixed — and the symlink is what makes the command the
+same everywhere.
 
 ---
 
@@ -96,8 +104,12 @@ silently. Two deliberate side effects: a clean AIDE run refreshes the baseline
 want unless you have a reason to drive the steps yourself:
 
 ```bash
-sudo bash server-baseline/maintenance-cycle.sh --reason 'reboot + apt upgrade'
+sudo maintenance-cycle --reason 'reboot + apt upgrade'
 ```
+
+From anywhere, on any host. Before the symlink exists — a first run, or a host
+that has not had `update-baseline` since — use the full path:
+`sudo bash <checkout>/server-baseline/maintenance-cycle.sh --reason '...'`.
 
 It adds two things the hand-typed sequence does not. It updates **rkhunter's**
 property database as well — `aide-refresh` does not touch it, so after an apt

@@ -2322,6 +2322,46 @@ fi
 header "9. Security self-check"
 ###############################################################################
 
+###############################################################################
+# maintenance-cycle is the one entry point that must NOT be a copy.
+#
+# Everything else here is installed into /usr/local/bin and has its credential
+# path baked in, precisely because a copy loses its link to the checkout. This
+# script is the opposite case: it exists to pull that checkout and to run
+# test-alerts.sh out of it, so it has to resolve back to where it really lives.
+# It works that out from readlink -f "${BASH_SOURCE[0]}", which follows a
+# symlink and would give the wrong answer for a copy.
+#
+# The checkout sits somewhere different on every host - /home/scripts,
+# /home/adem/scripts, /home/admin/scripts - with only the last component fixed.
+# The symlink is what makes "one command" true regardless of which host you are
+# on, instead of having to remember the path per machine.
+###############################################################################
+if [ -f "$SCRIPT_DIR/maintenance-cycle.sh" ]; then
+    if [ "$(readlink -f /usr/local/bin/maintenance-cycle 2>/dev/null)" = \
+         "$(readlink -f "$SCRIPT_DIR/maintenance-cycle.sh")" ]; then
+        ok "maintenance-cycle is linked to this checkout"
+        CLEAN+=("maintenance-cycle")
+    else
+        maintenance_link_fix() {
+            chmod 700 "$SCRIPT_DIR/maintenance-cycle.sh"
+            ln -sfn "$SCRIPT_DIR/maintenance-cycle.sh" /usr/local/bin/maintenance-cycle || return 1
+            ok "Linked /usr/local/bin/maintenance-cycle -> $SCRIPT_DIR/maintenance-cycle.sh"
+            return 0
+        }
+        offer "maintenance-cycle" "The maintenance round has no command of its own" \
+"The full round - pull, update-baseline, rkhunter propupd, refresh, prove the
+alert paths, refresh again, self-check - lives in maintenance-cycle.sh. Without
+a link it has to be started by its full path, which differs on every host.
+
+A symlink rather than a copy, deliberately: this script has to find the
+checkout it was run from.
+
+Fix: ln -sfn $SCRIPT_DIR/maintenance-cycle.sh /usr/local/bin/maintenance-cycle" \
+            maintenance_link_fix
+    fi
+fi
+
 if [ ! -f "$SCRIPT_DIR/security-selfcheck.sh" ]; then
     note "security-selfcheck.sh not found next to this script - skipping"
 elif [ -f /etc/cron.d/security-selfcheck ] &&      ! needs_refresh "$SCRIPT_DIR/security-selfcheck.sh" /usr/local/bin/security-selfcheck.sh &&      ! needs_refresh "$SCRIPT_DIR/aide-refresh.sh" /usr/local/bin/aide-refresh.sh; then
