@@ -699,8 +699,19 @@ update_selected_containers() {
     fi
 
     # Update each container
+    #
+    # `|| true` is load-bearing. This script runs under `set -e`, and
+    # update_container returns 1 for a container it cannot update - no compose
+    # directory, no compose file, a failed pull. Every one of those paths
+    # records the reason in UPDATE_FAILED first, because the summary at the end
+    # is meant to report them. Called bare, the first such return killed the
+    # whole run instead: on AC2 a selection of four containers stopped at the
+    # first one, the three behind it were never touched, and no summary was
+    # printed - so the only signal that anything had been skipped was a missing
+    # report nobody was looking for. The per-container error handling below was
+    # dead code for the batch case.
     for container in "${containers[@]}"; do
-        update_container "$container" "${compose_dirs[$container]}"
+        update_container "$container" "${compose_dirs[$container]}" || true
         echo ""
     done
 }
