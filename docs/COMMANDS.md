@@ -92,8 +92,29 @@ silently. Two deliberate side effects: a clean AIDE run refreshes the baseline
 
 ### The full round: update everything, then prove it
 
-After a day of changes — pulling fixes, running `update-baseline`, editing
-configs — this is the closing sequence. One line, run from the checkout:
+`maintenance-cycle.sh` runs everything below as one command, and is what you
+want unless you have a reason to drive the steps yourself:
+
+```bash
+sudo bash server-baseline/maintenance-cycle.sh --reason 'reboot + apt upgrade'
+```
+
+It adds two things the hand-typed sequence does not. It updates **rkhunter's**
+property database as well — `aide-refresh` does not touch it, so after an apt
+upgrade every replaced binary is a finding until `--propupd` runs — and it
+gates that behind the warnings from the last scan, because `--propupd` on a
+compromised host makes the compromise the baseline. It also skips the AIDE
+steps on a host that has no AIDE rather than failing on them, so the same
+command works on the Raspberry Pi.
+
+`--yes` answers the prompts, `--no-pull` skips the pull, `--no-test` skips
+`test-alerts.sh`, and `--reason` is required: it is recorded with every
+baseline change and is the only thing that later explains why several hundred
+files were accepted.
+
+The steps it runs, for when you do want them by hand — after a day of changes,
+pulling fixes, running `update-baseline`, editing configs — are the closing
+sequence. One line, run from the checkout:
 
 ```bash
 git pull --ff-only origin main \
