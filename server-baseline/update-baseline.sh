@@ -1041,6 +1041,70 @@ Fix: rm -f /etc/cron.daily/aide-check" \
     fi
 fi
 
+###############################################################################
+# Pager history in root's home, and why an integrity monitor cares about it.
+#
+# `less` records search patterns and shell commands in ~/.lesshst, writing it
+# by creating a temporary file and renaming it into place. A rename changes the
+# *directory's* mtime, so a root session that searched inside a pager - and
+# systemctl status pipes through less by default - moves /root, and the next
+# 05:00 check reports "Directory: /root". Which invocations write the file
+# varies by less version; the rename is the part that matters.
+#
+# On AC1 the evidence was exact: /root and /root/.lesshst carried the same
+# mtime down to the nanosecond. AC3 had shown the same finding two days
+# earlier, eleven minutes after a baseline refresh, which is the other half of
+# it - the refresh is rarely the last thing that happens in a session.
+#
+# Excluding it is not an option. An AIDE rule has to be a path prefix, so
+# !/root would also stop watching authorized_keys, which is among the most
+# important things on the host. Removing the cause costs nothing instead:
+# nobody reads pager history on a server, and a file dropped in /root is still
+# reported as an added entry. The directory's mtime was never the signal for
+# that.
+#
+# Login shells only, which is the case that matters here - these hosts are
+# administered as root over SSH. A pager launched through sudo depends on that
+# host's env_reset handling.
+###############################################################################
+PAGER_HIST_FILE=/etc/profile.d/no-pager-history.sh
+if [ -f "$PAGER_HIST_FILE" ] && grep -q 'LESSHISTFILE=-' "$PAGER_HIST_FILE" 2>/dev/null; then
+    ok "Pager history is suppressed ($PAGER_HIST_FILE)"
+    CLEAN+=("pager-history")
+else
+    pager_hist_fix() {
+        cat > "$PAGER_HIST_FILE" <<'PROFILE_EOF'
+# Written by update-baseline.sh
+#
+# less writes ~/.lesshst by renaming a temp file into place, which changes the
+# mtime of the home directory itself. On a host running AIDE that produces a
+# "Directory: /root" finding after every session that paged anything. Pager
+# history has no operational value on a server, so it is not kept.
+export LESSHISTFILE=-
+PROFILE_EOF
+        chmod 644 "$PAGER_HIST_FILE" || return 1
+        ok "Wrote $PAGER_HIST_FILE - takes effect at the next login"
+        return 0
+    }
+    offer "pager-history" "Pager history rewrites /root, and AIDE reports it every day" \
+"less records searches and shell commands in ~/.lesshst, and writes it by
+renaming a temp file into place - which changes the mtime of /root itself. A
+session that searched inside a pager therefore produces 'Directory: /root' in
+the next 05:00 report, and an integrity monitor that fires on ordinary
+administration is one that stops being read.
+
+It cannot be excluded away: an AIDE rule is a path prefix, and !/root would
+also stop watching authorized_keys. Removing the cause loses no coverage - a
+file dropped in /root is still reported as an added entry.
+
+This writes to /etc/profile.d/, which the audit rules in section 2 watch, so
+expect one auditd event for it. Existing ~/.lesshst files are left alone; they
+simply stop changing.
+
+Fix: echo 'export LESSHISTFILE=-' > $PAGER_HIST_FILE" \
+        pager_hist_fix
+fi
+
 # Independent of the reporter: does the check itself even work?
 if command -v aide >/dev/null 2>&1 && [ -f /var/lib/aide/aide.db ]; then
     # Debian/Ubuntu need aide.wrapper or an explicit --config; a bare
