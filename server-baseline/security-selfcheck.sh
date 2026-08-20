@@ -994,6 +994,44 @@ else
 fi
 
 ###############################################################################
+section "Pending kernel and reboot"
+###############################################################################
+# unattended-upgrades installs kernel security updates and cannot activate
+# them. Until the host reboots it keeps running the old one - and nothing else
+# in this script would notice, because every other control reports on the
+# system as it is running. A patched kernel sitting unused on disk looks
+# exactly like one that was never downloaded.
+#
+# mba-home was running 6.8.0-137 with 6.8.0-138 installed. What surfaced it was
+# an AIDE report about the *removal* of 6.8.0-136, which is a roundabout way to
+# find out you are not running the newest kernel you have.
+#
+# Compared by version sort rather than glob order, so 6.8.0-9 does not outrank
+# 6.8.0-10. Hosts that do not keep kernels in /boot/vmlinuz-* - a Raspberry Pi
+# among them - skip the comparison instead of failing it.
+###############################################################################
+RUNNING_KERNEL="$(/bin/uname -r)"
+KERNEL_IMAGES=( /boot/vmlinuz-* )
+if [ -e "${KERNEL_IMAGES[0]}" ]; then
+    NEWEST_KERNEL="$(printf '%s\n' "${KERNEL_IMAGES[@]}" \
+        | /bin/sed 's|.*/vmlinuz-||' | /usr/bin/sort -V | /usr/bin/tail -1)"
+    if [ "$NEWEST_KERNEL" != "$RUNNING_KERNEL" ]; then
+        warn "Running kernel $RUNNING_KERNEL, but $NEWEST_KERNEL is installed"
+        warn "  The newer one does not take effect until a reboot"
+    else
+        pass "Running the newest installed kernel ($RUNNING_KERNEL)"
+    fi
+fi
+
+if [ -f /run/reboot-required ] || [ -f /var/run/reboot-required ]; then
+    REBOOT_PKGS="$(/bin/cat /run/reboot-required.pkgs /var/run/reboot-required.pkgs 2>/dev/null \
+        | /usr/bin/sort -u | /bin/tr '\n' ' ')"
+    warn "A reboot is pending${REBOOT_PKGS:+ for: ${REBOOT_PKGS}}"
+else
+    pass "No reboot flagged as required"
+fi
+
+###############################################################################
 section "Reporters can actually report"
 #
 # Two bugs of this shape have shipped already: rkhunter-telegram.sh built its
