@@ -774,6 +774,29 @@ AIDE_EXCLUDES=(
     # it means this machine re-authenticated as someone.
     '!/var/lib/tailscale/tailscaled\.log'
     '!/var/lib/tailscale/profile-data/[^/]+/netmap-cache'
+
+    # Not an exclusion - a selection line, kept here because the mechanism that
+    # writes these is line-based and does not care which kind it is.
+    #
+    # Watch /root itself for permission and ownership changes, but not for its
+    # timestamps. Every root session rewrites a dotfile, and the ones that get
+    # written by renaming a temp file into place move the *directory's* mtime:
+    # .bash_history on AC3, .lesshst on AC1, both matching the directory to the
+    # nanosecond. AC1 and AC3 each reported "Directory: /root" as their only
+    # finding, on different days, for that reason.
+    #
+    # Excluding the individual files does not help - !/root/\.bash_history above
+    # stops the file being reported and has no effect on the directory, which is
+    # what actually fires. Chasing them one at a time is endless: .viminfo,
+    # .wget-hsts, .python_history, whatever gets installed next.
+    #
+    # Safe here because /root has recursive coverage, which is the condition
+    # AIDE-TUNING.md sets for this trade. Verified on AC3 with the marker test
+    # from that document: a file created directly in /root is still reported as
+    # an added entry (grep -c = 1) while the directory itself is not (0). A
+    # chmod or chown of /root is still caught - p+u+g+i+n keeps permissions,
+    # owner, group, inode and link count.
+    '=/root p+u+g+i+n'
 )
 
 # An AIDE rule has to be a literal path prefix - it must start with '/', so
