@@ -985,6 +985,62 @@ else
     CLEAN+=("aide-reporter")
 fi
 
+###############################################################################
+# The installer used to write /etc/cron.daily/aide-check, from before the 05:00
+# reporter existed. On a host set up back then it is still there, and nothing
+# has ever refreshed it: update-baseline replaces the reporters in
+# /usr/local/bin and never looks here.
+#
+# It writes /var/log/aide-check-$(date +%Y%m%d).log - the same path the
+# reporter uses. run-parts fires cron.daily around 06:25, an hour after the
+# 05:00 report, so the log an alert points at is overwritten by a different run
+# before anyone opens it. On AC1 the alert listed a changed directory and the
+# log it named held one line: "ERROR: missing configuration".
+#
+# That error is the second bug, and it is the only thing keeping the first from
+# being far worse. The old version runs a bare `aide --check`, which on Debian
+# and Ubuntu always fails with exit 17, so it always takes its mail-to-root
+# branch. Its other branch runs `aide --update` and moves the result over
+# /var/lib/aide/aide.db on every clean run - the precise anti-pattern
+# aide-refresh.sh exists to replace, because a baseline that refreshes itself
+# turns tampering into the new normal within one cycle.
+#
+# So this is removed rather than repaired. The 05:00 reporter already runs the
+# check, already reports it, and already prunes these logs after 30 days. Two
+# full AIDE runs a day, one of which nobody can see, is not worth having.
+###############################################################################
+if [ -f /etc/cron.daily/aide-check ]; then
+    # Only when the reporter is actually scheduled. Removing the legacy job on
+    # a host with nothing else checking AIDE would trade noise for silence, and
+    # silence is the failure mode this repository keeps having to fix.
+    if [ -f /etc/cron.d/security-scans ] && \
+       grep -qE '^[^#]*aide-telegram\.sh' /etc/cron.d/security-scans; then
+        legacy_aide_cron_fix() {
+            rm -f /etc/cron.daily/aide-check || return 1
+            ok "Removed /etc/cron.daily/aide-check"
+            return 0
+        }
+        offer "legacy-aide-cron" \
+            "A second daily AIDE check is overwriting the reporter's log" \
+"/etc/cron.daily/aide-check predates the 05:00 reporter and writes to the same
+log file. run-parts fires it around 06:25, so the log every alert points at
+describes a different run by the time you read it.
+
+Worse, its clean-run branch does 'aide --update' and overwrites the database.
+Auto-refreshing a baseline is exactly what aide-refresh.sh exists to prevent;
+it is dormant here only because its bare 'aide --check' fails on Debian and
+Ubuntu.
+
+The 05:00 reporter runs the same check, reports it, and prunes these logs.
+
+Fix: rm -f /etc/cron.daily/aide-check" \
+            legacy_aide_cron_fix
+    else
+        note "/etc/cron.daily/aide-check exists but no active aide-telegram cron entry was found"
+        ADVISORY+=("legacy /etc/cron.daily/aide-check present without the 05:00 reporter - schedule the reporter before removing it")
+    fi
+fi
+
 # Independent of the reporter: does the check itself even work?
 if command -v aide >/dev/null 2>&1 && [ -f /var/lib/aide/aide.db ]; then
     # Debian/Ubuntu need aide.wrapper or an explicit --config; a bare
