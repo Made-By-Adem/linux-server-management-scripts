@@ -40,7 +40,24 @@ TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 ###############################################################################
 
 html_escape() {
-    sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+    # Escapes for BOTH layers this message passes through, in this order.
+    #
+    # The body goes out with `curl -d`, i.e. application/x-www-form-urlencoded,
+    # because the callers write their line breaks as %0A. In that encoding a
+    # literal '+' means a space and '&' ends the field, so HTML-escaping alone
+    # silently corrupted anything containing either. A kernel warning about
+    # 6.12.93+rpt-rpi-2712 arrived reading "6.12.93 rpt-rpi-2712".
+    #
+    # '%' goes first, before any escape below introduces one of its own. The
+    # HTML entities are then written with their '&' already percent-encoded, so
+    # Telegram's form parser yields '&amp;' and its HTML parser renders '&'.
+    #
+    # Callers must keep adding %0A *after* this, never before.
+    sed -e 's/%/%25/g' \
+        -e 's/&/%26amp;/g' \
+        -e 's/</%26lt;/g' \
+        -e 's/>/%26gt;/g' \
+        -e 's/+/%2B/g'
 }
 
 send_telegram() {

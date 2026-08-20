@@ -1473,7 +1473,12 @@ if [ ${#FAILURES[@]} -gt 0 ] || [ ${#WARNINGS[@]} -gt 0 ] || [ "$TEST_ALERT" = t
         fi
 
         if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-            sc_escape() { /bin/sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+            # Both layers: the body is form-encoded (line breaks are %0A), so a
+            # literal '+' would arrive as a space and '&' would end the field.
+            # '%' first; the entities carry their '&' already percent-encoded.
+            # See html_escape() in the reporters for the full reasoning.
+            sc_escape() { /bin/sed -e 's/%/%25/g' -e 's/&/%26amp;/g' \
+                                   -e 's/</%26lt;/g' -e 's/>/%26gt;/g' -e 's/+/%2B/g'; }
 
             if [ "$TEST_ALERT" = true ]; then
                 MSG="🧪 <b>Security Self-Check</b> (test)%0A%0A"
