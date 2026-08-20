@@ -1010,16 +1010,32 @@ section "Pending kernel and reboot"
 # 6.8.0-10. Hosts that do not keep kernels in /boot/vmlinuz-* - a Raspberry Pi
 # among them - skip the comparison instead of failing it.
 ###############################################################################
+#
+# Only kernels of the same flavour are comparable. A Raspberry Pi 5 keeps both
+# 6.12.93+rpt-rpi-2712 (its own SoC) and 6.12.93+rpt-rpi-v8 (generic arm64)
+# installed, and running the 2712 one is correct - but a plain version sort
+# ranks v8 above it and reports the right kernel as out of date. The first
+# version of this check did exactly that on fireman.
+#
+# The flavour is the part after the last hyphen: "generic" on Ubuntu, "2712"
+# or "v8" on the Pi. Comparing within that group turns the Pi's two flavours
+# into two separate groups, which is what they are.
 RUNNING_KERNEL="$(/bin/uname -r)"
-KERNEL_IMAGES=( /boot/vmlinuz-* )
-if [ -e "${KERNEL_IMAGES[0]}" ]; then
-    NEWEST_KERNEL="$(printf '%s\n' "${KERNEL_IMAGES[@]}" \
-        | /bin/sed 's|.*/vmlinuz-||' | /usr/bin/sort -V | /usr/bin/tail -1)"
+RUNNING_FLAVOUR="${RUNNING_KERNEL##*-}"
+SAME_FLAVOUR=()
+for kimg in /boot/vmlinuz-*; do
+    [ -e "$kimg" ] || continue
+    kver="${kimg##*/vmlinuz-}"
+    [ "${kver##*-}" = "$RUNNING_FLAVOUR" ] && SAME_FLAVOUR+=("$kver")
+done
+
+if [ ${#SAME_FLAVOUR[@]} -gt 0 ]; then
+    NEWEST_KERNEL="$(printf '%s\n' "${SAME_FLAVOUR[@]}" | /usr/bin/sort -V | /usr/bin/tail -1)"
     if [ "$NEWEST_KERNEL" != "$RUNNING_KERNEL" ]; then
         warn "Running kernel $RUNNING_KERNEL, but $NEWEST_KERNEL is installed"
         warn "  The newer one does not take effect until a reboot"
     else
-        pass "Running the newest installed kernel ($RUNNING_KERNEL)"
+        pass "Running the newest installed $RUNNING_FLAVOUR kernel ($RUNNING_KERNEL)"
     fi
 fi
 

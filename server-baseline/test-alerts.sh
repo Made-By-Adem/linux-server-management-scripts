@@ -107,12 +107,6 @@ echo ""
 
 run_job "watchdog test alert"    /usr/local/bin/security-watchdog.sh  "0"     yes --test
 
-# The self-check's exit code describes the HOST (0 clean, 1 a failing control,
-# 2 warnings only), not whether its message went out. A host with a genuine
-# finding must not read as a broken alert path, so every code counts as "ran"
-# and delivery is judged from syslog at the end.
-run_job "self-check (06:00)"     /usr/local/bin/security-selfcheck.sh "0 1 2" no  --quiet --test-alert
-
 if [ "$QUICK" = false ]; then
     # AIDE first, and not for cosmetic reasons. rkhunter rewrites its own
     # properties database on a scan, and Lynis drops a probe file in / to test
@@ -127,6 +121,22 @@ if [ "$QUICK" = false ]; then
     run_job "rkhunter (03:00)"            /usr/local/bin/rkhunter-telegram.sh "0" yes
     run_job "Lynis (1st of month, 04:00)" /usr/local/bin/lynis-telegram.sh    "0" yes
 fi
+
+# The self-check runs last, which is also where it sits in the real schedule:
+# rkhunter at 03:00, AIDE at 05:00, this at 06:00. That order is not incidental
+# - the self-check reads the logs the other jobs write, so running it first
+# judges yesterday's state.
+#
+# It was first here, and on fireman it reported "the rkhunter log contains no
+# completed scan" as a FAILURE while the rkhunter job two lines below was about
+# to write a clean one. A run that alerts on a condition it is in the middle of
+# fixing is worse than no test at all.
+#
+# Its exit code describes the HOST (0 clean, 1 a failing control, 2 warnings
+# only), not whether its message went out. A host with a genuine finding must
+# not read as a broken alert path, so every code counts as "ran" and delivery
+# is judged from syslog at the end.
+run_job "self-check (06:00)"     /usr/local/bin/security-selfcheck.sh "0 1 2" no  --quiet --test-alert
 
 ###############################################################################
 # Syslog is the second opinion. Every reporter logs its own send failure there,
