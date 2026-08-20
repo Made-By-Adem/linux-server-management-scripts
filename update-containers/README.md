@@ -130,9 +130,14 @@ For each container:
 - A `docker-compose.yml` or `docker-compose.yaml` file must exist
 - The compose file must be located in one of these locations:
   - `~/docker/[container-name]/`
+  - `/home/docker/[container-name]/`
   - `/home/*/docker/[container-name]/`
   - `/opt/docker/[container-name]/`
   - `/srv/docker/[container-name]/`
+
+`/home/docker` and `/home/*/docker` are both listed because they are different
+paths: the glob matches `/home/<user>/docker`, never a `docker` directory
+directly under `/home`.
 
 **Recommended Directory Structure:**
 ```
@@ -732,11 +737,21 @@ sudo sh get-docker.sh
 - Container not started via docker-compose
 - Compose file in unexpected location
 - Container name doesn't match directory name
+- **The compose directory was moved after the container was created.** Compose
+  labels are written once, at creation, and never follow a `mv`. The container
+  keeps pointing at the old path, so the label lookup finds a directory that no
+  longer exists and the search falls through. Moving a stack is therefore only
+  half the job — recreate it from its new location so the labels catch up:
+  `cd /new/path/stack && docker compose up -d`
 
 **Solution:**
 ```bash
-# Check how container was started
-docker inspect <container-name> | grep -i compose
+# What does the container itself think? An empty working_dir means it was
+# never started by compose; a path that does not exist means it was moved.
+docker inspect -f '{{.Name}}
+  working_dir  : {{index .Config.Labels "com.docker.compose.project.working_dir"}}
+  config_files : {{index .Config.Labels "com.docker.compose.project.config_files"}}
+  service      : {{index .Config.Labels "com.docker.compose.service"}}' <container-name>
 
 # Find where compose file is
 find ~ /opt /srv -name "docker-compose.yml" -o -name "docker-compose.yaml" 2>/dev/null
@@ -991,6 +1006,7 @@ If you have compose files in other locations:
 # Add your custom directories to common_dirs array:
 local common_dirs=(
     "$HOME/docker"
+    "/home/docker"
     "/home/*/docker"
     "/opt/docker"
     "/srv/docker"

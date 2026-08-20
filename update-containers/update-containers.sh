@@ -394,8 +394,16 @@ find_compose_dir() {
     local service_name=$(docker inspect --format='{{index .Config.Labels "com.docker.compose.service"}}' "$container" 2>/dev/null)
 
     # Method 2: Search in standard docker directories
+    #
+    # /home/docker is listed separately from /home/*/docker on purpose. The
+    # glob needs three levels - /home/<user>/docker - and never matches a
+    # docker directory sitting directly under /home, however obvious that
+    # layout looks. AC2 keeps every stack there, so the fallback skipped all
+    # of them silently, and that only surfaced once a container's compose
+    # label went stale and Method 1 stopped answering.
     local common_dirs=(
         "$HOME/docker"
+        "/home/docker"
         "/home/*/docker"
         "/opt/docker"
         "/srv/docker"
