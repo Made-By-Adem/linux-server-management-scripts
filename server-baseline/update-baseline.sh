@@ -766,6 +766,18 @@ AIDE_EXCLUDES=(
     '!/var/lib/ubuntu-release-upgrader'
     '!/var/lib/update-manager'
 
+    # fwupd's firmware catalogue from the LVFS, and AppStream's software
+    # catalogue. Both are downloaded metadata on their own refresh timers, and
+    # both turned up on mba-home in the report for an unrelated kernel removal.
+    # Same family as the apt indexes above: signed upstream data, where a
+    # tampered copy fails verification rather than doing anything.
+    #
+    # Only fwupd's metadata directory. The device state beside it is not
+    # downloaded catalogue, and a machine's own firmware record changing is
+    # worth seeing.
+    '!/var/lib/fwupd/metadata'
+    '!/var/lib/swcatalog'
+
     # tailscaled's own rotating logs and its netmap cache, rewritten on every
     # network change. Every host in this fleet runs Tailscale, and each one
     # produced this alert separately before the rule made it into the shipped

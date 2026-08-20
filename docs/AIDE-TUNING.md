@@ -28,6 +28,7 @@ You do not have to do anything for these:
 | `/var/lib/systemd` | systemd's own bookkeeping, including the random seed rewritten at every boot |
 | `/var/lib/apt/lists`, `/var/lib/apt/periodic`, `/var/lib/ubuntu-advantage`, `/var/lib/landscape`, `/var/lib/update-notifier`, `/var/lib/PackageKit` | package metadata, refreshed by apt's timers |
 | `/var/lib/ubuntu-release-upgrader`, `/var/lib/update-manager` | the is-there-a-new-LTS check, rewritten by its own timer |
+| `/var/lib/fwupd/metadata`, `/var/lib/swcatalog` | the LVFS firmware catalogue and the AppStream software catalogue, both downloaded on their own timers |
 | `/var/lib/rkhunter/tmp`, `/var/lib/rkhunter/db` | rkhunter's scratch copies and its own properties database, both rewritten daily |
 | `/var/lib/tailscale/tailscaled.log`, `…/profile-data/*/netmap-cache` | rotating log and network-map cache, rewritten on every network change |
 | `/root/.cache`, `/root/.vscode-server`, `/root/.copilot`, `/root/.bash_history` | editor and shell session data |
