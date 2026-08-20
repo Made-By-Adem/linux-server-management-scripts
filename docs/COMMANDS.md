@@ -17,8 +17,9 @@ Two conventions throughout:
 | `update-baseline` | `server-baseline/update-baseline.sh` |
 | `update-containers` | `update-containers/update-containers.sh` |
 | `backup-folders` | `backup-script/backup.sh` |
+| `maintenance-cycle` | `server-baseline/maintenance-cycle.sh` |
 
-These four are symlinks. The next four are *installed copies* — `update-baseline`
+These five are symlinks. The next four are *installed copies* — `update-baseline`
 refreshes them from the checkout, so after pulling repository changes you have
 to run it for the copies to catch up:
 
@@ -27,15 +28,13 @@ to run it for the copies to catch up:
 | `security-selfcheck` | `/usr/local/bin/security-selfcheck.sh` |
 | `security-watchdog` | `/usr/local/bin/security-watchdog.sh` |
 | `aide-refresh` | `/usr/local/bin/aide-refresh.sh` |
-| `maintenance-cycle` | a **symlink** to `<checkout>/server-baseline/maintenance-cycle.sh` |
 | — | `/usr/local/bin/aide-telegram.sh`, `rkhunter-telegram.sh`, `lynis-telegram.sh` |
 
-Everything above is a copy with its credential path baked in, except
-`maintenance-cycle`. That one is a symlink on purpose: it pulls the checkout
-and runs `test-alerts.sh` out of it, so it has to resolve back to where it
-actually lives. The checkout sits in a different place on every host — only the
-last path component is fixed — and the symlink is what makes the command the
-same everywhere.
+`maintenance-cycle` has to be in the first group rather than the second: it
+pulls the checkout and runs `test-alerts.sh` out of it, so it must resolve back
+to where it really lives, which a copy cannot do. The checkout sits somewhere
+different on every host — only the last path component is fixed — and the
+symlink is what makes the command identical everywhere.
 
 ---
 
