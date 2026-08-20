@@ -535,19 +535,29 @@ header "3. Process accounting"
 if ! command -v accton >/dev/null 2>&1; then
     note "acct is not installed"
     ADVISORY+=("acct not installed - install with: apt-get install -y acct")
-elif systemctl is-active acct >/dev/null 2>&1; then
-    ok "Process accounting is active"
+elif systemctl is-active acct >/dev/null 2>&1 && systemctl is-enabled acct >/dev/null 2>&1; then
+    ok "Process accounting is active and enabled at boot"
     CLEAN+=("acct")
 else
     acct_fix() {
         systemctl enable --now acct || return 1
         systemctl is-active acct >/dev/null 2>&1 || return 1
-        ok "Process accounting is now active"
+        systemctl is-enabled acct >/dev/null 2>&1 || return 1
+        ok "Process accounting is now active and enabled at boot"
         return 0
     }
-    offer "acct" "Process accounting is not running" \
-"Without it there is no command history for the window that matters. 'systemctl
-enable' alone is not enough - it has to be started as well.
+    # Both halves are required before this counts as clean. Checking only
+    # is-active passed a host that was recording commands at that moment and
+    # would stop at its next reboot with nothing to restart it - which is
+    # precisely what happened on AC2: accounting ran for days, the reboot
+    # stopped it, and it never came back. A control that is running is not the
+    # same as a control that is installed.
+    offer "acct" "Process accounting will not survive a reboot" \
+"Without it there is no command history for the window that matters.
+
+'systemctl start' alone is not enough - it has to be enabled as well, or the
+next reboot ends the recording silently. Equally, 'enable' alone leaves it off
+until that reboot. This fix does both.
 
 Fix: systemctl enable --now acct" \
         acct_fix

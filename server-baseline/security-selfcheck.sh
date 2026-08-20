@@ -799,8 +799,30 @@ else
     fi
 fi
 
-if /bin/systemctl is-active acct >/dev/null 2>&1 || /bin/systemctl is-active psacct >/dev/null 2>&1; then
-    pass "Process accounting is active"
+# Debian and Ubuntu ship this as acct, RHEL as psacct. Find whichever is here.
+ACCT_UNIT=""
+for u in acct psacct; do
+    if /bin/systemctl is-active "$u" >/dev/null 2>&1; then ACCT_UNIT="$u"; break; fi
+done
+
+if [ -n "$ACCT_UNIT" ]; then
+    # Running now is only half the control. `systemctl start` without `enable`
+    # leaves a host that records commands right up to its next reboot and then
+    # stops - and this check reported a clean PASS on exactly that host until
+    # the reboot happened. AC2 lost its command history that way: the watchdog
+    # correctly reported acct stopping during the reboot, and nothing brought
+    # it back, because nothing had ever asked systemd to.
+    #
+    # Same trade as the UFW check earlier in this script: loaded is not the
+    # same as will-come-back, and both have to agree. Kept at warn rather than
+    # fail to stay level with the not-active case below - a host that records
+    # nothing at all is not a milder finding than one that stops next week.
+    if /bin/systemctl is-enabled "$ACCT_UNIT" >/dev/null 2>&1; then
+        pass "Process accounting is active and enabled at boot"
+    else
+        warn "Process accounting is running but not enabled - it will not come back after a reboot"
+        warn "  Fix with: systemctl enable --now $ACCT_UNIT"
+    fi
 else
     warn "Process accounting (acct) is not active - no command history will be recorded"
 fi
