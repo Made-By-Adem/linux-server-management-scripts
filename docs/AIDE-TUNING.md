@@ -32,6 +32,7 @@ You do not have to do anything for these:
 | `/var/lib/rkhunter/tmp`, `/var/lib/rkhunter/db` | rkhunter's scratch copies and its own properties database, both rewritten daily |
 | `/var/lib/tailscale/tailscaled.log`, `…/profile-data/*/netmap-cache` | rotating log and network-map cache, rewritten on every network change |
 | `/root/.cache`, `/root/.vscode-server`, `/root/.copilot`, `/root/.bash_history` | editor and shell session data |
+| the same five paths under `/home/*/` | the same data for an operator who is not root — `/home/*/.ssh/cm` included, `authorized_keys` beside it deliberately not |
 | `/root/.ssh/cm` | `backup.sh`'s SSH ControlMaster socket directory |
 | `<checkout>/.git/{objects,logs,refs,index,…}` | git rewrites these on every pull |
 

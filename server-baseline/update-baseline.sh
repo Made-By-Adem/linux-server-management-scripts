@@ -738,6 +738,30 @@ AIDE_EXCLUDES=(
     # watches, and the sockets inside are ephemeral and root-only anyway.
     '!/root/\.ssh/cm'
 
+    # The same session and editor data, for an operator who is not root.
+    #
+    # Every rule above assumes the administrator works as root, which is true on
+    # five of these hosts and not on the sixth: mba-home is administered from
+    # /home/adem, and its first clean night reported
+    # /home/adem/.vscode-server/data/User/workspaceStorage/<id>/vscode.lock -
+    # the identical churn already excluded for root, in a home nothing covered.
+    #
+    # /home/[^/]+ also matches the application directories these hosts keep
+    # beside their user homes - /home/docker, /home/projects, /home/pos-servers.
+    # That costs nothing: the paths named here are editor and shell session
+    # data, and an application tree that happens to contain a .cache is not a
+    # place this monitor was ever reading.
+    #
+    # Deliberately NOT the =/home/[^/]+ p+u+g+i+n counterpart of the /root rule
+    # below. On /root that trade is free because every dotfile there is already
+    # excluded; under /home a new directory appearing is exactly what you want
+    # to see, since that is where the applications live.
+    '!/home/[^/]+/\.vscode-server'
+    '!/home/[^/]+/\.cache'
+    '!/home/[^/]+/\.copilot'
+    '!/home/[^/]+/\.bash_history'
+    '!/home/[^/]+/\.ssh/cm'
+
     # Package metadata, refreshed by apt's own timers. Every host reported
     # these on the first real check. Tampering here is not a useful attack:
     # the indexes are signature-verified, so a modified one fails apt rather
