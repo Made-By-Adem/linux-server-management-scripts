@@ -24,14 +24,23 @@ You do not have to do anything for these:
 |---|---|
 | `/var/lib/aide` | AIDE leaves `aide.db.new` behind on every update |
 | `/var/lib/server-baseline` | the security watchdog rewrites its state every minute |
-| `/var/lib/containerd`, `/var/lib/docker` | container snapshot contents |
-| `/var/lib/systemd` | systemd's own bookkeeping |
-| `/var/lib/apt/lists`, `/var/lib/ubuntu-advantage`, `/var/lib/landscape`, `/var/lib/update-notifier`, `/var/lib/PackageKit` | package metadata, refreshed by apt's timers |
+| `/var/lib/containerd` | container runtime state |
+| `/var/lib/systemd` | systemd's own bookkeeping, including the random seed rewritten at every boot |
+| `/var/lib/apt/lists`, `/var/lib/apt/periodic`, `/var/lib/ubuntu-advantage`, `/var/lib/landscape`, `/var/lib/update-notifier`, `/var/lib/PackageKit` | package metadata, refreshed by apt's timers |
+| `/var/lib/ubuntu-release-upgrader`, `/var/lib/update-manager` | the is-there-a-new-LTS check, rewritten by its own timer |
 | `/var/lib/rkhunter/tmp`, `/var/lib/rkhunter/db` | rkhunter's scratch copies and its own properties database, both rewritten daily |
+| `/var/lib/tailscale/tailscaled.log`, `…/profile-data/*/netmap-cache` | rotating log and network-map cache, rewritten on every network change |
 | `/root/.cache`, `/root/.vscode-server`, `/root/.copilot`, `/root/.bash_history` | editor and shell session data |
+| `/root/.ssh/cm` | `backup.sh`'s SSH ControlMaster socket directory |
 | `<checkout>/.git/{objects,logs,refs,index,…}` | git rewrites these on every pull |
 
-Two of these are worth understanding rather than just accepting.
+One line in the same set is not an exclusion at all:
+
+| Rule | Why |
+|---|---|
+| `=/root p+u+g+i+n` | watch `/root` itself for permissions, owner, group, inode and link count — but not for its timestamps, which every root session moves. See [`Directory: /`](#directory--on-the-first-of-the-month--do-not-exclude-this) for the test that decides whether this is free. |
+
+Three of these are worth understanding rather than just accepting.
 
 **Package metadata costs nothing to exclude.** Apt indexes are
 signature-verified, so a tampered index makes apt fail rather than install
@@ -47,10 +56,20 @@ nightly alert on every host. That is the same trade already accepted for
 `/var/lib/aide` and `/var/lib/server-baseline`: a control you cannot read is
 worth less than one you can.
 
-**The `.git` exclusion is deliberately partial.** `hooks` and `config` stay
-monitored, because a git hook is executable code that runs as whoever runs
-`git`. Excluding `.git` wholesale would create a persistence location inside the
-very tree this repository deploys to every host.
+**Three of these are deliberately partial, for one reason.** Excluding a whole
+directory is easier to write and occasionally hands an attacker a place to
+work:
+
+- `.git` — `hooks` and `config` stay monitored, because a git hook is
+  executable code that runs as whoever runs `git`. Excluding `.git` wholesale
+  would create a persistence location inside the very tree this repository
+  deploys to every host.
+- `/var/lib/tailscale` — only the rotating log and the netmap cache. Beside
+  them sits `tailscaled.state`, which holds the node key, and that changing is
+  exactly what you want to see: it means this machine re-authenticated as
+  someone.
+- `/root/.ssh` — only the `cm` socket directory. `authorized_keys` beside it is
+  among the most important files AIDE watches anywhere.
 
 ---
 
@@ -315,6 +334,76 @@ That is the whole distinction this page is about. `update-success-stamp`
 changed daily and meant nothing, so it went. This changes monthly, means
 something specific, and you can name it. Those are not the same problem, and
 the fact that both produce a line in the report does not make them so.
+
+**The same test, applied to `/root`, came out the other way.** Every root
+session rewrites a dotfile — `.bash_history`, `.lesshst` — and the ones written
+by renaming a temp file into place move the directory's mtime, so AC1 and AC3
+both reported `Directory: /root` as their only finding on different days. There
+the marker *was* reported, meaning files in `/root` are covered on their own,
+so `=/root p+u+g+i+n` ships in the default set. Excluding the dotfiles
+individually does not work, and never did: `!/root/\.bash_history` suppresses
+the file and has no effect on the directory, which is what actually fires.
+
+---
+
+## When the alert is a WordPress tree
+
+A WordPress core update rewrites `wp-admin/` and `wp-includes/` wholesale. A
+minor release is a few hundred entries; a major one is thousands. The first
+time it lands you will open a report saying something like:
+
+```
+Added: 104 / Removed: 784 / Changed: 1922
+- f : .../public_html/wp-admin/css/wp-tooltip.css
+- f : .../public_html/wp-admin/images/about-header-credits.svg
+```
+
+**Do not exclude the tree.** Modified and added files under `wp-admin/` and
+`wp-includes/` are also what a compromised WordPress site looks like, and a
+public web root is the single place on these hosts where an integrity monitor
+earns its keep. This is not the churn case; this is the case.
+
+It is also not a judgement call, because WordPress publishes an md5 for every
+file it ships. `verify-checksums` compares the installation against them:
+
+```bash
+docker run --rm \
+  -v /home/projects/<site>/Files/public_html:/var/www/html \
+  -u 33:33 wordpress:cli core verify-checksums
+```
+
+The container is the point — WordPress runs containerised here, so `wp` is not
+on the host and does not need to be. `-u 33:33` is www-data.
+
+```
+Success: WordPress installation verifies against checksums.
+Warning: File should not exist: wp-config-docker.php
+```
+
+That is a pass. The warning is expected: `wp-config-docker.php` ships with the
+official WordPress Docker image and wp-cli does not know that convention. Any
+*other* file named there, or any "File doesn't verify against checksum" line,
+is a real finding — stop tuning and start investigating.
+
+Then absorb it, and say what was verified:
+
+```bash
+aide-refresh --reason 'wp core 6.x -> 7.1, verified against wordpress.org checksums'
+```
+
+The reason is doing real work here. In three months that line is the only thing
+distinguishing "two thousand core files were checked against upstream and
+matched" from "two thousand files changed and someone pressed refresh".
+
+**Two sites on one host will not move together.** Minor releases install
+themselves; major ones only where that has been enabled. Finding one site on a
+new major version and another still on the previous one is a configuration
+difference, not a finding — but it is worth knowing which is which, because the
+one that does not auto-update is the one that needs watching:
+
+```bash
+grep wp_version /home/projects/*/Files/public_html/wp-includes/version.php
+```
 
 ---
 
