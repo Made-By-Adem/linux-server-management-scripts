@@ -738,6 +738,12 @@ AIDE_EXCLUDES=(
     # watches, and the sockets inside are ephemeral and root-only anyway.
     '!/root/\.ssh/cm'
 
+    # The supabase CLI writes an anonymous-usage stamp here whenever it
+    # runs. Found on AC1 and again on MBA1 days later, on hosts that only
+    # have the CLI because something else installed it.
+    '!/root/\.supabase/telemetry\.json'
+    '!/home/[^/]+/\.supabase/telemetry\.json'
+
     # The same session and editor data, for an operator who is not root.
     #
     # Every rule above assumes the administrator works as root, which is true on

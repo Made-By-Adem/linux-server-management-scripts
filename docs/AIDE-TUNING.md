@@ -70,6 +70,14 @@ work:
   them sits `tailscaled.state`, which holds the node key, and that changing is
   exactly what you want to see: it means this machine re-authenticated as
   someone.
+
+  This rule reaches **host** Tailscale only. A sidecar container with its
+  state bind-mounted somewhere else writes the identical churn to a path the
+  shipped rule cannot see — on MBA1 that is
+  `/home/docker/paperclipai/tailscale-paperclip/state/profile-data/*/netmap-cache`.
+  A rule must start with `/`, so there is no way to write "any netmap-cache
+  anywhere"; add the real path as a local rule, and keep it to `netmap-cache`
+  rather than the whole `state/` directory, for the same reason as above.
 - `/root/.ssh` — only the `cm` socket directory. `authorized_keys` beside it is
   among the most important files AIDE watches anywhere.
 
