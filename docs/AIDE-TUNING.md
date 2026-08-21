@@ -34,6 +34,7 @@ You do not have to do anything for these:
 | `/root/.cache`, `/root/.vscode-server`, `/root/.copilot`, `/root/.bash_history` | editor and shell session data |
 | `/root/.ssh/cm` | `backup.sh`'s SSH ControlMaster socket directory |
 | the same five paths under `/home/*/` | the same data for an operator who is not root — `/home/*/.ssh/cm` included, `authorized_keys` beside it deliberately not |
+| `/root/.supabase/telemetry.json` and the same under `/home/*/` | the supabase CLI's anonymous-usage stamp, rewritten every time it runs |
 | `<checkout>/.git/{objects,logs,refs,index,…}` | git rewrites these on every pull |
 
 One line in the same set is not an exclusion at all:
