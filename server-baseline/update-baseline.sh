@@ -726,6 +726,15 @@ AIDE_EXCLUDES=(
     '!/var/lib/aide'
     '!/var/lib/server-baseline'
     '!/var/lib/containerd'
+
+    # Image layers and container filesystems, rewritten by every pull and every
+    # rebuild - thousands of files for one `docker compose build --no-cache`,
+    # which is exactly what linux-server-telegram-bot tells its operators to
+    # run periodically. The installer has excluded this path since 2025-11;
+    # this list never did, so a host whose aide.conf did not come from that
+    # installer never got it. Same trade as /var/lib/containerd above: the
+    # contents change by design, and /usr/bin/docker itself stays monitored.
+    '!/var/lib/docker'
     '!/var/lib/systemd'
     '!/root/\.vscode-server'
     '!/root/\.cache'
@@ -848,11 +857,53 @@ AIDE_EXCLUDES=(
 #
 # The checkout path is known here, so it is used directly. Regex metacharacters
 # in it are escaped: a literal dot would otherwise match any character.
+AIDE_GIT_CHURN=(objects logs refs index FETCH_HEAD ORIG_HEAD COMMIT_EDITMSG packed-refs modules)
 AIDE_GIT_ROOT="${PROJECT_ROOT//./\\.}"
-for gp in objects logs refs index FETCH_HEAD ORIG_HEAD COMMIT_EDITMSG \
-          packed-refs modules; do
+for gp in "${AIDE_GIT_CHURN[@]}"; do
     AIDE_EXCLUDES+=("!${AIDE_GIT_ROOT}/\\.git/${gp}")
 done
+
+# linux-server-telegram-bot, where it runs on this host. Its monitoring
+# rewrites data/server_states.json every five minutes and its containers write
+# logs/ continuously. mba-home's report of 2026-09-12 listed ten entries, all
+# inside the bot's checkout: eight under data/ and logs/, which is what these
+# rules silence, and .env and config/config.yaml from that day's migration,
+# which they deliberately do not.
+#
+# Found the way the cloudflared fix further down finds its stack: ask compose
+# where the project lives instead of guessing, because the checkout is wherever
+# someone cloned it (/home/adem/scripts/... on mba-home). A stopped container
+# still answers docker inspect.
+#
+# Only data/, logs/ and git's churn. NOT config/ - that is where /command gets
+# switched on - and not .env, the code, docker-compose.yml or the Dockerfile:
+# those changing is exactly what this monitor is for. data/ does hold the bot's
+# own hash baseline of /etc/profile and the cron directories, and AIDE will no
+# longer see that being rewritten; it still watches those files themselves,
+# which is the check that matters. The bot's audit logs belong off-host anyway.
+#
+# The reported directory is only trusted when it really is a checkout of the
+# bot. These rules are prefixes of whatever path compose reports, and an
+# unrelated container with one of these names and its project at / would
+# otherwise become !/data and !/logs.
+if command -v docker >/dev/null 2>&1; then
+    for cname in linux-server-bot linux-server-monitoring linux-server-api; do
+        bdir=$(docker inspect --format='{{index .Config.Labels "com.docker.compose.project.working_dir"}}' \
+               "$cname" 2>/dev/null) || continue
+        bdir="${bdir%/}"
+        case "$bdir" in /?*) ;; *) continue ;; esac      # also rejects "<no value>"
+        [ -d "$bdir/src/linux_server_bot" ] || continue
+        broot="${bdir//./\\.}"
+        brules=("!${broot}/data" "!${broot}/logs")
+        for gp in "${AIDE_GIT_CHURN[@]}"; do
+            brules+=("!${broot}/\\.git/${gp}")
+        done
+        for brule in "${brules[@]}"; do
+            case " ${AIDE_EXCLUDES[*]} " in *" $brule "*) continue ;; esac
+            AIDE_EXCLUDES+=("$brule")
+        done
+    done
+fi
 
 # A backup destination is a mirror of another host's filesystem, plus an
 # .attic/ of everything rsync replaced. Every run rewrites thousands of files
@@ -956,13 +1007,16 @@ EOF
 state in /var/lib/server-baseline every minute, AIDE leaves aide.db.new behind,
 containerd rewrites snapshot contents, an open editor session writes logs under
 /root, and every 'git pull' in a checkout rewrites thousands of objects under
-.git - including this repository's own checkout on this host.
+.git - including this repository's own checkout on this host. Where the
+Telegram bot runs, its state and logs under data/ and logs/ in its checkout
+change every few minutes as well.
 
 Left in, every scheduled check reports differences forever. That is how a
 working integrity monitor becomes one nobody reads.
 
 Fix: exclude them from /etc/aide/aide.conf. The file is backed up first, and
-.git/hooks and .git/config stay monitored - a hook is executable code." \
+.git/hooks and .git/config stay monitored - a hook is executable code. The
+bot's config/, .env and code stay monitored too." \
         aide_excludes_fix
 else
     [ -f /etc/aide/aide.conf ] && { ok "AIDE excludes the paths that change by design"; CLEAN+=("aide-excludes"); }
