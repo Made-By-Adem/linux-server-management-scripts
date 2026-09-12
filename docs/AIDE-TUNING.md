@@ -25,6 +25,7 @@ You do not have to do anything for these:
 | `/var/lib/aide` | AIDE leaves `aide.db.new` behind on every update |
 | `/var/lib/server-baseline` | the security watchdog rewrites its state every minute |
 | `/var/lib/containerd` | container runtime state |
+| `/var/lib/docker` | image layers and container filesystems, rewritten by every pull and every rebuild |
 | `/var/lib/systemd` | systemd's own bookkeeping, including the random seed rewritten at every boot |
 | `/var/lib/apt/lists`, `/var/lib/apt/periodic`, `/var/lib/ubuntu-advantage`, `/var/lib/landscape`, `/var/lib/update-notifier`, `/var/lib/PackageKit` | package metadata, refreshed by apt's timers |
 | `/var/lib/ubuntu-release-upgrader`, `/var/lib/update-manager` | the is-there-a-new-LTS check, rewritten by its own timer |
@@ -36,6 +37,7 @@ You do not have to do anything for these:
 | the same five paths under `/home/*/` | the same data for an operator who is not root — `/home/*/.ssh/cm` included, `authorized_keys` beside it deliberately not |
 | `/root/.supabase/telemetry.json` and the same under `/home/*/` | the supabase CLI's anonymous-usage stamp, rewritten every time it runs |
 | `<checkout>/.git/{objects,logs,refs,index,…}` | git rewrites these on every pull |
+| `<bot-checkout>/data`, `<bot-checkout>/logs`, `<bot-checkout>/.git/{objects,logs,refs,index,…}` | linux-server-telegram-bot's monitoring state, rewritten every five minutes, and its logs. The checkout is found through its compose label, so `update-baseline.sh` writes these and the installer does not — it runs before the bot exists |
 
 One line in the same set is not an exclusion at all:
 
@@ -59,7 +61,7 @@ nightly alert on every host. That is the same trade already accepted for
 `/var/lib/aide` and `/var/lib/server-baseline`: a control you cannot read is
 worth less than one you can.
 
-**Three of these are deliberately partial, for one reason.** Excluding a whole
+**Four of these are deliberately partial, for one reason.** Excluding a whole
 directory is easier to write and occasionally hands an attacker a place to
 work:
 
@@ -81,6 +83,12 @@ work:
   rather than the whole `state/` directory, for the same reason as above.
 - `/root/.ssh` — only the `cm` socket directory. `authorized_keys` beside it is
   among the most important files AIDE watches anywhere.
+- the bot's checkout — only `data/`, `logs/` and git's churn. `config/` is
+  where `/command` gets switched on, and `.env`, the code,
+  `docker-compose.yml` and the `Dockerfile` beside it are exactly what this
+  monitor is for. `data/` does hold the bot's own hash baseline of
+  `/etc/profile` and the cron directories; AIDE watches those files
+  themselves, which is the check that matters.
 
 ---
 
