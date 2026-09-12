@@ -828,6 +828,74 @@ else
 fi
 
 ###############################################################################
+section "System logging (rsyslog)"
+###############################################################################
+# /var/log/syslog is where an incident investigation starts grepping, and rsyslog
+# is what forwards logs off the host once a remote target is configured. Both
+# are worthless if the file quietly stopped growing.
+#
+# rsyslog can stop writing while the unit stays active: a logrotate run that
+# never sent the HUP leaves it appending to a deleted file, and a full /var
+# leaves it with nowhere to put anything. From systemctl both look healthy.
+#
+# The age of the file alone cannot settle it either - a quiet host and a dead
+# pipeline both produce an old file. So the age is reported, and the verdict
+# comes from a test line sent through logger: it travels the same journald ->
+# rsyslog path as everything else, and either it lands or it does not.
+
+SYSLOG_FILE=/var/log/syslog
+
+if ! command -v rsyslogd >/dev/null 2>&1; then
+    warn "rsyslog is not installed - $SYSLOG_FILE is not being written"
+elif ! /bin/systemctl is-active rsyslog >/dev/null 2>&1; then
+    fail "rsyslog is installed but not running - nothing reaches $SYSLOG_FILE"
+    warn "  Fix with: systemctl enable --now rsyslog"
+else
+    # Same trade as process accounting above: running now is not running after
+    # the next reboot.
+    if /bin/systemctl is-enabled rsyslog >/dev/null 2>&1; then
+        pass "rsyslog is active and enabled at boot"
+    else
+        warn "rsyslog is running but not enabled - it will not come back after a reboot"
+        warn "  Fix with: systemctl enable --now rsyslog"
+    fi
+
+    if [ ! -f "$SYSLOG_FILE" ]; then
+        fail "rsyslog is running but $SYSLOG_FILE does not exist - system logs are going elsewhere or nowhere"
+        warn "  Check the configuration with: rsyslogd -N1"
+    else
+        # Measured BEFORE the test line, or it would always read 0.
+        SYSLOG_AGE_MIN=$(( ( $(/bin/date +%s) - $(/usr/bin/stat -c %Y "$SYSLOG_FILE") ) / 60 ))
+        SYSLOG_MARK="syslog probe $(/bin/date +%s)-$$"
+        /usr/bin/logger -t security-selfcheck "$SYSLOG_MARK" 2>/dev/null
+
+        # Only the tail is searched: on a busy host the file runs to hundreds of
+        # megabytes, and the line was written seconds ago.
+        SYSLOG_OK=false
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if /usr/bin/tail -c 1048576 "$SYSLOG_FILE" 2>/dev/null | /bin/grep -qF "$SYSLOG_MARK"; then
+                SYSLOG_OK=true; break
+            fi
+            sleep 1
+        done
+
+        if [ "$SYSLOG_OK" = true ]; then
+            pass "$SYSLOG_FILE is being written - a test line arrived (previous write ${SYSLOG_AGE_MIN} min ago)"
+        else
+            fail "$SYSLOG_FILE last changed ${SYSLOG_AGE_MIN} min ago and a test line never arrived - system logs are not being recorded"
+            RSYSLOG_PID=$(/bin/pidof rsyslogd 2>/dev/null | /usr/bin/awk '{print $1}')
+            if [ -n "$RSYSLOG_PID" ] && \
+               /bin/ls -l "/proc/$RSYSLOG_PID/fd" 2>/dev/null | /bin/grep -qF "$SYSLOG_FILE (deleted)"; then
+                warn "  rsyslog is still writing to a deleted $SYSLOG_FILE - it was rotated without a HUP"
+                warn "  Fix with: systemctl kill -s HUP rsyslog"
+            else
+                warn "  Check: systemctl status rsyslog, rsyslogd -N1, df -h /var/log"
+            fi
+        fi
+    fi
+fi
+
+###############################################################################
 section "File integrity (AIDE)"
 ###############################################################################
 # Catches the state where AIDE is installed, the cron job runs, and every report
