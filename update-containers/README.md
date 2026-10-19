@@ -27,6 +27,8 @@ sudo ./update-containers.sh
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Selecting Containers Without Prompts](#selecting-containers-without-prompts)
+- [Containers Managed by Coolify](#containers-managed-by-coolify)
 - [Dry-Run Mode](#dry-run-mode)
 - [System Updates](#system-updates)
 - [Automation with Cron](#automation-with-cron)
@@ -56,6 +58,14 @@ This script automates updating Docker containers in a safe and user-friendly man
 - Perfect for automation via cron jobs
 - Can include system updates with `--update-system` flag
 
+**Selected containers (`--only` / `--exclude`):**
+- `--only` updates just the containers you name, without any prompt
+- `--exclude` keeps containers out of any run
+- Names may be shell glob patterns, e.g. `'*-worker'`
+
+**Always skipped:** containers labelled `coolify.managed=true`. Coolify
+deploys those and updates them itself.
+
 **Dry-Run Mode:**
 - Preview all changes without executing them
 - Can be combined with interactive or unattended modes
@@ -79,6 +89,15 @@ This script automates updating Docker containers in a safe and user-friendly man
   - Unattended mode - automatic updates for all containers
   - Dry-run mode - preview changes without executing them
   - Perfect for both manual and automated use cases
+
+- **Non-interactive Selection**
+  - `--only <list>` - update only the named containers, no prompts
+  - `--exclude <list>` - never touch the named containers
+  - Glob patterns (`'app-*'`), comma- or space-separated lists
+  - Unknown names are reported in the summary instead of aborting the run
+
+- **Coolify-aware**
+  - Containers labelled `coolify.managed=true` are always skipped
 
 - **Interactive Container Selection** (Interactive Mode)
   - Clear list of all containers
@@ -219,6 +238,14 @@ sudo ./update-containers.sh --interactive --dry-run
 sudo ./update-containers.sh --unattended --update-system
 sudo ./update-containers.sh --interactive --update-system
 
+# Only some containers, without prompts
+sudo ./update-containers.sh --only nginx,redis
+sudo ./update-containers.sh --only 'app-*' --dry-run
+sudo ./update-containers.sh --only 'nginx redis' --update-system
+
+# Everything except some containers
+sudo ./update-containers.sh --unattended --exclude 'db-*,*-worker'
+
 # Show help (also shown when no mode is specified)
 sudo ./update-containers.sh --help
 sudo ./update-containers.sh
@@ -238,9 +265,15 @@ sudo ./update-containers.sh
 - Perfect for automation (cron jobs)
 - Best for: Scheduled maintenance, automation
 
+**Only Mode (`--only <list>`)**
+- Updates only the containers you name (patterns allowed)
+- No user interaction required - implies unattended mode
+- Cannot be combined with `--interactive`
+- Best for: Automation that must touch a known set of containers
+
 **Dry-Run Mode**
 - Shows what would be updated WITHOUT making changes
-- Can be combined with --interactive or --unattended
+- Can be combined with --interactive, --unattended or --only
 - Perfect for testing and verification
 - Best for: Previewing updates, checking compatibility
 
@@ -270,7 +303,7 @@ Update system packages? (y/n):
 **Step 2: Container List**
 ```
 ╔═══════════════════════════════════════════════════════════════╗
-║        Docker Container Update Tool v2.0                     ║
+║        Docker Container Update Tool v2.1                     ║
 ╚═══════════════════════════════════════════════════════════════╝
 
 ═══════════════════════════════════════════════════════════════
@@ -353,6 +386,78 @@ traefik      Up 3 seconds           traefik:v2.10
 
 Full logs available at: /var/log/docker-updates/update_20240201_143022.log
 ```
+
+---
+
+## Selecting Containers Without Prompts
+
+`--only` and `--exclude` take a list of container names (as shown by
+`docker ps`). Separate names with commas or spaces, and quote the list when it
+contains spaces or patterns. Both options may be repeated.
+
+```bash
+# Update exactly these containers - no questions asked
+sudo ./update-containers.sh --only nginx,redis
+
+# Patterns are shell globs: * (anything), ? (one character), [abc]
+sudo ./update-containers.sh --only 'app-*,*-worker'
+
+# Preview first
+sudo ./update-containers.sh --only 'app-*' --dry-run
+
+# Update everything except the databases
+sudo ./update-containers.sh --unattended --exclude 'db-*'
+
+# Combine: all app containers except one
+sudo ./update-containers.sh --only 'app-*' --exclude app-legacy
+```
+
+How the selection works:
+
+1. **`--only`** keeps the running containers that match one of its names.
+   Without `--only` every running container is a candidate.
+2. **Coolify** - containers labelled `coolify.managed=true` are dropped
+   (see below).
+3. **`--exclude`** drops the containers that match one of its names. An
+   exclude always wins over `--only`.
+
+Rules:
+
+- `--only` implies unattended mode: there are no prompts, so it is safe for
+  cron jobs and automation tools such as Ansible.
+- A name in `--only` that matches no running container is reported as a
+  warning and listed under *Not found* in the summary. It does not stop the
+  other containers from being updated and does not change the exit code.
+  Read the summary to catch typos.
+- If nothing is left to update, the script says so and exits with 0.
+- `--exclude` also works with `--interactive`: excluded containers are listed
+  but cannot be selected.
+- Only running containers are considered, as before.
+
+---
+
+## Containers Managed by Coolify
+
+Containers with the Docker label `coolify.managed=true` are **always
+skipped**, in every mode, including `--only` and interactive mode. They are
+listed as *Managed by Coolify* in the summary (and in interactive mode below
+the selection list).
+
+Why: [Coolify](https://coolify.io) creates those containers from its own
+configuration. Pulling and recreating them with `docker compose` behind its
+back either does nothing useful or leaves the container out of step with what
+Coolify thinks is running. Redeploy them from Coolify instead (UI or API).
+
+Check which containers are affected:
+
+```bash
+docker ps --filter label=coolify.managed=true --format '{{.Names}}'
+```
+
+Coolify's own core containers (`coolify`, `coolify-db`, `coolify-redis`,
+`coolify-realtime`) do not always carry that label. Coolify upgrades itself;
+keep them out of a run with `--exclude 'coolify*'` or leave them out of
+`--only`.
 
 ---
 
@@ -1052,6 +1157,19 @@ Contributions are welcome!
 ---
 
 ## Changelog
+
+### Version 2.1 (2026-10-19)
+- **Non-interactive selection**
+  - `--only <list>` updates only the named containers, without prompts
+    (implies unattended mode)
+  - `--exclude <list>` keeps containers out of any run, including
+    interactive mode
+  - Comma- or space-separated lists, shell glob patterns, options repeatable
+  - `--only` names without a running container are warnings, listed in the
+    summary, not fatal
+- **Coolify-managed containers are always skipped**
+  - Containers labelled `coolify.managed=true` are never updated by this
+    script; the summary lists them as managed by Coolify
 
 ### Version 2.0 (2024-02-15)
 - **Mode-based operation**

@@ -2,7 +2,7 @@
 
 ###############################################################################
 # Docker Container Update Script
-# Version: 2.0
+# Version: 2.1
 # Purpose: Safely update Docker containers with user-friendly interface
 ###############################################################################
 
@@ -30,6 +30,15 @@ MODE=""  # Will be set to: interactive or unattended
 UPDATE_SYSTEM=false
 DRY_RUN=false
 
+# Non-interactive selection (--only / --exclude): container name patterns
+ONLY_PATTERNS=()
+EXCLUDE_PATTERNS=()
+ONLY_UNMATCHED=()   # --only patterns that matched no running container
+CANDIDATES=()       # containers that may be updated after all filters
+
+# Docker label that marks containers Coolify deploys and updates itself
+COOLIFY_LABEL="coolify.managed"
+
 # Log files
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_DIR="/var/log/docker-updates"
@@ -56,11 +65,18 @@ Usage: sudo bash $0 [MODE] [OPTIONS]
 Modes:
   --interactive      Interactive mode - select containers manually
   --unattended       Unattended mode - update all containers automatically
+  --only <list>      Update only these containers, without prompts
+                     (implies unattended mode)
   --dry-run          Show what would be done without making changes
 
 Options:
+  --exclude <list>   Never update these containers (any mode)
   --update-system    Update system packages before container updates
   --help, -h         Show this help message
+
+  <list> is a comma- or space-separated list of container names. Shell
+  glob patterns are allowed (quote them): 'web-*', '*-worker', 'db?'.
+  Both options may be given more than once.
 
 Examples:
   sudo bash $0 --interactive                # Interactive mode
@@ -69,14 +85,67 @@ Examples:
   sudo bash $0 --interactive --dry-run      # Interactive dry-run
   sudo bash $0 --unattended --update-system # Update system + all containers
   sudo bash $0 --interactive --update-system # Update system + choose containers
+  sudo bash $0 --only nginx,redis           # Update just these two
+  sudo bash $0 --only 'app-*' --dry-run     # Preview a pattern
+  sudo bash $0 --unattended --exclude 'db-*,*-worker'
 
 Notes:
   - If no mode is specified, help will be shown
   - Use --dry-run to preview changes without executing them
-  - Use --unattended mode for cron jobs and automation
+  - Use --unattended or --only for cron jobs and automation
+  - --only names that match no running container are reported, not fatal
+  - Containers labelled $COOLIFY_LABEL=true are always skipped: Coolify
+    deploys them and must update them itself
   - Always run with sudo for proper permissions
 EOF
     exit 0
+}
+
+# Function to split a comma/space separated list into one item per line.
+# Globbing is switched off so a pattern like '*-worker' stays a pattern
+# instead of expanding to file names in the current directory. Only ever
+# called in a subshell (process substitution), so set -f does not leak.
+split_list() {
+    local item
+    local IFS=$', \t\n'
+    set -f
+    for item in $1; do
+        printf '%s\n' "$item"
+    done
+}
+
+# Function to append a list option's value to an array (bash 4.0 compatible)
+add_patterns() {
+    local option=$1
+    local value=$2
+    local items=()
+
+    mapfile -t items < <(split_list "$value")
+    if [ ${#items[@]} -eq 0 ] || [[ "$value" == --* ]]; then
+        echo -e "${RED}$option needs a list of container names${NC}" >&2
+        exit 1
+    fi
+
+    if [ "$option" = "--only" ]; then
+        ONLY_PATTERNS+=("${items[@]}")
+    else
+        EXCLUDE_PATTERNS+=("${items[@]}")
+    fi
+}
+
+# Function to test a name against glob patterns: matches_any NAME PATTERN...
+matches_any() {
+    local name=$1
+    shift
+    local pattern
+    for pattern in "$@"; do
+        # Unquoted on purpose: the pattern is a shell glob
+        # shellcheck disable=SC2053
+        if [[ "$name" == $pattern ]]; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 # Function to parse command-line arguments
@@ -106,6 +175,18 @@ parse_arguments() {
                 UPDATE_SYSTEM=true
                 shift
                 ;;
+            --only|--exclude)
+                if [ $# -lt 2 ]; then
+                    echo -e "${RED}$1 needs a list of container names${NC}" >&2
+                    exit 1
+                fi
+                add_patterns "$1" "$2"
+                shift 2
+                ;;
+            --only=*|--exclude=*)
+                add_patterns "${1%%=*}" "${1#*=}"
+                shift
+                ;;
             --help|-h)
                 show_usage
                 ;;
@@ -117,6 +198,15 @@ parse_arguments() {
                 ;;
         esac
     done
+
+    # --only is a selection made up front, so there is nothing to ask
+    if [ ${#ONLY_PATTERNS[@]} -gt 0 ]; then
+        if [ "$MODE" = "interactive" ]; then
+            echo -e "${RED}--only cannot be combined with --interactive${NC}" >&2
+            exit 1
+        fi
+        MODE="unattended"
+    fi
 
     # Show help if no mode specified (only --update-system was given)
     if [ -z "$MODE" ] && [ "$DRY_RUN" = false ]; then
@@ -364,9 +454,76 @@ ask_system_update() {
 # Container Discovery
 ###############################################################################
 
-# Function to get all Docker containers
-get_containers() {
-    docker ps --format "{{.Names}}" | sort
+# Function to list running containers as "name<TAB>value of the Coolify label"
+list_running_containers() {
+    docker ps --format "{{.Names}}\t{{.Label \"$COOLIFY_LABEL\"}}" | sort
+}
+
+# Function to decide which running containers may be updated.
+#
+# Fills CANDIDATES and records every container it leaves out in
+# UPDATE_SKIPPED, so the summary says why. Runs in the main shell (not in a
+# $(...) subshell) because those arrays must survive it.
+#
+#   1. --only    keep only containers matching one of its patterns
+#   2. Coolify   skip containers labelled coolify.managed=true, always.
+#                Coolify recreates them from its own configuration; a
+#                `docker compose pull/up` behind its back either does nothing
+#                useful or leaves the container out of step with Coolify.
+#   3. --exclude skip containers matching one of its patterns
+collect_containers() {
+    local lines=()
+    local line name label pattern found
+
+    mapfile -t lines < <(list_running_containers)
+
+    if [ ${#lines[@]} -eq 0 ]; then
+        log_error "No running containers found!"
+        exit 1
+    fi
+
+    for line in "${lines[@]}"; do
+        name=${line%%$'\t'*}
+        label=${line#*$'\t'}
+
+        if [ ${#ONLY_PATTERNS[@]} -gt 0 ] && ! matches_any "$name" "${ONLY_PATTERNS[@]}"; then
+            continue
+        fi
+
+        if [[ "${label,,}" == "true" ]]; then
+            UPDATE_SKIPPED["$name"]="Managed by Coolify - update it from Coolify"
+            log_info "Skipping $name: managed by Coolify"
+            continue
+        fi
+
+        if [ ${#EXCLUDE_PATTERNS[@]} -gt 0 ] && matches_any "$name" "${EXCLUDE_PATTERNS[@]}"; then
+            UPDATE_SKIPPED["$name"]="Excluded (--exclude)"
+            log_info "Skipping $name: excluded"
+            continue
+        fi
+
+        CANDIDATES+=("$name")
+    done
+
+    # A typo in --only must not pass silently, but it must not stop the
+    # other containers on the list from being updated either.
+    if [ ${#ONLY_PATTERNS[@]} -gt 0 ]; then
+        for pattern in "${ONLY_PATTERNS[@]}"; do
+            found=false
+            for line in "${lines[@]}"; do
+                if matches_any "${line%%$'\t'*}" "$pattern"; then
+                    found=true
+                    break
+                fi
+            done
+            if [ "$found" = false ]; then
+                ONLY_UNMATCHED+=("$pattern")
+                log_warning "--only: no running container matches '$pattern'"
+            fi
+        done
+    fi
+
+    log_info "Found ${#lines[@]} running containers, ${#CANDIDATES[@]} eligible for update"
 }
 
 # Function to get container info
@@ -459,13 +616,8 @@ find_compose_dir() {
 
 # Function to let user select containers (interactive mode)
 select_containers() {
-    local containers=()
-    mapfile -t containers < <(get_containers)
-
-    if [ ${#containers[@]} -eq 0 ]; then
-        log_error "No running containers found!"
-        exit 1
-    fi
+    local containers=("${CANDIDATES[@]}")
+    local name
 
     # All UI output goes to stderr so it doesn't get captured
     print_header "Available Docker Containers" >&2
@@ -479,6 +631,20 @@ select_containers() {
         printf "${YELLOW}%-4s${NC} %-30s %-35s %-10s %s\n" "[$index]" "$container" "$image" "$status" "$created" >&2
         ((index++))
     done
+
+    # Containers that cannot be selected, and why
+    if [ -n "${UPDATE_SKIPPED[*]+x}" ]; then
+        echo "" >&2
+        while IFS= read -r name; do
+            printf "     %-30s ${YELLOW}%s${NC}\n" "$name" "skipped: ${UPDATE_SKIPPED[$name]}" >&2
+        done < <(printf '%s\n' "${!UPDATE_SKIPPED[@]}" | sort)
+    fi
+
+    if [ ${#containers[@]} -eq 0 ]; then
+        echo "" >&2
+        log_warning "No containers left to select" >&2
+        return 0
+    fi
 
     echo "" >&2
     echo -e "${MAGENTA}${BULLET}${NC} Enter numbers separated by spaces (e.g., 1 3 5)" >&2
@@ -514,21 +680,6 @@ select_containers() {
 
     # Only the selected containers go to stdout
     echo "${selected_containers[@]}"
-}
-
-# Function to get all containers (unattended mode)
-get_all_containers() {
-    local containers=()
-    mapfile -t containers < <(get_containers)
-
-    if [ ${#containers[@]} -eq 0 ]; then
-        log_error "No running containers found!" >&2
-        exit 1
-    fi
-
-    log_info "Found ${#containers[@]} running containers" >&2
-    # Only the container names go to stdout
-    echo "${containers[@]}"
 }
 
 ###############################################################################
@@ -736,6 +887,7 @@ show_summary() {
     local success_count=0
     local failed_count=0
     local skipped_count=0
+    local pattern
 
     # Check if arrays have elements
     if [ -n "${UPDATE_SUCCESS[*]+x}" ]; then
@@ -789,6 +941,16 @@ show_summary() {
         echo ""
     fi
 
+    # --only patterns without a running container
+    if [ ${#ONLY_UNMATCHED[@]} -gt 0 ]; then
+        echo -e "${YELLOW}! Not found (--only): ${#ONLY_UNMATCHED[@]}${NC}"
+        for pattern in "${ONLY_UNMATCHED[@]}"; do
+            echo -e "  ${YELLOW}${BULLET}${NC} $pattern"
+            echo -e "    No running container matches this name or pattern"
+        done
+        echo ""
+    fi
+
     # Current status of all containers
     print_subheader "Current Container Status"
 
@@ -818,7 +980,7 @@ main() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
-║        Docker Container Update Tool v2.0                      ║
+║        Docker Container Update Tool v2.1                      ║
 ║        Safely and easily update your containers               ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -831,9 +993,16 @@ EOF
             log_info "Mode: INTERACTIVE (manual container selection)"
             ;;
         "unattended")
-            log_info "Mode: UNATTENDED (updating all containers automatically)"
+            if [ ${#ONLY_PATTERNS[@]} -gt 0 ]; then
+                log_info "Mode: UNATTENDED (only: ${ONLY_PATTERNS[*]})"
+            else
+                log_info "Mode: UNATTENDED (updating all containers automatically)"
+            fi
             ;;
     esac
+    if [ ${#EXCLUDE_PATTERNS[@]} -gt 0 ]; then
+        log_info "Excluded: ${EXCLUDE_PATTERNS[*]}"
+    fi
 
     # Show dry-run status
     if [ "$DRY_RUN" = true ]; then
@@ -868,15 +1037,23 @@ EOF
     # In unattended mode without --update-system flag, skip system updates
 
     # Container selection based on mode
+    collect_containers
+    local selected_containers=()
     if [ "$MODE" = "interactive" ]; then
+        # Names are limited to [a-zA-Z0-9_.-], so word splitting is safe
+        # shellcheck disable=SC2207
         selected_containers=($(select_containers))
-    else
-        # Unattended mode - get all containers
-        selected_containers=($(get_all_containers))
+    elif [ ${#CANDIDATES[@]} -gt 0 ]; then
+        # Unattended mode - every container that passed the filters
+        selected_containers=("${CANDIDATES[@]}")
     fi
 
     # Update process
-    update_selected_containers "${selected_containers[@]}"
+    if [ ${#selected_containers[@]} -gt 0 ]; then
+        update_selected_containers "${selected_containers[@]}"
+    else
+        log_warning "No containers to update"
+    fi
 
     # Summary
     show_summary
