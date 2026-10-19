@@ -25,6 +25,8 @@
 #   run_changes  whether a successful run reports "changed" (default true)
 #   run_timeout  seconds before the run is abandoned (default 7200); the
 #                script itself is stopped two minutes earlier (exit 124)
+#   host_path    PATH on the host (default the system PATH; tests put stub
+#                commands in front of it)
 
 - name: Run {{ run_label | default(run_argv | first | basename) }}
   ansible.builtin.shell: >-
@@ -34,7 +36,7 @@
     executable: /bin/bash
   environment:
     # maintenance-cycle calls security-selfcheck and aide-refresh by name.
-    PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PATH: "{{ host_path | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
     # A non-interactive SSH session has no TERM, and update-containers.sh
     # calls `clear` under `set -e`, which fails without one.
     TERM: xterm

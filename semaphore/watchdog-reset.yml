@@ -1,0 +1,69 @@
+---
+# Semaphore template: security watchdog reset
+#
+# Runs security-watchdog --reset: the current state of every watched unit and
+# monitor becomes the new baseline, without alerting. Use it after a
+# deliberate change the watchdog would otherwise report (a new SSH key, a new
+# listener, a new container image, a reboot).
+#
+# Before the reset, security-watchdog --status is shown: per unit and monitor
+# the state now and the baseline it replaces. That output is what the reset
+# accepts. The reason, when given, goes to syslog (tag security-watchdog).
+#
+# security-watchdog is installed by update-baseline. A host without it fails.
+#
+# Extra vars:
+#   reason      recorded in syslog with the reset (optional)
+#   target      inventory group or host pattern (default all)
+#   batch_size  hosts per batch (default 100%: all at once; 1 = one by one)
+
+- name: Security watchdog reset
+  hosts: "{{ target | default('all') }}"
+  serial: "{{ batch_size | default('100%') }}"
+  become: true
+  gather_facts: false
+  environment:
+    PATH: "{{ host_path | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
+  vars:
+    reason: ""
+  tasks:
+    - name: Look for security-watchdog
+      ansible.builtin.command: sh -c 'command -v security-watchdog'
+      register: watchdog_cmd
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require security-watchdog
+      ansible.builtin.assert:
+        that: watchdog_cmd.rc == 0
+        fail_msg: >-
+          security-watchdog is not installed on {{ inventory_hostname }}. update-baseline installs
+          it. Nothing was changed.
+        quiet: true
+
+    - name: Show the state the reset accepts
+      ansible.builtin.include_tasks: tasks/run-script.yml
+      vars:
+        run_argv: ["{{ watchdog_cmd.stdout | trim }}", --status]
+        run_label: security-watchdog --status
+        run_changes: false
+        run_timeout: 600
+
+    - name: Record the reason in syslog
+      ansible.builtin.command:
+        argv:
+          - logger
+          - -t
+          - security-watchdog
+          - "baseline reset requested via Semaphore: {{ reason | string | trim | default('no reason given', true) }}"
+      changed_when: false
+      # A host without a syslog socket loses the reason, not the reset.
+      failed_when: false
+
+    - name: Reset the watchdog baseline
+      ansible.builtin.include_tasks: tasks/run-script.yml
+      vars:
+        run_argv: ["{{ watchdog_cmd.stdout | trim }}", --reset]
+        run_label: security-watchdog --reset
+        run_timeout: 600

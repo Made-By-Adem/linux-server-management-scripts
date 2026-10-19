@@ -1,0 +1,281 @@
+---
+# Semaphore template: reboot, one host at a time
+#
+# Reboots each host, waits until it is back and verifies it before touching
+# the next one. Any failure stops the rotation: the remaining hosts are not
+# rebooted. Unlike the other templates this one does NOT default to all hosts
+# at once: rebooting every server together takes all their services offline
+# at the same moment. batch_size can raise it on purpose.
+#
+# Safety:
+#   - confirm_reboot must be the string "yes". Anything else fails before any
+#     host is touched. A schedule does not fill it in by itself; this
+#     template is meant to be started by a person, not scheduled.
+#   - Hosts in reboot_refuse_hosts are never rebooted; they are skipped with
+#     a message. Put the host that runs Semaphore itself there: rebooting it
+#     kills the run halfway.
+#   - only_if_required=true skips hosts without /var/run/reboot-required.
+#   - dry_run=true does every check and shows what would be verified, but
+#     does not reboot.
+#
+# Verification after the boot:
+#   - Docker answers again (when Docker is installed).
+#   - Every container that was running before the reboot (by name) is
+#     running again, except those in reboot_ignore_containers. A container
+#     without a restart policy does not come back by itself; that fails the
+#     host, on purpose.
+#   - The cloudflared systemd service is active again, when it was before.
+#     A cloudflared container is covered by the container check.
+#
+# Extra vars:
+#   confirm_reboot            must be "yes" (required)
+#   reboot_refuse_hosts       inventory hostnames never to reboot (list or
+#                             comma-separated string, default none)
+#   only_if_required          only hosts with /var/run/reboot-required
+#                             (default false)
+#   dry_run                   check and report, do not reboot (default false)
+#   reason                    shown in the shutdown message
+#                             (default "Reboot via Semaphore")
+#   reboot_timeout            seconds to wait for SSH after the reboot
+#                             (default 900)
+#   reboot_wait_timeout       seconds to wait for Docker, the containers and
+#                             cloudflared after the boot (default 600)
+#   reboot_ignore_containers  container names not to wait for (default none)
+#   target                    inventory group or host pattern (default all)
+#   batch_size                hosts rebooted together (default 1; a failure
+#                             still stops the batches after it)
+
+- name: Reboot one host at a time
+  hosts: "{{ target | default('all') }}"
+  serial: "{{ batch_size | default(1) }}"
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  become: true
+  gather_facts: false
+  environment:
+    PATH: "{{ host_path | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
+    LC_ALL: C
+  vars:
+    confirm_reboot: ""
+    only_if_required: false
+    dry_run: false
+    reboot_refuse_hosts: []
+    reboot_ignore_containers: []
+    reboot_timeout: 900
+    reboot_wait_timeout: 600
+    reboot_required_file: /var/run/reboot-required
+    reboot_message: "{{ reason | default('') | string | trim or 'Reboot via Semaphore' }}"
+    refused: >-
+      {{ (reboot_refuse_hosts.split(',') if reboot_refuse_hosts is string else reboot_refuse_hosts)
+         | map('trim') | select | list }}
+    ignored_containers: >-
+      {{ (reboot_ignore_containers.split(',') if reboot_ignore_containers is string else reboot_ignore_containers)
+         | map('trim') | select | list }}
+    # docker --format templates, kept away from Jinja.
+    fmt_names: "{% raw %}{{.Names}}{% endraw %}"
+    fmt_server_version: "{% raw %}{{.ServerVersion}}{% endraw %}"
+    wait_retries: "{{ ((reboot_wait_timeout | int) / 10) | round(0, 'ceil') | int }}"
+  tasks:
+    - name: Require confirm_reboot=yes
+      ansible.builtin.assert:
+        that: dry_run | bool or confirm_reboot | string == 'yes'
+        fail_msg: >-
+          Refusing to reboot: confirm_reboot is "{{ confirm_reboot }}", it must be "yes".
+          Nothing was done on any host.
+        quiet: true
+
+    - name: Refuse this host
+      when: inventory_hostname in refused
+      block:
+        - name: Explain the refusal
+          ansible.builtin.debug:
+            msg: >-
+              REFUSED: {{ inventory_hostname }} is in reboot_refuse_hosts and is never rebooted by this
+              template. Reboot it by hand when nothing depends on it.
+
+        - name: Record the refusal
+          ansible.builtin.set_fact:
+            host_summary: [refused (in reboot_refuse_hosts), not rebooted]
+
+        - name: Skip this host
+          ansible.builtin.meta: end_host
+
+    - name: Look for the reboot-required flag
+      ansible.builtin.stat:
+        path: "{{ reboot_required_file }}"
+      register: reboot_flag
+
+    - name: Skip a host that does not need a reboot
+      when: only_if_required | bool and not reboot_flag.stat.exists
+      block:
+        - name: Record the skip
+          ansible.builtin.set_fact:
+            host_summary: [skipped, no reboot required (only_if_required=true)]
+
+        - name: Show the skip
+          ansible.builtin.debug:
+            msg: "{{ host_summary }}"
+
+        - name: Skip this host
+          ansible.builtin.meta: end_host
+
+    - name: Read which packages asked for a reboot
+      ansible.builtin.command:
+        argv: [sort, -u, "{{ reboot_required_file }}.pkgs"]
+      register: reboot_pkgs
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: reboot_flag.stat.exists
+
+    - name: Look for Docker
+      ansible.builtin.command: sh -c 'command -v docker'
+      register: docker_cmd
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Record the running containers
+      ansible.builtin.command:
+        argv: [docker, ps, --filter, status=running, --format, "{{ fmt_names }}"]
+      register: containers_before
+      changed_when: false
+      check_mode: false
+      when: docker_cmd.rc == 0
+
+    - name: Look at the cloudflared service
+      ansible.builtin.command:
+        argv: [systemctl, is-active, cloudflared]
+      register: cloudflared_before
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Remember what has to come back
+      ansible.builtin.set_fact:
+        expected_containers: >-
+          {{ (containers_before.stdout_lines | default([])) | difference(ignored_containers) | sort }}
+        expect_cloudflared_service: "{{ cloudflared_before.stdout | default('') | trim == 'active' }}"
+
+    - name: Show the plan
+      ansible.builtin.debug:
+        msg:
+          - "{{ 'DRY RUN, would reboot' if dry_run | bool else 'rebooting' }} {{ inventory_hostname }}"
+          - "reboot required: {{ ('yes (' ~ (reboot_pkgs.stdout_lines | default([]) | join(', ') or 'no package list') ~ ')')
+            if reboot_flag.stat.exists else 'no' }}"
+          - "docker: {{ 'installed' if docker_cmd.rc == 0 else 'not installed' }}"
+          - "containers to wait for ({{ expected_containers | length }}): {{ expected_containers | join(', ') or 'none' }}"
+          - "ignored: {{ ignored_containers | intersect(containers_before.stdout_lines | default([])) | join(', ') or 'none' }}"
+          - "cloudflared service: {{ 'active, must come back' if expect_cloudflared_service else 'not active, not checked' }}"
+
+    - name: End the dry run for this host
+      when: dry_run | bool
+      block:
+        - name: Record the dry run
+          ansible.builtin.set_fact:
+            host_summary:
+              - "dry run, not rebooted"
+              - "would wait for {{ expected_containers | length }} container(s){{ ' and the cloudflared service' if expect_cloudflared_service else '' }}"
+
+        - name: Skip this host
+          ansible.builtin.meta: end_host
+
+    - name: Reboot
+      ansible.builtin.reboot:
+        msg: "{{ reboot_message }}"
+        pre_reboot_delay: 0
+        post_reboot_delay: 20
+        connect_timeout: 30
+        reboot_timeout: "{{ reboot_timeout | int }}"
+      register: reboot_result
+
+    - name: Wait for Docker
+      ansible.builtin.command:
+        argv: [docker, info, --format, "{{ fmt_server_version }}"]
+      register: docker_after
+      until: docker_after.rc == 0
+      retries: "{{ wait_retries }}"
+      delay: 10
+      changed_when: false
+      failed_when: false
+      when: docker_cmd.rc == 0
+
+    - name: Require Docker
+      ansible.builtin.assert:
+        that: docker_after.rc == 0
+        fail_msg: >-
+          Docker did not answer within {{ reboot_wait_timeout }}s after rebooting {{ inventory_hostname }}:
+          {{ docker_after.stderr | default('') }}. The rotation stops here.
+        quiet: true
+      when: docker_cmd.rc == 0
+
+    - name: Wait for the containers that were running
+      ansible.builtin.command:
+        argv: [docker, ps, --filter, status=running, --format, "{{ fmt_names }}"]
+      register: containers_after
+      until: expected_containers | difference(containers_after.stdout_lines | default([])) | length == 0
+      retries: "{{ wait_retries }}"
+      delay: 10
+      changed_when: false
+      failed_when: false
+      when: docker_cmd.rc == 0 and expected_containers | length > 0
+
+    - name: Require the containers
+      ansible.builtin.assert:
+        that: expected_containers | difference(containers_after.stdout_lines | default([])) | length == 0
+        fail_msg: >-
+          Not running again {{ reboot_wait_timeout }}s after rebooting {{ inventory_hostname }}:
+          {{ expected_containers | difference(containers_after.stdout_lines | default([])) | join(', ') }}.
+          The rotation stops here. Start them by hand (and give them a restart policy), or list them in
+          reboot_ignore_containers if they are not meant to come back.
+        quiet: true
+      when: docker_cmd.rc == 0 and expected_containers | length > 0
+
+    - name: Wait for the cloudflared service
+      ansible.builtin.command:
+        argv: [systemctl, is-active, cloudflared]
+      register: cloudflared_after
+      until: cloudflared_after.stdout | default('') | trim == 'active'
+      retries: "{{ wait_retries }}"
+      delay: 10
+      changed_when: false
+      failed_when: false
+      when: expect_cloudflared_service
+
+    - name: Require the cloudflared service
+      ansible.builtin.assert:
+        that: cloudflared_after.stdout | default('') | trim == 'active'
+        fail_msg: >-
+          The cloudflared service is "{{ cloudflared_after.stdout | default('') | trim }}" {{ reboot_wait_timeout }}s
+          after rebooting {{ inventory_hostname }}. The rotation stops here.
+        quiet: true
+      when: expect_cloudflared_service
+
+    - name: Look for the reboot-required flag after the boot
+      ansible.builtin.stat:
+        path: "{{ reboot_required_file }}"
+      register: reboot_flag_after
+
+    - name: Record the result
+      ansible.builtin.set_fact:
+        host_summary: >-
+          {{ ['rebooted in ' ~ reboot_result.elapsed | default('?') ~ 's',
+              (expected_containers | length) ~ ' container(s) running again'
+              ~ (', cloudflared service active' if expect_cloudflared_service else '')]
+             + (['reboot-required flag is STILL set'] if reboot_flag_after.stat.exists else []) }}
+
+    - name: Show the result
+      ansible.builtin.debug:
+        msg: "{{ host_summary }}"
+
+- name: Summary
+  hosts: "{{ target | default('all') }}"
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Show the summary per host
+      ansible.builtin.debug:
+        msg: >-
+          {{ dict(ansible_play_hosts_all | zip(ansible_play_hosts_all | map('extract', hostvars)
+                  | map(attribute='host_summary', default=['no result: failed or unreachable, see the output above']))) }}
+      run_once: true
