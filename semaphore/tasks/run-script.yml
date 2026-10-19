@@ -19,12 +19,14 @@
 #
 # Expects:
 #   run_argv     list: the command and its arguments, quoted one by one
+#   run_label    name shown in task titles and messages (default: the
+#                basename of the command)
 #   run_ok_rcs   list of exit codes that count as success (default [0])
 #   run_changes  whether a successful run reports "changed" (default true)
 #   run_timeout  seconds before the run is abandoned (default 7200); the
 #                script itself is stopped two minutes earlier (exit 124)
 
-- name: Run {{ run_argv | first | basename }}
+- name: Run {{ run_label | default(run_argv | first | basename) }}
   ansible.builtin.shell: >-
     setsid --wait timeout --kill-after=60 {{ (run_timeout | default(7200) | int) - 120 }}
     {{ run_argv | map('quote') | join(' ') }} </dev/null 2>&1
@@ -44,14 +46,14 @@
   changed_when: (run_changes | default(true) | bool) and (run_result.rc | default(-1)) in (run_ok_rcs | default([0]))
   failed_when: false
 
-- name: Show the output of {{ run_argv | first | basename }}
+- name: Show the output of {{ run_label | default(run_argv | first | basename) }}
   ansible.builtin.debug:
     msg: "{{ run_result.stdout_lines | default([run_result.msg | default('no output')]) }}"
 
-- name: Fail on an unaccepted exit code of {{ run_argv | first | basename }}
+- name: Fail on an unaccepted exit code of {{ run_label | default(run_argv | first | basename) }}
   ansible.builtin.fail:
     msg: >-
-      {{ run_argv | first | basename }} exited with {{ run_result.rc | default('no exit code') }}
+      {{ run_label | default(run_argv | first | basename) }} exited with {{ run_result.rc | default('no exit code') }}
       on {{ inventory_hostname }} (accepted: {{ run_ok_rcs | default([0]) | join(', ') }}).
       Read the output above.
   when:
