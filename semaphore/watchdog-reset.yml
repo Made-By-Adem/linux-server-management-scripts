@@ -56,7 +56,8 @@
           - logger
           - -t
           - security-watchdog
-          - "baseline reset requested via Semaphore: {{ reason | string | trim | default('no reason given', true) }}"
+          # One line: a newline in the reason must not forge further log lines.
+          - "baseline reset requested via Semaphore: {{ reason | string | regex_replace('[\\r\\n]+', ' ') | trim | default('no reason given', true) }}"
       changed_when: false
       # A host without a syslog socket loses the reason, not the reset.
       failed_when: false

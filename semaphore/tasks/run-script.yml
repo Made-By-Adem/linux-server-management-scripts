@@ -23,10 +23,17 @@
 #                basename of the command)
 #   run_ok_rcs   list of exit codes that count as success (default [0])
 #   run_changes  whether a successful run reports "changed" (default true)
-#   run_timeout  seconds before the run is abandoned (default 7200); the
-#                script itself is stopped two minutes earlier (exit 124)
+#   run_timeout  seconds before the run is abandoned (default 7200, at least
+#                300); the script itself is stopped two minutes earlier
+#                (exit 124)
 #   host_path    PATH on the host (default the system PATH; tests put stub
 #                commands in front of it)
+
+- name: Require a usable timeout for {{ run_label | default(run_argv | first | basename) }}
+  ansible.builtin.assert:
+    that: (run_timeout | default(7200) | int) >= 300
+    fail_msg: "run_timeout is {{ run_timeout }}; it must be at least 300 seconds (the script gets two minutes less)."
+    quiet: true
 
 - name: Run {{ run_label | default(run_argv | first | basename) }}
   ansible.builtin.shell: >-

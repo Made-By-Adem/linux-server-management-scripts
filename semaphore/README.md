@@ -325,7 +325,10 @@ Vereist `security-watchdog` (geïnstalleerd door `update-baseline`).
 Herstart de hosts **standaard één voor één** (`batch_size` = 1,
 `any_errors_fatal`): reboot, wachten tot SSH terug is, controleren, pas dan de
 volgende. Faalt er iets, dan stopt de hele rotatie en worden de overige hosts
-niet herstart. Dit is bewust de enige template die niet standaard alle hosts
+niet herstart. Dat geldt ook voor een host die onbereikbaar is als hij aan de
+beurt is: Ansible's `any_errors_fatal` stopt daar zelf niet op, dus de playbook
+controleert vóór elke host of alle eerdere hosts klaar zijn, en stopt anders.
+Dit is bewust de enige template die niet standaard alle hosts
 tegelijk doet: alles tegelijk herstarten haalt alle diensten op hetzelfde
 moment offline. Met `batch_size` (bijv. `2`) kan het sneller; een fout stopt
 dan nog steeds de batches erna.
@@ -336,7 +339,10 @@ Veiligheid:
   falen voordat er op welke host dan ook iets gebeurt.
 - **`reboot_refuse_hosts`**: hosts in deze lijst worden nooit herstart, maar
   overgeslagen met een duidelijke melding. Zet hier de host op waar Semaphore
-  zelf draait: die herstarten breekt de lopende taak halverwege af. Zet de
+  zelf draait: die herstarten breekt de lopende taak halverwege af. De
+  vergelijking negeert hoofdletters en kijkt naar de inventorynaam, de korte
+  naam en `ansible_host`. Een naam die op geen enkele host in de run past,
+  geeft een waarschuwing (tikfout?). Zet de
   lijst in de template of environment, niet bij het starten.
 - **`only_if_required=true`** slaat hosts zonder `/var/run/reboot-required`
   over.

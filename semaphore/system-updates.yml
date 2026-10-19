@@ -161,13 +161,13 @@
       block:
         - name: Release the holds left by an interrupted earlier run
           ansible.builtin.command:
-            argv: "{{ ['apt-mark', 'unhold'] + leftover_holds }}"
+            argv: "{{ ['apt-mark'] + apt_lock_wait + ['unhold'] + leftover_holds }}"
           when: leftover_holds | length > 0
           changed_when: true
 
         - name: List the packages that are already held
           ansible.builtin.command:
-            argv: [apt-mark, showhold]
+            argv: "{{ ['apt-mark'] + apt_lock_wait + ['showhold'] }}"
           register: holds_before
           changed_when: false
 
@@ -199,7 +199,7 @@
 
         - name: Hold the Docker packages
           ansible.builtin.command:
-            argv: "{{ ['apt-mark', 'hold'] + to_hold }}"
+            argv: "{{ ['apt-mark'] + apt_lock_wait + ['hold'] + to_hold }}"
           when: to_hold | length > 0
           changed_when: true
 
@@ -222,7 +222,7 @@
       always:
         - name: Release the Docker packages
           ansible.builtin.command:
-            argv: "{{ ['apt-mark', 'unhold'] + to_hold }}"
+            argv: "{{ ['apt-mark'] + apt_lock_wait + ['unhold'] + to_hold }}"
           register: unhold_result
           when: to_hold | default([]) | length > 0
           changed_when: true

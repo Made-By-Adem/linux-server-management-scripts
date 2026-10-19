@@ -2,8 +2,8 @@
 # Semaphore template: reboot, one host at a time
 #
 # Reboots each host, waits until it is back and verifies it before touching
-# the next one. Any failure stops the rotation: the remaining hosts are not
-# rebooted. Unlike the other templates this one does NOT default to all hosts
+# the next one. Any failure stops the rotation, including a host that is
+# unreachable when its turn comes: the remaining hosts are not rebooted. Unlike the other templates this one does NOT default to all hosts
 # at once: rebooting every server together takes all their services offline
 # at the same moment. batch_size can raise it on purpose.
 #
@@ -65,9 +65,14 @@
     reboot_wait_timeout: 600
     reboot_required_file: /var/run/reboot-required
     reboot_message: "{{ reason | default('') | string | trim or 'Reboot via Semaphore' }}"
+    # Compared case-insensitively against the inventory name, its short form
+    # and ansible_host, so "Host1" or "host1.example.com" still matches.
     refused: >-
       {{ (reboot_refuse_hosts.split(',') if reboot_refuse_hosts is string else reboot_refuse_hosts)
-         | map('trim') | select | list }}
+         | map('string') | map('trim') | map('lower') | select | list }}
+    host_names: >-
+      {{ [inventory_hostname, inventory_hostname_short, ansible_host | default(inventory_hostname)]
+         | map('lower') | unique | list }}
     ignored_containers: >-
       {{ (reboot_ignore_containers.split(',') if reboot_ignore_containers is string else reboot_ignore_containers)
          | map('trim') | select | list }}
@@ -84,8 +89,37 @@
           Nothing was done on any host.
         quiet: true
 
+    # Ansible's any_errors_fatal stops the run on a failed host, but a host
+    # that is UNREACHABLE when its turn comes is only dropped, and the next
+    # batch would still be rebooted. Every host records host_summary on every
+    # way out (refused, skipped, dry run, rebooted), so a host before this
+    # batch without one was unreachable: stop here.
+    - name: Stop the rotation after an unreachable host
+      ansible.builtin.assert:
+        that: earlier_unreachable | length == 0
+        fail_msg: >-
+          Stopping the rotation: {{ earlier_unreachable | join(', ') }} was unreachable or did not finish.
+          {{ inventory_hostname }} and the hosts after it were not rebooted.
+        quiet: true
+      vars:
+        earlier_hosts: "{{ ansible_play_hosts_all[: ansible_play_hosts_all.index(ansible_play_batch | first)] }}"
+        earlier_unreachable: >-
+          {{ earlier_hosts | reject('in', earlier_hosts | map('extract', hostvars) | selectattr('host_summary', 'defined')
+                                          | map(attribute='inventory_hostname') | list) | list }}
+
+    - name: Show the refuse list
+      ansible.builtin.debug:
+        msg: >-
+          reboot_refuse_hosts: {{ refused | join(', ') }}
+          {%- set known = ansible_play_hosts_all + ansible_play_hosts_all | map('regex_replace', '\\..*$', '') | list
+                          + ansible_play_hosts_all | map('extract', hostvars) | map(attribute='ansible_host', default='') | list %}
+          {%- set unmatched = refused | reject('in', known | map('lower') | list) | list %}
+          {%- if unmatched %} - WARNING, matches no host in this run: {{ unmatched | join(', ') }}{% endif %}
+      run_once: true
+      when: refused | length > 0
+
     - name: Refuse this host
-      when: inventory_hostname in refused
+      when: host_names | intersect(refused) | length > 0
       block:
         - name: Explain the refusal
           ansible.builtin.debug:
