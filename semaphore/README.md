@@ -109,14 +109,49 @@ opnieuw opbouwen (10-20 minuten). Begin op een nieuwe host met
 
 ### `update-containers.yml` — containers bijwerken
 
-Draait `update-containers --unattended`: nieuwe image pullen en elke
-compose-container opnieuw aanmaken. **Elke container ligt daarbij kort stil;
-dit is een herstart van de diensten op die host.** De AIDE-baseline wordt niet
-ververst (zoals het script in onbemande modus bedoelt); de onderhoudsronde doet
-dat wel.
+Draait `update-containers` met een vaste selectie per host: nieuwe image pullen
+en de gekozen compose-containers opnieuw aanmaken. **Elke container ligt
+daarbij kort stil; dit is een herstart van die diensten.** De AIDE-baseline
+wordt niet ververst (zoals het script in onbemande modus bedoelt); de
+onderhoudsronde doet dat wel.
 
-Gebruikt `/usr/local/bin/update-containers` als dat bestaat, anders wordt het
-script uit deze checkout naar een tijdelijke map op de host gekopieerd.
+Welke containers, bepaal je per host of groep in de inventory:
+
+| Variabele | Standaard | Betekenis |
+|---|---|---|
+| `update_containers_only` | leeg | Alleen deze containers (`--only`). Lijst of kommagescheiden; globs mogen, bijv. `app-*` |
+| `update_containers_exclude` | leeg | Deze containers nooit (`--exclude`). Wint van de only-lijst; handig als groepsvariabele |
+| `update_containers_all` | `false` | `true` = alle draaiende containers behalve de uitgesloten (`--unattended`) |
+
+**Veiligheid:** is `update_containers_only` leeg en `update_containers_all`
+niet `true`, dan faalt die host met uitleg en verandert er niets. Een
+vergeten variabele wordt dus nooit "werk alles bij".
+
+Containers met het label `coolify.managed=true` slaat het script altijd over,
+ook als ze in de only-lijst staan; Coolify werkt die zelf bij (zie
+`coolify-redeploy.yml`). Een naam in de only-lijst die op de host niet draait,
+geeft een waarschuwing in de samenvatting maar laat de host niet falen.
+
+Voorbeeld (statische inventory, INI). Op de hostregel mag een lijst of een
+kommastring; onder `[groep:vars]` leest Ansible alles als tekst, gebruik daar
+een kommastring:
+
+```ini
+[production]
+server1.example.com  update_containers_only="nginx,app-*"
+server2.example.com  update_containers_all=true
+
+[production:vars]
+update_containers_exclude="db-*,*-worker"
+```
+
+Zet deze variabelen niet in de template of als extra var bij het starten:
+extra vars gaan boven hostvariabelen en gelden dan voor elke host in de run.
+
+Het script wordt altijd uit deze checkout naar een tijdelijke map op de host
+gekopieerd en met `bash` gestart (de baseline mount `/tmp` als `noexec`). Zo
+past het script altijd bij de vlaggen die de playbook meegeeft; een oudere
+geïnstalleerde versie kent `--only` misschien nog niet.
 
 | Extra var | Standaard | Betekenis |
 |---|---|---|
@@ -144,7 +179,49 @@ Telegram-gegevens mogelijk niet.
 | `target` | `all` | Inventorygroep of hostpatroon |
 | `batch_size` | `1` | Hosts per batch |
 
-### Niet opgenomen
+### `coolify-redeploy.yml` — Coolify-resources opnieuw deployen
+
+Draait op de Semaphore-runner zelf (`localhost`) en praat alleen met de
+REST-API van Coolify v4; er wordt op geen enkele server ingelogd. Deployt de
+applicaties en services uit `coolify_redeploy` één voor één, wacht tot elke
+klaar is en stopt bij de eerste die faalt.
+
+- **Applicatie:** `POST /api/v1/deploy` met `{"uuid": ..., "force": ...}`,
+  daarna `GET /api/v1/deployments/<uuid>` tot de status `finished` is
+  (`failed` of `cancelled-by-user` = fout). Docker-image-applicaties pullen hun
+  image opnieuw; git-applicaties bouwen opnieuw vanaf hun branch.
+- **Service:** `POST /api/v1/services/<uuid>/restart?latest=true`: nieuwste
+  images pullen en de containers opnieuw aanmaken. (`/deploy` start een
+  service alleen met de images die er al zijn.) Een service heeft geen
+  deployment-record; de playbook wacht tot Coolify de service weer als
+  `running:healthy` of `running:unknown` meldt. Coolify werkt die status met
+  wat vertraging bij, dus dit is een redelijke maar geen harde controle.
+
+| Var | Standaard | Betekenis |
+|---|---|---|
+| `coolify_url` | — | Basis-URL, bijv. `https://coolify.example.com` (verplicht) |
+| `coolify_api_token` | — | API-token met deploy-recht (verplicht, als *secret*); valt terug op de omgevingsvariabele `COOLIFY_API_TOKEN` |
+| `coolify_redeploy` | — | uuids of exacte namen, lijst of kommagescheiden (verplicht) |
+| `dry_run` | **`true`** | Alleen opzoeken en tonen wat er zou gebeuren. `false` = echt deployen |
+| `coolify_force_rebuild` | `false` | Applicaties: bouwen zonder cache |
+| `coolify_pull_latest` | `true` | Services: nieuwste images pullen |
+| `coolify_deploy_timeout` | `1800` | Seconden wachten per resource |
+| `coolify_poll_interval` | `10` | Seconden tussen statuscontroles |
+| `coolify_service_settle` | `60` | Seconden die een service krijgt om te stoppen voordat de playbook op "running" wacht |
+| `coolify_validate_certs` | `true` | TLS-certificaat controleren |
+
+Een naam die bij geen of bij meer dan één resource hoort, laat de run vooraf
+falen, voordat er iets gedeployd is; gebruik dan de uuid. Het token komt nooit
+in de output: elke API-aanroep draait met `no_log`, de taken erna tonen alleen
+namen, uuids, statussen en de meldingen van Coolify.
+
+Let op: een deploy is een herstart van die dienst. Deploy de Semaphore-service
+zelf niet vanuit Semaphore; dan stopt de lopende taak halverwege.
+
+Inrichten: een inventory met alleen `localhost ansible_connection=local`, en
+een environment met `coolify_url` als variabele en `coolify_api_token` als
+secret. Gebruik per Coolify-instantie een eigen environment (en template).
+
 
 `backup-script/backup.sh` heeft per host een eigen `.env` met een externe
 bestemming nodig. Dat is geen generieke template; draai het via de bestaande
@@ -161,6 +238,11 @@ cron of met de hand.
 4. **Task Templates**: één per playbook, met als pad bijvoorbeeld
    `semaphore/maintenance-cycle.yml`. Extra vars zet je in de template of bij
    het starten van een taak (JSON, bijv. `{"dry_run": true}`).
+5. **Coolify redeploy** (optioneel): inventory *Static* met
+   `localhost ansible_connection=local`, een environment met `coolify_url` en
+   het secret `coolify_api_token`, en een template voor
+   `semaphore/coolify-redeploy.yml`. Een survey-variabele `coolify_redeploy`
+   laat je bij elke start kiezen wat er gedeployd wordt.
 
 ### Schema (suggestie)
 
@@ -171,8 +253,8 @@ cron of met de hand.
   rkhunter-crons (03:00 en 05:00) niet tegelijk met een lopende ronde, of
   begin vroeg genoeg. Verschillende omgevingen kun je op verschillende nachten
   zetten.
-- `update-containers.yml` en `update-baseline.yml`: liever niet inplannen;
-  draai ze bewust, eerst met `dry_run=true`.
+- `update-containers.yml`, `update-baseline.yml` en `coolify-redeploy.yml`:
+  liever niet inplannen; draai ze bewust, eerst met `dry_run=true`.
 - `test-alerts.sh` niet los inplannen (zie `docs/COMMANDS.md`); de
   onderhoudsronde draait het al.
 

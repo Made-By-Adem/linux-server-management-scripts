@@ -1,0 +1,165 @@
+---
+# Semaphore template: redeploy Coolify resources
+#
+# Runs on the Semaphore runner itself (localhost) and talks to the Coolify v4
+# REST API; it does not log in to any server. Redeploys the applications and
+# services listed in coolify_redeploy, one at a time, waits for each to
+# finish and stops at the first one that fails.
+#
+#   application  POST /api/v1/deploy {"uuid": ..., "force": ...}, then polls
+#                GET /api/v1/deployments/<deployment uuid> until finished.
+#                Docker-image applications pull their image again; git-based
+#                applications rebuild from the configured branch.
+#   service      POST /api/v1/services/<uuid>/restart?latest=true: pulls the
+#                latest images and recreates the containers. (/deploy would
+#                only start the service with the images it already has.)
+#                Services have no deployment record, so the playbook polls
+#                the service status until it reports running again.
+#
+# Vars (environment or extra vars):
+#   coolify_url            base URL, e.g. https://coolify.example.com (required)
+#   coolify_api_token      API token with deploy permission (required; store
+#                          it as a secret). Falls back to the environment
+#                          variable COOLIFY_API_TOKEN.
+#   coolify_redeploy       resources to redeploy: list or comma-separated
+#                          string of uuids or exact names (required)
+#   dry_run                only resolve and list what would be redeployed
+#                          (default TRUE - pass dry_run=false to deploy)
+#   coolify_force_rebuild  applications: rebuild without cache (default false)
+#   coolify_pull_latest    services: pull the latest images (default true)
+#   coolify_deploy_timeout seconds to wait per resource (default 1800)
+#   coolify_poll_interval  seconds between status checks (default 10)
+#   coolify_service_settle seconds a service gets to go down before the
+#                          playbook waits for it to run again (default 60)
+#   coolify_validate_certs verify the TLS certificate (default true)
+#
+# The token is never printed: every API call runs with no_log, and only
+# names, uuids, statuses and Coolify's messages are shown.
+
+- name: Redeploy Coolify resources
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    dry_run: true
+    coolify_force_rebuild: false
+    coolify_pull_latest: true
+    coolify_deploy_timeout: 1800
+    coolify_poll_interval: 10
+    coolify_service_settle: 60
+    coolify_validate_certs: true
+    coolify_base_url: >-
+      {{ (coolify_url | default('', true) | string | trim)
+         | regex_replace('/+$', '') | regex_replace('/api/v1$', '') }}
+    coolify_token: "{{ coolify_api_token | default(lookup('ansible.builtin.env', 'COOLIFY_API_TOKEN'), true) }}"
+    coolify_headers:
+      Authorization: "Bearer {{ coolify_token }}"
+      Accept: application/json
+    coolify_redeploy_raw: "{{ coolify_redeploy | default([], true) }}"
+    coolify_redeploy_list: >-
+      {{ (coolify_redeploy_raw.split(',') if coolify_redeploy_raw is string
+          else coolify_redeploy_raw)
+         | map('string') | map('trim') | reject('equalto', '') | unique | list }}
+  tasks:
+    - name: Check the Coolify connection settings
+      ansible.builtin.assert:
+        that:
+          - coolify_base_url is match('https?://')
+          - coolify_token | length > 0
+        fail_msg: >-
+          coolify_url/coolify_api_token not set. Set coolify_url (e.g.
+          https://coolify.example.com) and coolify_api_token (a secret) in the
+          Semaphore environment of this template.
+        quiet: true
+
+    - name: Check that something is selected
+      ansible.builtin.assert:
+        that: coolify_redeploy_list | length > 0
+        fail_msg: >-
+          coolify_redeploy is empty. Give the uuids or exact names of the
+          Coolify applications/services to redeploy (list or comma-separated).
+        quiet: true
+
+    - name: List Coolify applications
+      ansible.builtin.uri:
+        url: "{{ coolify_base_url }}/api/v1/applications"
+        headers: "{{ coolify_headers }}"
+        validate_certs: "{{ coolify_validate_certs | bool }}"
+        return_content: true
+      register: coolify_applications
+      # The response holds application settings, the request holds the token
+      no_log: true
+      failed_when: false
+
+    - name: List Coolify services
+      ansible.builtin.uri:
+        url: "{{ coolify_base_url }}/api/v1/services"
+        headers: "{{ coolify_headers }}"
+        validate_certs: "{{ coolify_validate_certs | bool }}"
+        return_content: true
+      register: coolify_services
+      # Service responses include the compose file, which can hold secrets
+      no_log: true
+      failed_when: false
+
+    - name: Check that Coolify answered
+      ansible.builtin.assert:
+        that:
+          - coolify_applications.status | default(-1) == 200
+          - coolify_services.status | default(-1) == 200
+        fail_msg: >-
+          Could not list resources at {{ coolify_base_url }}:
+          applications HTTP {{ coolify_applications.status | default('?') }},
+          services HTTP {{ coolify_services.status | default('?') }}
+          ({{ coolify_applications.msg | default('') }}). Check coolify_url,
+          the token and that the API is enabled in Coolify.
+        quiet: true
+
+    - name: Collect uuids and names
+      ansible.builtin.set_fact:
+        coolify_resources: >-
+          {{ (coolify_applications.json | map('combine', {'kind': 'application'}) | list)
+             + (coolify_services.json | map('combine', {'kind': 'service'}) | list) }}
+      no_log: true
+
+    - name: Check that every entry matches exactly one resource
+      ansible.builtin.fail:
+        msg: >-
+          '{{ item }}' matches {{ matches | length }} Coolify resources
+          {{ matches | map(attribute='name') | zip(matches | map(attribute='uuid')) | map('join', ' = ') | list }}.
+          Use the exact name or the uuid of one application or service.
+      vars:
+        by_uuid: "{{ coolify_resources | selectattr('uuid', 'equalto', item) | list }}"
+        matches: "{{ by_uuid if by_uuid else (coolify_resources | selectattr('name', 'equalto', item) | list) }}"
+      loop: "{{ coolify_redeploy_list }}"
+      when: matches | length != 1
+
+    - name: Resolve the targets
+      ansible.builtin.set_fact:
+        coolify_targets: >-
+          {{ coolify_targets | default([])
+             + [{'requested': item, 'uuid': matches[0].uuid, 'name': matches[0].name, 'kind': matches[0].kind,
+                 'status': matches[0].status | default('unknown')}] }}
+      vars:
+        by_uuid: "{{ coolify_resources | selectattr('uuid', 'equalto', item) | list }}"
+        matches: "{{ by_uuid if by_uuid else (coolify_resources | selectattr('name', 'equalto', item) | list) }}"
+      loop: "{{ coolify_redeploy_list }}"
+
+    - name: Show what will be redeployed
+      ansible.builtin.debug:
+        msg: >-
+          {{ (['DRY RUN - nothing will be deployed. Run with dry_run=false to deploy.'] if dry_run | bool else [])
+             + (coolify_targets | map(attribute='kind')
+                | zip(coolify_targets | map(attribute='name'),
+                      coolify_targets | map(attribute='uuid'),
+                      coolify_targets | map(attribute='status'))
+                | map('join', ' | ') | list) }}
+
+    - name: Redeploy one by one
+      ansible.builtin.include_tasks: tasks/coolify-redeploy-one.yml
+      loop: "{{ coolify_targets }}"
+      loop_control:
+        loop_var: coolify_target
+        label: "{{ coolify_target.kind }} {{ coolify_target.name }}"
+      when: not dry_run | bool
