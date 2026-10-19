@@ -1,0 +1,113 @@
+---
+# Semaphore template: update containers
+#
+# Runs update-containers/update-containers.sh on each host: pulls a new image
+# for the selected compose containers and recreates them. Every container is
+# briefly down while it is recreated - that is a restart of the service.
+#
+# Which containers is decided per host, never by default:
+#
+#   update_containers_only     containers to update (--only). List or comma-
+#                              separated string; shell globs allowed.
+#   update_containers_exclude  containers never to update (--exclude), e.g. as
+#                              a group var. Wins over the only-list.
+#   update_containers_all      true = update every running container except
+#                              the excluded ones (--unattended). Default false.
+#                              Ignored when the only-list is set.
+#
+# A host with an empty only-list and update_containers_all not true FAILS:
+# a missing variable must never turn into "update everything". Set these as
+# host or group variables in the inventory. Extra vars override them for
+# every host in the run, so do not put them in the template.
+#
+# Containers labelled coolify.managed=true are always skipped by the script;
+# redeploy those from Coolify (see coolify-redeploy.yml).
+#
+# The script is always copied from this checkout to a temporary directory on
+# the host and started with bash, so the flags the playbook passes match the
+# script that runs. An older copy installed on the host may not know --only.
+#
+# Extra vars:
+#   dry_run        list what would be updated, change nothing (default false)
+#   update_system  apt-get update + upgrade before the containers
+#                  (default false, as in the script's unattended mode)
+#   target         inventory group or host pattern (default all)
+#   batch_size     hosts per batch (default 1)
+
+- name: Update containers
+  hosts: "{{ target | default('all') }}"
+  serial: "{{ batch_size | default(1) }}"
+  become: true
+  gather_facts: false
+  vars:
+    dry_run: false
+    update_system: false
+    # Accept a YAML list or a comma-separated string ("a, b,c") and drop
+    # empty entries.
+    update_containers_only_raw: "{{ update_containers_only | default([], true) }}"
+    update_containers_exclude_raw: "{{ update_containers_exclude | default([], true) }}"
+    update_containers_only_list: >-
+      {{ (update_containers_only_raw.split(',') if update_containers_only_raw is string
+          else update_containers_only_raw)
+         | map('string') | map('trim') | reject('equalto', '') | list }}
+    update_containers_exclude_list: >-
+      {{ (update_containers_exclude_raw.split(',') if update_containers_exclude_raw is string
+          else update_containers_exclude_raw)
+         | map('string') | map('trim') | reject('equalto', '') | list }}
+  tasks:
+    - name: Refuse to update every container by accident
+      ansible.builtin.fail:
+        msg: >-
+          No containers selected for {{ inventory_hostname }}. Set the host or
+          group variable update_containers_only to the containers to update
+          (list or comma-separated, globs allowed), or set
+          update_containers_all=true to update every running container except
+          update_containers_exclude. Nothing was changed on this host.
+      when:
+        - update_containers_only_list | length == 0
+        - not (update_containers_all | default(false) | bool)
+
+    - name: Show the selection
+      ansible.builtin.debug:
+        msg:
+          - "only: {{ update_containers_only_list | join(', ') if update_containers_only_list else '(all running containers)' }}"
+          - "exclude: {{ update_containers_exclude_list | join(', ') if update_containers_exclude_list else '(none)' }}"
+          - "coolify.managed=true containers are always skipped"
+
+    - name: Update the containers
+      block:
+        - name: Create a temporary directory for the script
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: update-containers
+          register: update_containers_tmp
+
+        - name: Copy update-containers.sh to the host
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../update-containers/update-containers.sh"
+            dest: "{{ update_containers_tmp.path }}/update-containers.sh"
+            owner: root
+            group: root
+            mode: "0700"
+
+        - name: Run update-containers
+          ansible.builtin.include_tasks: tasks/run-script.yml
+          vars:
+            # Started through bash: the baseline mounts /tmp noexec, so
+            # executing the copy directly fails with exit code 126.
+            run_argv: >-
+              {{ ['/bin/bash', update_containers_tmp.path ~ '/update-containers.sh']
+                 + (['--only', update_containers_only_list | join(',')] if update_containers_only_list
+                    else ['--unattended'])
+                 + (['--exclude', update_containers_exclude_list | join(',')] if update_containers_exclude_list else [])
+                 + (['--dry-run'] if dry_run | bool else [])
+                 + (['--update-system'] if update_system | bool else []) }}
+            run_label: update-containers
+            run_changes: "{{ not dry_run | bool }}"
+            run_timeout: 3600
+      always:
+        - name: Remove the temporary directory
+          ansible.builtin.file:
+            path: "{{ update_containers_tmp.path }}"
+            state: absent
+          when: update_containers_tmp.path is defined

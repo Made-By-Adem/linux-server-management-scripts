@@ -486,6 +486,8 @@ sudo update-containers --interactive                    # pick containers manual
 sudo update-containers --unattended                     # update everything (for cron)
 sudo update-containers --dry-run                        # preview, change nothing
 sudo update-containers --interactive --update-system    # system packages first, then containers
+sudo update-containers --only 'nginx,app-*'             # just these, no prompts (globs allowed)
+sudo update-containers --unattended --exclude 'db-*'    # everything except these
 sudo update-containers --help
 ```
 

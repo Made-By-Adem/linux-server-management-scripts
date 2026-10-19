@@ -1,0 +1,61 @@
+---
+# Runs one of this repository's scripts on the host, prints its output and
+# fails the host when the exit code is not an accepted one.
+#
+# The scripts are written for a person at a terminal. Under Ansible there is
+# none, and a prompt that waits for input would hang the run until the
+# timeout. Two things prevent that:
+#
+#   - setsid starts the script in a new session without a controlling
+#     terminal, so a prompt that reads /dev/tty fails at once and the script
+#     falls back to that prompt's default.
+#   - stdin is /dev/null, so a prompt that reads stdin gets end-of-file and
+#     is treated as declined.
+#
+# Because setsid moves the script out of the process group Ansible kills on
+# an async timeout, the script gets its own deadline: timeout stops it (and
+# everything it started) two minutes before Ansible gives up, so a run that
+# is reported as failed is not still running as root on the host.
+#
+# Expects:
+#   run_argv     list: the command and its arguments, quoted one by one
+#   run_label    name shown in task titles and messages (default: the
+#                basename of the command)
+#   run_ok_rcs   list of exit codes that count as success (default [0])
+#   run_changes  whether a successful run reports "changed" (default true)
+#   run_timeout  seconds before the run is abandoned (default 7200); the
+#                script itself is stopped two minutes earlier (exit 124)
+
+- name: Run {{ run_label | default(run_argv | first | basename) }}
+  ansible.builtin.shell: >-
+    setsid --wait timeout --kill-after=60 {{ (run_timeout | default(7200) | int) - 120 }}
+    {{ run_argv | map('quote') | join(' ') }} </dev/null 2>&1
+  args:
+    executable: /bin/bash
+  environment:
+    # maintenance-cycle calls security-selfcheck and aide-refresh by name.
+    PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    # A non-interactive SSH session has no TERM, and update-containers.sh
+    # calls `clear` under `set -e`, which fails without one.
+    TERM: xterm
+  # Async keeps the script running when the SSH connection drops halfway
+  # through a 45-minute maintenance cycle.
+  async: "{{ run_timeout | default(7200) | int }}"
+  poll: 30
+  register: run_result
+  changed_when: (run_changes | default(true) | bool) and (run_result.rc | default(-1)) in (run_ok_rcs | default([0]))
+  failed_when: false
+
+- name: Show the output of {{ run_label | default(run_argv | first | basename) }}
+  ansible.builtin.debug:
+    msg: "{{ run_result.stdout_lines | default([run_result.msg | default('no output')]) }}"
+
+- name: Fail on an unaccepted exit code of {{ run_label | default(run_argv | first | basename) }}
+  ansible.builtin.fail:
+    msg: >-
+      {{ run_label | default(run_argv | first | basename) }} exited with {{ run_result.rc | default('no exit code') }}
+      on {{ inventory_hostname }} (accepted: {{ run_ok_rcs | default([0]) | join(', ') }}).
+      Read the output above.
+  when:
+    - not ansible_check_mode
+    - (run_result.rc | default(-1)) not in (run_ok_rcs | default([0]))

@@ -1,0 +1,54 @@
+---
+# Semaphore template: update baseline
+#
+# Runs server-baseline/update-baseline.sh through its /usr/local/bin symlink.
+# By default it applies every fix it finds (--yes). It does not pull the
+# checkout first; the maintenance-cycle template does that.
+#
+# Without a terminal two prompts fall back to their defaults even with
+# --yes: the cloudflared container is never recreated, and the DOCKER-USER
+# firewall fix keeps the ports that are published right now.
+#
+# Extra vars:
+#   dry_run     show what each fix would do, change nothing (default false)
+#   check_only  detect only, change nothing (default false)
+#   target      inventory group or host pattern (default all)
+#   batch_size  hosts per batch (default 1)
+
+- name: Update baseline
+  hosts: "{{ target | default('all') }}"
+  serial: "{{ batch_size | default(1) }}"
+  become: true
+  gather_facts: false
+  vars:
+    dry_run: false
+    check_only: false
+  tasks:
+    - name: Look for the update-baseline command
+      ansible.builtin.stat:
+        path: /usr/local/bin/update-baseline
+        follow: true
+      register: update_baseline_cmd
+
+    # It installs the reporters and the self-check from the checkout next to
+    # it, so a copy shipped from Semaphore would have nothing to install.
+    - name: Require the update-baseline command
+      ansible.builtin.assert:
+        that: update_baseline_cmd.stat.exists
+        fail_msg: >-
+          /usr/local/bin/update-baseline is missing or dangling on {{ inventory_hostname }}.
+          It is a symlink into this repository's checkout, created by the "Shell improvements"
+          section of install-script.sh. Create it with
+          'sudo ln -sf <checkout>/server-baseline/update-baseline.sh /usr/local/bin/update-baseline', then retry.
+        quiet: true
+
+    - name: Run update-baseline
+      ansible.builtin.include_tasks: tasks/run-script.yml
+      vars:
+        run_argv: >-
+          {{ ['/usr/local/bin/update-baseline']
+             + (['--check'] if check_only | bool
+                else ['--dry-run'] if dry_run | bool
+                else ['--yes']) }}
+        run_changes: "{{ not (check_only | bool or dry_run | bool) }}"
+        run_timeout: 3600

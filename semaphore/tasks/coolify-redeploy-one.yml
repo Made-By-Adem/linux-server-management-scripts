@@ -1,0 +1,140 @@
+---
+# Redeploys one Coolify resource and waits until it has finished.
+# Included by coolify-redeploy.yml once per target, in order.
+#
+# Expects coolify_target: {name, uuid, kind: application|service} plus the
+# connection vars of the playbook. Every API call runs with no_log (the
+# request carries the token); the tasks after each call show what matters.
+
+# --- Applications: queue a deployment and follow it -------------------------
+
+- name: Queue a deployment of {{ coolify_target.name }}
+  ansible.builtin.uri:
+    url: "{{ coolify_base_url }}/api/v1/deploy"
+    method: POST
+    headers: "{{ coolify_headers }}"
+    body_format: json
+    body:
+      uuid: "{{ coolify_target.uuid }}"
+      force: "{{ coolify_force_rebuild | bool }}"
+    validate_certs: "{{ coolify_validate_certs | bool }}"
+    return_content: true
+  register: coolify_deploy
+  no_log: true
+  failed_when: false
+  when: coolify_target.kind == 'application'
+
+- name: Check that Coolify queued the deployment of {{ coolify_target.name }}
+  ansible.builtin.assert:
+    that:
+      - coolify_deploy.status | default(-1) == 200
+      - coolify_deployment_uuid | length > 0
+    fail_msg: >-
+      Coolify did not queue a deployment of {{ coolify_target.name }}
+      (HTTP {{ coolify_deploy.status | default('?') }}):
+      {{ coolify_deploy_info.message | default(coolify_deploy.json.message | default(coolify_deploy.msg | default('no message'))) }}
+    success_msg: "{{ coolify_deploy_info.message | default('queued') }} Deployment {{ coolify_deployment_uuid }}."
+  vars:
+    coolify_deploy_info: "{{ (coolify_deploy.json | default({})).deployments | default([{}]) | first }}"
+    coolify_deployment_uuid: "{{ coolify_deploy_info.deployment_uuid | default('', true) }}"
+  when: coolify_target.kind == 'application'
+
+- name: Wait for the deployment of {{ coolify_target.name }}
+  ansible.builtin.uri:
+    url: "{{ coolify_base_url }}/api/v1/deployments/{{ coolify_deploy.json.deployments[0].deployment_uuid }}"
+    headers: "{{ coolify_headers }}"
+    validate_certs: "{{ coolify_validate_certs | bool }}"
+    return_content: true
+  register: coolify_deployment
+  # The deployment record includes the build log
+  no_log: true
+  failed_when: false
+  until: (coolify_deployment.json | default({})).status | default('') in ['finished', 'failed', 'cancelled-by-user']
+  retries: "{{ (coolify_deploy_timeout | int) // (coolify_poll_interval | int) }}"
+  delay: "{{ coolify_poll_interval | int }}"
+  when: coolify_target.kind == 'application'
+
+- name: Check the result of the deployment of {{ coolify_target.name }}
+  ansible.builtin.assert:
+    that: coolify_deployment_status == 'finished'
+    fail_msg: >-
+      {{ 'Deployment of ' ~ coolify_target.name ~ ' ended as '
+         ~ (coolify_deployment_status | default('unknown', true))
+         ~ ('' if coolify_deployment_status in ['failed', 'cancelled-by-user']
+            else ' (no result within ' ~ coolify_deploy_timeout ~ ' seconds; it may still be running in Coolify)')
+         ~ '. Logs: ' ~ ((coolify_deployment.json | default({})).deployment_url | default(coolify_base_url)) }}
+    success_msg: "{{ coolify_target.name }} deployed (finished)."
+  vars:
+    coolify_deployment_status: "{{ (coolify_deployment.json | default({})).status | default('') }}"
+  when: coolify_target.kind == 'application'
+
+# --- Services: restart with the latest images and watch the status ----------
+
+- name: "Restart with the latest images: {{ coolify_target.name }}"
+  ansible.builtin.uri:
+    url: "{{ coolify_base_url }}/api/v1/services/{{ coolify_target.uuid }}/restart?latest={{ coolify_pull_latest | bool | lower }}"
+    method: POST
+    headers: "{{ coolify_headers }}"
+    validate_certs: "{{ coolify_validate_certs | bool }}"
+    return_content: true
+  register: coolify_restart
+  no_log: true
+  failed_when: false
+  when: coolify_target.kind == 'service'
+
+- name: Check that Coolify accepted the restart of {{ coolify_target.name }}
+  ansible.builtin.assert:
+    that: coolify_restart.status | default(-1) == 200
+    fail_msg: >-
+      Coolify refused to restart {{ coolify_target.name }}
+      (HTTP {{ coolify_restart.status | default('?') }}):
+      {{ (coolify_restart.json | default({})).message | default(coolify_restart.msg | default('no message')) }}
+    success_msg: "{{ (coolify_restart.json | default({})).message | default('restart queued') }}"
+  when: coolify_target.kind == 'service'
+
+# Coolify queues the restart and updates the service status a little later.
+# Right after the call the status still says "running" from before, so first
+# give the service up to coolify_service_settle seconds to report that it is
+# going down, then wait for it to run again. Any status not starting with
+# "running" (restarting, exited, degraded) counts as down here.
+- name: "Give the service time to go down: {{ coolify_target.name }}"
+  ansible.builtin.uri:
+    url: "{{ coolify_base_url }}/api/v1/services/{{ coolify_target.uuid }}"
+    headers: "{{ coolify_headers }}"
+    validate_certs: "{{ coolify_validate_certs | bool }}"
+    return_content: true
+  register: coolify_service_down
+  no_log: true
+  failed_when: false
+  until: not ((coolify_service_down.json | default({})).status | default('') is match('running'))
+  retries: "{{ [(coolify_service_settle | int) // (coolify_poll_interval | int), 1] | max }}"
+  delay: "{{ coolify_poll_interval | int }}"
+  when: coolify_target.kind == 'service'
+
+# Only running:healthy and running:unknown (no healthcheck) count as up. A
+# service that stays running:unhealthy or degraded is waited for until the
+# timeout, because those states also occur briefly while it starts.
+- name: "Wait for the service to run again: {{ coolify_target.name }}"
+  ansible.builtin.uri:
+    url: "{{ coolify_base_url }}/api/v1/services/{{ coolify_target.uuid }}"
+    headers: "{{ coolify_headers }}"
+    validate_certs: "{{ coolify_validate_certs | bool }}"
+    return_content: true
+  register: coolify_service
+  no_log: true
+  failed_when: false
+  until: (coolify_service.json | default({})).status | default('') in ['running:healthy', 'running:unknown']
+  retries: "{{ (coolify_deploy_timeout | int) // (coolify_poll_interval | int) }}"
+  delay: "{{ coolify_poll_interval | int }}"
+  when: coolify_target.kind == 'service'
+
+- name: Check the status of {{ coolify_target.name }}
+  ansible.builtin.assert:
+    that: coolify_service_status in ['running:healthy', 'running:unknown']
+    fail_msg: >-
+      {{ coolify_target.name }} reports '{{ coolify_service_status | default('unknown', true) }}'
+      after {{ coolify_deploy_timeout }} seconds. Check the service in Coolify.
+    success_msg: "{{ coolify_target.name }} is {{ coolify_service_status }}."
+  vars:
+    coolify_service_status: "{{ (coolify_service.json | default({})).status | default('') }}"
+  when: coolify_target.kind == 'service'
