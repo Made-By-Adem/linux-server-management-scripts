@@ -121,7 +121,7 @@ Welke containers, bepaal je per host of groep in de inventory:
 |---|---|---|
 | `update_containers_only` | leeg | Alleen deze containers (`--only`). Lijst of kommagescheiden; globs mogen, bijv. `app-*` |
 | `update_containers_exclude` | leeg | Deze containers nooit (`--exclude`). Wint van de only-lijst; handig als groepsvariabele |
-| `update_containers_all` | `false` | `true` = alle draaiende containers behalve de uitgesloten (`--unattended`) |
+| `update_containers_all` | `false` | `true` = alle draaiende containers behalve de uitgesloten (`--unattended`). Staat er ook een only-lijst, dan wint die |
 
 **Veiligheid:** is `update_containers_only` leeg en `update_containers_all`
 niet `true`, dan faalt die host met uitleg en verandert er niets. Een
@@ -209,6 +209,7 @@ klaar is en stopt bij de eerste die faalt.
 | `coolify_poll_interval` | `10` | Seconden tussen statuscontroles |
 | `coolify_service_settle` | `60` | Seconden die een service krijgt om te stoppen voordat de playbook op "running" wacht |
 | `coolify_validate_certs` | `true` | TLS-certificaat controleren |
+| `coolify_allow_http` | `false` | Ook een `http://`-URL accepteren (token gaat dan onversleuteld over de lijn) |
 
 Een naam die bij geen of bij meer dan één resource hoort, laat de run vooraf
 falen, voordat er iets gedeployd is; gebruik dan de uuid. Het token komt nooit

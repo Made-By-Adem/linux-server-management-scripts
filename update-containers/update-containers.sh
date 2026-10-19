@@ -110,7 +110,10 @@ split_list() {
     local IFS=$', \t\n'
     set -f
     for item in $1; do
-        printf '%s\n' "$item"
+        # 'a,,b' or a trailing comma yields an empty field - drop it
+        if [ -n "$item" ]; then
+            printf '%s\n' "$item"
+        fi
     done
 }
 

@@ -32,6 +32,8 @@
 #   coolify_service_settle seconds a service gets to go down before the
 #                          playbook waits for it to run again (default 60)
 #   coolify_validate_certs verify the TLS certificate (default true)
+#   coolify_allow_http     accept an http:// coolify_url (default false: the
+#                          token would travel in cleartext)
 #
 # The token is never printed: every API call runs with no_log, and only
 # names, uuids, statuses and Coolify's messages are shown.
@@ -49,6 +51,7 @@
     coolify_poll_interval: 10
     coolify_service_settle: 60
     coolify_validate_certs: true
+    coolify_allow_http: false
     coolify_base_url: >-
       {{ (coolify_url | default('', true) | string | trim)
          | regex_replace('/+$', '') | regex_replace('/api/v1$', '') }}
@@ -65,12 +68,14 @@
     - name: Check the Coolify connection settings
       ansible.builtin.assert:
         that:
-          - coolify_base_url is match('https?://')
+          - coolify_base_url is match('https://' if not coolify_allow_http | bool else 'https?://')
           - coolify_token | length > 0
         fail_msg: >-
-          coolify_url/coolify_api_token not set. Set coolify_url (e.g.
-          https://coolify.example.com) and coolify_api_token (a secret) in the
-          Semaphore environment of this template.
+          coolify_url/coolify_api_token not set (or coolify_url is not https://).
+          Set coolify_url (e.g. https://coolify.example.com) and
+          coolify_api_token (a secret) in the Semaphore environment of this
+          template. Plain http:// sends the token in cleartext; only with
+          coolify_allow_http=true.
         quiet: true
 
     - name: Check that something is selected

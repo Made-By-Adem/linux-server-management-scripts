@@ -95,7 +95,8 @@
 # Coolify queues the restart and updates the service status a little later.
 # Right after the call the status still says "running" from before, so first
 # give the service up to coolify_service_settle seconds to report that it is
-# going down, then wait for it to run again.
+# going down, then wait for it to run again. Any status not starting with
+# "running" (restarting, exited, degraded) counts as down here.
 - name: "Give the service time to go down: {{ coolify_target.name }}"
   ansible.builtin.uri:
     url: "{{ coolify_base_url }}/api/v1/services/{{ coolify_target.uuid }}"
@@ -110,6 +111,9 @@
   delay: "{{ coolify_poll_interval | int }}"
   when: coolify_target.kind == 'service'
 
+# Only running:healthy and running:unknown (no healthcheck) count as up. A
+# service that stays running:unhealthy or degraded is waited for until the
+# timeout, because those states also occur briefly while it starts.
 - name: "Wait for the service to run again: {{ coolify_target.name }}"
   ansible.builtin.uri:
     url: "{{ coolify_base_url }}/api/v1/services/{{ coolify_target.uuid }}"

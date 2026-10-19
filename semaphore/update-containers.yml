@@ -13,6 +13,7 @@
 #                              a group var. Wins over the only-list.
 #   update_containers_all      true = update every running container except
 #                              the excluded ones (--unattended). Default false.
+#                              Ignored when the only-list is set.
 #
 # A host with an empty only-list and update_containers_all not true FAILS:
 # a missing variable must never turn into "update everything". Set these as
