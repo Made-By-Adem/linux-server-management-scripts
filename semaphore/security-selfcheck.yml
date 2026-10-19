@@ -1,0 +1,70 @@
+---
+# Semaphore template: security self-check (read-only)
+#
+# Runs security-selfcheck: are the controls working, or do they merely exist.
+# Changes nothing on the host. Exit codes: 0 all passed, 1 at least one
+# FAIL, 2 warnings only. Warnings do not fail the host unless
+# fail_on_warnings is set.
+#
+# Uses the installed /usr/local/bin/security-selfcheck.sh when present - that
+# copy knows where the host's Telegram credentials are. Otherwise copies the
+# script from this checkout to a temporary directory; that copy can check but
+# cannot send to Telegram.
+#
+# Extra vars:
+#   selfcheck_deep      also run a real aide --check, 10-20 minutes (default false)
+#   selfcheck_telegram  send failures to Telegram (default false)
+#   fail_on_warnings    treat exit code 2 as a failure (default false)
+#   target              inventory group or host pattern (default all)
+#   batch_size          hosts per batch (default 1)
+
+- name: Security self-check
+  hosts: "{{ target | default('all') }}"
+  serial: "{{ batch_size | default(1) }}"
+  become: true
+  gather_facts: false
+  vars:
+    selfcheck_deep: false
+    selfcheck_telegram: false
+    fail_on_warnings: false
+  tasks:
+    - name: Look for the installed self-check
+      ansible.builtin.stat:
+        path: /usr/local/bin/security-selfcheck.sh
+      register: selfcheck_cmd
+
+    - name: Run the self-check
+      block:
+        - name: Create a temporary directory for the script
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: selfcheck
+          register: selfcheck_tmp
+          when: not selfcheck_cmd.stat.exists
+
+        - name: Copy security-selfcheck.sh to the host
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../server-baseline/security-selfcheck.sh"
+            dest: "{{ selfcheck_tmp.path }}/security-selfcheck.sh"
+            owner: root
+            group: root
+            mode: "0700"
+          when: not selfcheck_cmd.stat.exists
+
+        - name: Run security-selfcheck
+          ansible.builtin.include_tasks: tasks/run-script.yml
+          vars:
+            run_argv: >-
+              {{ [('/usr/local/bin/security-selfcheck.sh' if selfcheck_cmd.stat.exists
+                   else selfcheck_tmp.path ~ '/security-selfcheck.sh')]
+                 + (['--deep'] if selfcheck_deep | bool else [])
+                 + (['--telegram'] if selfcheck_telegram | bool else []) }}
+            run_ok_rcs: "{{ [0] if fail_on_warnings | bool else [0, 2] }}"
+            run_changes: false
+            run_timeout: 1800
+      always:
+        - name: Remove the temporary directory
+          ansible.builtin.file:
+            path: "{{ selfcheck_tmp.path }}"
+            state: absent
+          when: selfcheck_tmp.path is defined

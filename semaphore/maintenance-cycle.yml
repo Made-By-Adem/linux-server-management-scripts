@@ -1,0 +1,60 @@
+---
+# Semaphore template: maintenance cycle
+#
+# Runs server-baseline/maintenance-cycle.sh through the /usr/local/bin symlink
+# that update-baseline creates: pull the checkout, update-baseline, rkhunter
+# property database, AIDE refresh, test-alerts, AIDE refresh, self-check.
+# 35-45 minutes per host with AIDE, around seven Telegram messages per host.
+#
+# The script does not reboot and does not run apt upgrade. One host at a time;
+# when a host fails the remaining hosts are not touched.
+#
+# Extra vars:
+#   maintenance_reason           recorded with every baseline change
+#                                (default "Semaphore maintenance <date>")
+#   maintenance_pull             git pull the checkout first (default true)
+#   maintenance_test_alerts      run test-alerts.sh (default true)
+#   maintenance_accept_rkhunter  pass --yes, which accepts the current file
+#                                properties as rkhunter's baseline without a
+#                                person reading the warnings (default false:
+#                                the prompt is declined and propupd skipped)
+#   target                       inventory group or host pattern (default all)
+#   batch_size                   hosts per batch (default 1)
+
+- name: Maintenance cycle
+  hosts: "{{ target | default('all') }}"
+  serial: "{{ batch_size | default(1) }}"
+  become: true
+  gather_facts: false
+  vars:
+    maintenance_reason: "Semaphore maintenance {{ now(fmt='%Y-%m-%d') }}"
+    maintenance_pull: true
+    maintenance_test_alerts: true
+    maintenance_accept_rkhunter: false
+  tasks:
+    - name: Look for the maintenance-cycle command
+      ansible.builtin.stat:
+        path: /usr/local/bin/maintenance-cycle
+        follow: true
+      register: maintenance_cmd
+
+    # It has to run from the checkout - it pulls it and runs test-alerts.sh
+    # out of it - so shipping a copy from Semaphore is not an option.
+    - name: Require the maintenance-cycle command
+      ansible.builtin.assert:
+        that: maintenance_cmd.stat.exists
+        fail_msg: >-
+          /usr/local/bin/maintenance-cycle is missing or dangling on {{ inventory_hostname }}.
+          It is a symlink into this repository's checkout, created by update-baseline.
+          Run 'sudo bash <checkout>/server-baseline/update-baseline.sh' on the host once, then retry.
+        quiet: true
+
+    - name: Run the maintenance cycle
+      ansible.builtin.include_tasks: tasks/run-script.yml
+      vars:
+        run_argv: >-
+          {{ ['/usr/local/bin/maintenance-cycle', '--reason', maintenance_reason]
+             + (['--yes'] if maintenance_accept_rkhunter | bool else [])
+             + ([] if maintenance_pull | bool else ['--no-pull'])
+             + ([] if maintenance_test_alerts | bool else ['--no-test']) }}
+        run_timeout: 7200
