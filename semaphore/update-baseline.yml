@@ -37,8 +37,9 @@
         that: update_baseline_cmd.stat.exists
         fail_msg: >-
           /usr/local/bin/update-baseline is missing or dangling on {{ inventory_hostname }}.
-          It is a symlink into this repository's checkout, created by install-script.sh.
-          Run 'sudo bash <checkout>/server-baseline/update-baseline.sh' on the host once, then retry.
+          It is a symlink into this repository's checkout, created by the "Shell improvements"
+          section of install-script.sh. Create it with
+          'sudo ln -sf <checkout>/server-baseline/update-baseline.sh /usr/local/bin/update-baseline', then retry.
         quiet: true
 
     - name: Run update-baseline

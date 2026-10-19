@@ -8,8 +8,8 @@
 #
 # Uses the installed /usr/local/bin/security-selfcheck.sh when present - that
 # copy knows where the host's Telegram credentials are. Otherwise copies the
-# script from this checkout to a temporary directory; that copy can check but
-# cannot send to Telegram.
+# script from this checkout to a temporary directory; that copy may not find
+# the Telegram credentials.
 #
 # Extra vars:
 #   selfcheck_deep      also run a real aide --check, 10-20 minutes (default false)

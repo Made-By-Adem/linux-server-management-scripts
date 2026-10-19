@@ -12,19 +12,30 @@
 #   - stdin is /dev/null, so a prompt that reads stdin gets end-of-file and
 #     is treated as declined.
 #
+# Because setsid moves the script out of the process group Ansible kills on
+# an async timeout, the script gets its own deadline: timeout stops it (and
+# everything it started) two minutes before Ansible gives up, so a run that
+# is reported as failed is not still running as root on the host.
+#
 # Expects:
 #   run_argv     list: the command and its arguments, quoted one by one
 #   run_ok_rcs   list of exit codes that count as success (default [0])
 #   run_changes  whether a successful run reports "changed" (default true)
-#   run_timeout  seconds before the run is abandoned (default 7200)
+#   run_timeout  seconds before the run is abandoned (default 7200); the
+#                script itself is stopped two minutes earlier (exit 124)
 
 - name: Run {{ run_argv | first | basename }}
-  ansible.builtin.shell: "setsid --wait {{ run_argv | map('quote') | join(' ') }} </dev/null 2>&1"
+  ansible.builtin.shell: >-
+    setsid --wait timeout --kill-after=60 {{ (run_timeout | default(7200) | int) - 120 }}
+    {{ run_argv | map('quote') | join(' ') }} </dev/null 2>&1
   args:
     executable: /bin/bash
   environment:
     # maintenance-cycle calls security-selfcheck and aide-refresh by name.
     PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    # A non-interactive SSH session has no TERM, and update-containers.sh
+    # calls `clear` under `set -e`, which fails without one.
+    TERM: xterm
   # Async keeps the script running when the SSH connection drops halfway
   # through a 45-minute maintenance cycle.
   async: "{{ run_timeout | default(7200) | int }}"

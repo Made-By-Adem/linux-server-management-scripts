@@ -24,6 +24,13 @@ Semaphore zien.
   falen, na het tonen van de volledige output. Bij elke exitcode behalve 0
   toont Ansible een regel `ASYNC FAILED`; dat is normaal; of de host faalt,
   bepaalt de taak daarna.
+- **Eigen deadline.** Elk script wordt met `timeout` gestopt (exitcode 124)
+  vlak voordat Ansible het opgeeft (maintenance 2 uur, update-baseline en
+  update-containers 1 uur, self-check 30 minuten). Een run die als mislukt
+  gemeld wordt, draait dus niet stiekem door op de host.
+- **Hele inventory.** Zonder `target` draait een template op alle hosts in de
+  inventory, één voor één. Gebruik per omgeving een eigen inventory, of zet
+  `target`/`--limit` bij templates die diensten herstarten.
 - **Generiek.** Echte hosts, adressen en groepsnamen horen in Semaphore (of in
   een lokale `inventory.ini`, die git negeert), nooit in deze repository.
 
@@ -126,7 +133,8 @@ tenzij `fail_on_warnings=true`).
 
 Gebruikt de geïnstalleerde `/usr/local/bin/security-selfcheck.sh`, want die weet
 waar de Telegram-gegevens staan. Ontbreekt die, dan wordt het script uit deze
-checkout gekopieerd; die kopie kan controleren maar niet naar Telegram sturen.
+checkout gekopieerd; die kopie controleert gewoon, maar vindt de
+Telegram-gegevens mogelijk niet.
 
 | Extra var | Standaard | Betekenis |
 |---|---|---|
