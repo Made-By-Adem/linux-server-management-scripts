@@ -1,0 +1,199 @@
+---
+# Semaphore template: status overview (read-only)
+#
+# Collects a short health picture of every host and changes nothing: no apt
+# update, no restarts, no baseline changes. Runs on all hosts at once.
+#
+# Per host: uptime and load, memory, disk use of / and of the Docker root,
+# whether a reboot is required, how many apt upgrades are pending (from the
+# package lists as they are, with their age), the containers (name, state,
+# image), and the state of the security watchdog and AIDE when installed.
+# A section that cannot be read says so; it does not fail the host.
+#
+# The details are shown per host; the last task prints one compact summary
+# for all hosts.
+#
+# Extra vars:
+#   target      inventory group or host pattern (default all)
+#   batch_size  hosts per batch (default 100%)
+
+- name: Status overview
+  hosts: "{{ target | default('all') }}"
+  serial: "{{ batch_size | default('100%') }}"
+  become: true
+  gather_facts: false
+  environment:
+    PATH: "{{ host_path | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
+    LC_ALL: C
+  vars:
+    reboot_required_file: /var/run/reboot-required
+    # docker --format templates, kept away from Jinja.
+    fmt_root_dir: "{% raw %}{{.DockerRootDir}}{% endraw %}"
+    fmt_containers: "{% raw %}{{.Names}}|{{.State}}|{{.Status}}|{{.Image}}{% endraw %}"
+  tasks:
+    - name: Read uptime, load and memory
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "up $(uptime -p 2>/dev/null | sed 's/^up //'), load $(cut -d' ' -f1-3 /proc/loadavg) on $(nproc) CPU(s)"
+        free -m | awk '
+          /^Mem:/  { printf "memory %d of %d MiB in use (%d%%)", $2 - $7, $2, ($2 - $7) * 100 / $2 }
+          /^Swap:/ { if ($2 > 0) printf ", swap %d of %d MiB", $3, $2; else printf ", no swap" }
+          END { print "" }'
+      args:
+        executable: /bin/bash
+      register: st_system
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read disk use
+      ansible.builtin.shell: |
+        set -o pipefail
+        root=$(docker info --format '{{ fmt_root_dir }}' 2>/dev/null || true)
+        df -hP / | awk 'NR == 2 { printf "disk /: %s of %s used (%s), %s free\n", $3, $2, $5, $4 }'
+        if [ -n "$root" ]; then
+          df -hP "$root" 2>/dev/null | awk -v r="$root" 'NR == 2 {
+            if ($6 == "/") printf "disk docker root %s: on /\n", r
+            else printf "disk docker root %s (%s): %s of %s used (%s), %s free\n", r, $6, $3, $2, $5, $4 }'
+        fi
+        exit 0
+      args:
+        executable: /bin/bash
+      register: st_disk
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read the reboot-required flag
+      ansible.builtin.shell: |
+        set -o pipefail
+        flag={{ reboot_required_file | quote }}
+        if [ -f "$flag" ]; then
+          echo "reboot required: YES ($(sort -u "$flag.pkgs" 2>/dev/null | paste -sd, - | sed 's/,/, /g'))"
+        else
+          echo "reboot required: no"
+        fi
+      args:
+        executable: /bin/bash
+      register: st_reboot
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Count pending apt upgrades
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v apt >/dev/null || { echo "apt: not available"; exit 0; }
+        list=$(apt list --upgradable 2>/dev/null | grep -F '[upgradable from' || true)
+        total=$(printf '%s' "$list" | grep -c . || true)
+        security=$(printf '%s' "$list" | grep -c -- '-security' || true)
+        newest=$(ls -t /var/lib/apt/lists/*Release 2>/dev/null | head -1)
+        age=${newest:+, package lists from $(date -r "$newest" '+%Y-%m-%d %H:%M')}
+        echo "apt: ${total} upgrade(s) pending, ${security} from security${age}"
+      args:
+        executable: /bin/bash
+      register: st_apt
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: List the containers
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v docker >/dev/null || { echo "containers: docker not installed"; exit 0; }
+        rows=$(docker ps -a --format '{{ fmt_containers }}' | sort) || exit 1
+        [ -n "$rows" ] && echo "$rows" || echo "containers: none"
+      args:
+        executable: /bin/bash
+      register: st_containers
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read the security watchdog state
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v security-watchdog >/dev/null || { echo "watchdog: not installed"; exit 0; }
+        timer=$(systemctl is-active security-watchdog.timer 2>/dev/null)
+        security-watchdog --status 2>&1 | awk -v timer="${timer:-unknown}" '
+          /^Units:/    { section = "u"; next }
+          /^Monitors:/ { section = "m"; next }
+          section == "u" { split($2, now, "="); split($3, was, "="); units++
+                           if (now[2] != was[2]) { du++; dlist = dlist " " $1 "(" now[2] ", was " was[2] ")" } }
+          section == "m" { split($2, now, "="); split($4, was, "="); mons++
+                           if (now[2] != was[2]) { dm++; mlist = mlist " " $1 } }
+          END { printf "watchdog: timer %s, %d/%d unit(s) differ from baseline%s, %d/%d monitor count(s) differ%s\n",
+                       timer, du, units, dlist, dm, mons, mlist }'
+      args:
+        executable: /bin/bash
+      register: st_watchdog
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read the AIDE state
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v aide >/dev/null || [ -f /var/lib/aide/aide.db ] || { echo "aide: not installed"; exit 0; }
+        db=$( [ -f /var/lib/aide/aide.db ] && date -r /var/lib/aide/aide.db '+%Y-%m-%d %H:%M' || echo missing)
+        last=$(ls -t /var/log/aide-refresh-*.log /var/log/aide-check-*.log 2>/dev/null | head -1)
+        if [ -z "$last" ]; then
+          echo "aide: database $db, no run logged"
+        else
+          when=$(date -r "$last" '+%Y-%m-%d %H:%M')
+          if grep -qE '^(ERROR|.*missing configuration|.*Invalid configure|.*Configuration error)' "$last"; then
+            state="ENDED IN AN ERROR"
+          elif grep -qE '^ *(Added|Removed|Changed) entries: *[1-9]' "$last"; then
+            state="found differences"
+          else
+            state="no differences"
+          fi
+          echo "aide: database $db, last run $(basename "$last") at $when: $state"
+        fi
+      args:
+        executable: /bin/bash
+      register: st_aide
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Work out the container summary
+      ansible.builtin.set_fact:
+        st_container_rows: "{{ st_containers.stdout_lines | default([]) | select('search', '\\|') | map('split', '|') | list }}"
+
+    - name: Summarise
+      ansible.builtin.set_fact:
+        host_summary: >-
+          {{ (st_system.stdout_lines if st_system.rc == 0 else ['system: unreadable (rc ' ~ st_system.rc ~ ')'])
+             + (st_disk.stdout_lines | select('match', '^disk ') | list if st_disk.rc == 0 else ['disk: unreadable'])
+             + (st_reboot.stdout_lines if st_reboot.rc == 0 else ['reboot required: unreadable'])
+             + (st_apt.stdout_lines if st_apt.rc == 0 else ['apt: unreadable'])
+             + ([st_containers.stdout | trim] if st_containers.rc == 0 and not st_container_rows
+                else ['containers: ' ~ st_container_rows | selectattr(1, 'eq', 'running') | list | length ~ ' running of '
+                      ~ st_container_rows | length
+                      ~ ((', not running: ' ~ (st_container_rows | rejectattr(1, 'eq', 'running') | map('first') | join(', ')))
+                         if st_container_rows | rejectattr(1, 'eq', 'running') | list else '')
+                      ~ ((', unhealthy: ' ~ (st_container_rows | selectattr(2, 'search', 'unhealthy') | map('first') | join(', ')))
+                         if st_container_rows | selectattr(2, 'search', 'unhealthy') | list else '')]
+                if st_containers.rc == 0 else ['containers: docker did not answer (rc ' ~ st_containers.rc ~ ')'])
+             + (st_watchdog.stdout_lines if st_watchdog.rc == 0 else ['watchdog: unreadable'])
+             + (st_aide.stdout_lines if st_aide.rc == 0 else ['aide: unreadable']) }}
+
+    - name: Show the details
+      ansible.builtin.debug:
+        msg: >-
+          {{ host_summary
+             + (['container | state | status | image'] if st_container_rows else [])
+             + st_container_rows | map('join', ' | ') | list }}
+
+- name: Summary
+  hosts: "{{ target | default('all') }}"
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Show the summary per host
+      ansible.builtin.debug:
+        msg: >-
+          {{ dict(ansible_play_hosts_all | zip(ansible_play_hosts_all | map('extract', hostvars)
+                  | map(attribute='host_summary', default=['no result, host unreachable or failed']))) }}
+      run_once: true

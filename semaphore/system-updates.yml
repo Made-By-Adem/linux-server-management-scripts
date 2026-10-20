@@ -1,0 +1,370 @@
+---
+# Semaphore template: system updates (apt)
+#
+# apt-get update, upgrade and autoremove, on all hosts at once (batch_size
+# to go slower). A host that fails does not stop the others. Never reboots;
+# the report says whether the host asks for one (use reboot.yml for that).
+#
+# Upgrading the Docker engine or containerd restarts every container on the
+# host. Those packages are therefore held during the run (apt-mark hold) and
+# released afterwards, also when the run fails, unless include_docker_packages
+# is true. Packages that were held before the run stay held. Which packages
+# were held by this run is written to a marker file first, so a run that is
+# cut off before it can release them is cleaned up by the next one.
+#
+# The upgrade is non-interactive and keeps existing configuration files
+# (--force-confdef --force-confold). apt-get upgrade --with-new-pkgs installs
+# new dependencies (a new kernel) but removes nothing. needrestart runs in
+# list mode: it reports services that still use old libraries and restarts
+# none of them; a package's own scripts may still restart that package's
+# service.
+#
+# When packages changed, the AIDE baseline and the security watchdog are
+# re-baselined afterwards (aide-refresh --reason, then security-watchdog
+# --reset) if those commands exist, so the next check does not report the
+# upgrade itself. aide-refresh lists every file it absorbs before updating.
+#
+# Extra vars:
+#   dry_run                  apt-get update, then only list what would be
+#                            upgraded (apt-get -s upgrade); nothing is
+#                            installed, held or refreshed (default false)
+#   include_docker_packages  also upgrade the Docker engine and containerd;
+#                            this restarts all containers (default false)
+#   post_refresh             run aide-refresh and security-watchdog --reset
+#                            after a run that changed packages (default true)
+#   reason                   recorded by aide-refresh
+#                            (default "Semaphore system updates <date>")
+#   apt_timeout              seconds for the upgrade itself (default 3600)
+#   docker_hold_packages     the packages held unless include_docker_packages
+#   target                   inventory group or host pattern (default all)
+#   batch_size               hosts per batch (default 100%: all at once; 1 = one by one)
+
+- name: System updates
+  hosts: "{{ target | default('all') }}"
+  serial: "{{ batch_size | default('100%') }}"
+  become: true
+  gather_facts: false
+  environment:
+    PATH: "{{ host_path | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
+    LC_ALL: C
+  vars:
+    dry_run: false
+    include_docker_packages: false
+    post_refresh: true
+    apt_timeout: 3600
+    docker_hold_packages:
+      - docker-ce
+      - docker-ce-cli
+      - docker-ce-rootless-extras
+      - containerd.io
+      - docker.io
+      - containerd
+      - runc
+    held_marker: /var/lib/server-baseline/system-updates-held
+    reboot_required_file: /var/run/reboot-required
+    refresh_reason: "{{ reason | default('') | string | trim or ('Semaphore system updates ' ~ now(fmt='%Y-%m-%d')) }}"
+    apt_env: [env, DEBIAN_FRONTEND=noninteractive, NEEDRESTART_MODE=l, UCF_FORCE_CONFFOLD=1]
+    apt_lock_wait: [-o, DPkg::Lock::Timeout=600]
+    dpkg_format: '-f=${db:Status-Abbrev} ${binary:Package} ${Version}\n'
+  tasks:
+    - name: Look for apt
+      ansible.builtin.command: sh -c 'command -v apt-get && command -v apt-mark && command -v dpkg-query'
+      register: apt_cmds
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require apt
+      ansible.builtin.assert:
+        that: apt_cmds.rc == 0
+        fail_msg: "{{ inventory_hostname }} has no apt-get/apt-mark/dpkg-query; this template is for Debian-family hosts."
+        quiet: true
+
+    - name: Look for holds left by an interrupted earlier run
+      ansible.builtin.stat:
+        path: "{{ held_marker }}"
+      register: held_marker_file
+
+    - name: Read the holds left by an interrupted earlier run
+      ansible.builtin.slurp:
+        src: "{{ held_marker }}"
+      register: held_marker_content
+      when: held_marker_file.stat.exists
+
+    - name: Remember the leftover holds
+      ansible.builtin.set_fact:
+        leftover_holds: >-
+          {{ (held_marker_content.content | b64decode).split() if held_marker_file.stat.exists else [] }}
+
+    - name: List the installed packages
+      ansible.builtin.command:
+        argv: [dpkg-query, -W, "{{ dpkg_format }}"]
+      register: dpkg_before
+      changed_when: false
+      check_mode: false
+
+    - name: Refresh the package lists
+      ansible.builtin.include_tasks: tasks/run-script.yml
+      vars:
+        run_argv: "{{ apt_env + ['apt-get', '-q'] + apt_lock_wait + ['update'] }}"
+        run_label: apt-get update
+        run_changes: false
+        run_timeout: 900
+
+    - name: Simulate the upgrade
+      ansible.builtin.command:
+        argv: [apt-get, -s, -q, -o, Debug::NoLocking=1, --with-new-pkgs, upgrade]
+      register: apt_simulation
+      changed_when: false
+      check_mode: false
+
+    - name: Work out the plan
+      ansible.builtin.set_fact:
+        pkgs_before: >-
+          {{ dict(dpkg_before.stdout_lines | select('match', '^.i') | map('regex_replace', '^\S+\s+', '')
+                  | map('split', ' ')) }}
+        planned: >-
+          {{ apt_simulation.stdout_lines | select('match', '^Inst ')
+             | map('regex_replace', '^Inst (\S+) \[(\S+)\] \((\S+).*$', '\1 \2 -> \3')
+             | map('regex_replace', '^Inst (\S+) \((\S+).*$', '\1 (new) \2') | list }}
+        planned_names: >-
+          {{ apt_simulation.stdout_lines | select('match', '^Inst ')
+             | map('regex_replace', '^Inst (\S+) .*$', '\1') | list }}
+
+    - name: Find the Docker packages to hold
+      ansible.builtin.set_fact:
+        docker_installed: >-
+          {{ pkgs_before.keys() | map('regex_replace', ':.*$', '') | intersect(docker_hold_packages) | sort }}
+        docker_planned: >-
+          {{ planned_names | map('regex_replace', ':.*$', '') | intersect(docker_hold_packages) | sort }}
+
+    - name: Dry run
+      when: dry_run | bool
+      block:
+        - name: Show what would be upgraded
+          ansible.builtin.debug:
+            msg: "{{ planned if planned else ['nothing to upgrade'] }}"
+
+        - name: Summarise the dry run
+          ansible.builtin.set_fact:
+            host_summary: >-
+              {{ ['dry run: ' ~ planned | length ~ ' package(s) would be upgraded or installed']
+                 + (['Docker packages that would be held: ' ~ (docker_planned | join(', '))]
+                    if docker_planned and not include_docker_packages | bool else [])
+                 + (['Docker packages that WOULD BE UPGRADED (restarts all containers): ' ~ (docker_planned | join(', '))]
+                    if docker_planned and include_docker_packages | bool else [])
+                 + (['holds left by an interrupted run (a real run releases them): ' ~ (leftover_holds | join(', '))]
+                    if leftover_holds else []) }}
+
+    - name: Upgrade
+      when: not dry_run | bool
+      block:
+        - name: Release the holds left by an interrupted earlier run
+          ansible.builtin.command:
+            argv: "{{ ['apt-mark'] + apt_lock_wait + ['unhold'] + leftover_holds }}"
+          when: leftover_holds | length > 0
+          changed_when: true
+
+        - name: List the packages that are already held
+          ansible.builtin.command:
+            argv: "{{ ['apt-mark'] + apt_lock_wait + ['showhold'] }}"
+          register: holds_before
+          changed_when: false
+
+        - name: Decide which Docker packages to hold
+          ansible.builtin.set_fact:
+            to_hold: >-
+              {{ [] if include_docker_packages | bool
+                 else docker_installed | difference(holds_before.stdout_lines | map('regex_replace', ':.*$', '')) }}
+
+        - name: Create the marker directory
+          ansible.builtin.file:
+            path: "{{ held_marker | dirname }}"
+            state: directory
+            mode: "0700"
+          when: to_hold | length > 0
+
+        - name: Write the marker before holding
+          ansible.builtin.copy:
+            content: "{{ to_hold | join('\n') }}\n"
+            dest: "{{ held_marker }}"
+            mode: "0600"
+          when: to_hold | length > 0
+
+        - name: Remove a stale marker
+          ansible.builtin.file:
+            path: "{{ held_marker }}"
+            state: absent
+          when: to_hold | length == 0
+
+        - name: Hold the Docker packages
+          ansible.builtin.command:
+            argv: "{{ ['apt-mark'] + apt_lock_wait + ['hold'] + to_hold }}"
+          when: to_hold | length > 0
+          changed_when: true
+
+        - name: Upgrade the packages
+          ansible.builtin.include_tasks: tasks/run-script.yml
+          vars:
+            run_argv: >-
+              {{ apt_env + ['apt-get', '-y', '-q'] + apt_lock_wait
+                 + ['-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold',
+                    '--with-new-pkgs', 'upgrade'] }}
+            run_label: apt-get upgrade
+            run_timeout: "{{ apt_timeout }}"
+
+        - name: Remove packages that are no longer needed
+          ansible.builtin.include_tasks: tasks/run-script.yml
+          vars:
+            run_argv: "{{ apt_env + ['apt-get', '-y', '-q'] + apt_lock_wait + ['autoremove'] }}"
+            run_label: apt-get autoremove
+            run_timeout: 1800
+      always:
+        - name: Release the Docker packages
+          ansible.builtin.command:
+            argv: "{{ ['apt-mark'] + apt_lock_wait + ['unhold'] + to_hold }}"
+          register: unhold_result
+          when: to_hold | default([]) | length > 0
+          changed_when: true
+          failed_when: false
+
+        - name: Fail when the Docker packages are still held
+          ansible.builtin.fail:
+            msg: >-
+              Releasing the hold failed on {{ inventory_hostname }}: {{ unhold_result.stderr | default('') }}.
+              Still held: {{ to_hold | join(' ') }}. Run 'sudo apt-mark unhold {{ to_hold | join(' ') }}'.
+              {{ held_marker }} is kept, so the next run of this template retries.
+          when: unhold_result.rc | default(0) != 0
+
+        - name: Remove the marker
+          ansible.builtin.file:
+            path: "{{ held_marker }}"
+            state: absent
+          when: to_hold | default([]) | length > 0
+
+    - name: Report
+      when: not dry_run | bool
+      block:
+        - name: List the installed packages after the upgrade
+          ansible.builtin.command:
+            argv: [dpkg-query, -W, "{{ dpkg_format }}"]
+          register: dpkg_after
+          changed_when: false
+          check_mode: false
+
+        - name: Compare before and after
+          ansible.builtin.set_fact:
+            pkgs_after: >-
+              {{ dict(dpkg_after.stdout_lines | select('match', '^.i') | map('regex_replace', '^\S+\s+', '')
+                      | map('split', ' ')) }}
+
+        # name=version pairs present both before and after are the packages
+        # that did not change.
+        - name: Find the unchanged packages
+          ansible.builtin.set_fact:
+            pkgs_unchanged: >-
+              {{ pkgs_before.keys() | zip(pkgs_before.values()) | map('join', '=')
+                 | intersect(pkgs_after.keys() | zip(pkgs_after.values()) | map('join', '='))
+                 | map('regex_replace', '=.*$', '') | list }}
+
+        - name: Work out what changed
+          ansible.builtin.set_fact:
+            pkgs_upgraded: "{{ pkgs_after.keys() | intersect(pkgs_before.keys()) | difference(pkgs_unchanged) | sort }}"
+            pkgs_installed: "{{ pkgs_after.keys() | difference(pkgs_before.keys()) | sort }}"
+            pkgs_removed: "{{ pkgs_before.keys() | difference(pkgs_after.keys()) | sort }}"
+
+        - name: Describe the upgraded packages
+          ansible.builtin.set_fact:
+            upgraded_lines: >-
+              {{ pkgs_upgraded | zip(pkgs_upgraded | map('extract', pkgs_before), pkgs_upgraded | map('extract', pkgs_after))
+                 | map('join', ' ') | map('regex_replace', '^(\S+) (\S+) (\S+)$', '\1 \2 -> \3') | list }}
+            packages_changed: "{{ (pkgs_upgraded + pkgs_installed + pkgs_removed) | length > 0 }}"
+
+        - name: Show the upgraded packages
+          ansible.builtin.debug:
+            msg: >-
+              {{ (upgraded_lines if upgraded_lines else ['no packages upgraded'])
+                 + (['installed: ' ~ (pkgs_installed | join(', '))] if pkgs_installed else [])
+                 + (['removed: ' ~ (pkgs_removed | join(', '))] if pkgs_removed else []) }}
+
+        - name: Look for the reboot-required flag
+          ansible.builtin.stat:
+            path: "{{ reboot_required_file }}"
+          register: reboot_flag
+
+        - name: Read which packages asked for a reboot
+          ansible.builtin.command:
+            argv: [sort, -u, "{{ reboot_required_file }}.pkgs"]
+          register: reboot_pkgs
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          when: reboot_flag.stat.exists
+
+        - name: Look for aide-refresh and security-watchdog
+          ansible.builtin.command: sh -c 'command -v {{ item }}'
+          loop: [aide-refresh, security-watchdog]
+          register: refresh_cmds
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          when: post_refresh | bool and packages_changed
+
+        - name: Remember the refresh commands
+          ansible.builtin.set_fact:
+            aide_refresh_path: "{{ refresh_cmds.results[0].stdout | default('') | trim }}"
+            watchdog_path: "{{ refresh_cmds.results[1].stdout | default('') | trim }}"
+
+        - name: Refresh the AIDE baseline
+          ansible.builtin.include_tasks: tasks/run-script.yml
+          vars:
+            run_argv: ["{{ aide_refresh_path }}", --reason, "{{ refresh_reason }}"]
+            run_label: aide-refresh
+            run_timeout: 3600
+          when: aide_refresh_path | length > 0
+
+        - name: Reset the security watchdog
+          ansible.builtin.include_tasks: tasks/run-script.yml
+          vars:
+            run_argv: ["{{ watchdog_path }}", --reset]
+            run_label: security-watchdog --reset
+            run_timeout: 600
+          when: watchdog_path | length > 0
+
+        - name: Summarise
+          ansible.builtin.set_fact:
+            host_summary: >-
+              {{ [pkgs_upgraded | length ~ ' upgraded, ' ~ pkgs_installed | length ~ ' newly installed, '
+                  ~ pkgs_removed | length ~ ' removed']
+                 + (['Docker packages held back (upgrade deliberately with include_docker_packages=true, restarts all containers): '
+                     ~ (docker_planned | intersect(to_hold) | join(', '))] if docker_planned | intersect(to_hold) else [])
+                 + (['Docker packages upgraded: ' ~ (docker_planned | join(', '))]
+                    if include_docker_packages | bool and docker_planned else [])
+                 + (['released holds left by an interrupted run: ' ~ (leftover_holds | join(', '))] if leftover_holds else [])
+                 + ['reboot required: '
+                    ~ (('YES (' ~ (reboot_pkgs.stdout_lines | default([]) | join(', ') or 'no package list') ~ ')')
+                       if reboot_flag.stat.exists else 'no')]
+                 + ['aide-refresh: '
+                    ~ ('skipped, nothing changed' if not packages_changed
+                       else 'skipped, post_refresh=false' if not post_refresh | bool
+                       else 'done' if aide_refresh_path else 'not installed, skipped')]
+                 + ['security-watchdog --reset: '
+                    ~ ('skipped, nothing changed' if not packages_changed
+                       else 'skipped, post_refresh=false' if not post_refresh | bool
+                       else 'done' if watchdog_path else 'not installed, skipped')] }}
+
+    - name: Show the summary of this host
+      ansible.builtin.debug:
+        msg: "{{ host_summary }}"
+
+- name: Summary
+  hosts: "{{ target | default('all') }}"
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Show the summary per host
+      ansible.builtin.debug:
+        msg: >-
+          {{ dict(ansible_play_hosts_all | zip(ansible_play_hosts_all | map('extract', hostvars)
+                  | map(attribute='host_summary', default=['no result: failed or unreachable, see the output above']))) }}
+      run_once: true

@@ -6,8 +6,8 @@
 # property database, AIDE refresh, test-alerts, AIDE refresh, self-check.
 # 35-45 minutes per host with AIDE, around seven Telegram messages per host.
 #
-# The script does not reboot and does not run apt upgrade. One host at a time;
-# when a host fails the remaining hosts are not touched.
+# The script does not reboot and does not run apt upgrade. All hosts at once
+# by default; a host that fails does not stop the others.
 #
 # Extra vars:
 #   maintenance_reason           recorded with every baseline change
@@ -19,11 +19,11 @@
 #                                person reading the warnings (default false:
 #                                the prompt is declined and propupd skipped)
 #   target                       inventory group or host pattern (default all)
-#   batch_size                   hosts per batch (default 1)
+#   batch_size                   hosts per batch (default 100%: all at once; 1 = one by one)
 
 - name: Maintenance cycle
   hosts: "{{ target | default('all') }}"
-  serial: "{{ batch_size | default(1) }}"
+  serial: "{{ batch_size | default('100%') }}"
   become: true
   gather_facts: false
   vars:

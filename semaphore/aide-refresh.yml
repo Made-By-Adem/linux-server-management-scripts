@@ -1,0 +1,59 @@
+---
+# Semaphore template: AIDE refresh
+#
+# Runs aide-refresh --reason "<reason>": aide --check first, report every
+# difference it is about to absorb (Telegram and /var/log/aide-refresh-*.log),
+# then update the database. 10-20 minutes per host. Run it after a deliberate
+# change - a package upgrade, a deployment, a new SSH key - never on a timer:
+# a baseline that refreshes itself absorbs tampering as the new normal.
+#
+# The reason is required: it is the only record of why these differences were
+# accepted.
+#
+# aide-refresh is installed by update-baseline (/usr/local/bin/aide-refresh).
+# A host without it fails.
+#
+# Extra vars:
+#   reason      why the baseline is refreshed (required)
+#   target      inventory group or host pattern (default all)
+#   batch_size  hosts per batch (default 100%: all at once; 1 = one by one)
+
+- name: AIDE refresh
+  hosts: "{{ target | default('all') }}"
+  serial: "{{ batch_size | default('100%') }}"
+  become: true
+  gather_facts: false
+  environment:
+    PATH: "{{ host_path | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
+  vars:
+    reason: ""
+  tasks:
+    - name: Require a reason
+      ansible.builtin.assert:
+        that: reason | string | trim | length > 0
+        fail_msg: >-
+          Set reason, e.g. "after apt upgrade" or "new SSH key". It is recorded with every
+          difference this refresh accepts. Nothing was changed.
+        quiet: true
+
+    - name: Look for aide-refresh
+      ansible.builtin.command: sh -c 'command -v aide-refresh'
+      register: aide_refresh_cmd
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require aide-refresh
+      ansible.builtin.assert:
+        that: aide_refresh_cmd.rc == 0
+        fail_msg: >-
+          aide-refresh is not installed on {{ inventory_hostname }}. update-baseline installs it
+          together with the daily self-check. Nothing was changed.
+        quiet: true
+
+    - name: Run aide-refresh
+      ansible.builtin.include_tasks: tasks/run-script.yml
+      vars:
+        run_argv: ["{{ aide_refresh_cmd.stdout | trim }}", --reason, "{{ reason | string | trim }}"]
+        run_label: aide-refresh
+        run_timeout: 3600
