@@ -698,10 +698,14 @@ update_container() {
 
     log_info "Searching for compose directory..."
 
+    # A container without a compose directory was started with `docker run`
+    # (portainer_agent on ac_sideprojects, for one). This script can only
+    # recreate compose stacks, so such a container is skipped, not failed:
+    # otherwise one hand-started container turns every run red on that host.
     if [ -z "$compose_dir" ]; then
-        log_error "No docker-compose directory found for $container"
-        UPDATE_FAILED["$container"]="No compose directory found"
-        return 1
+        log_warning "No docker-compose directory found for $container - skipped"
+        UPDATE_SKIPPED["$container"]="Not started with docker compose (no compose directory found)"
+        return 0
     fi
 
     log_info "Compose directory: $compose_dir"

@@ -838,6 +838,12 @@ sudo sh get-docker.sh
 
 **Problem:** Script cannot find the compose directory.
 
+The container is **skipped**, not failed: it is listed under "Skipped" in the
+summary with the reason "Not started with docker compose", and it does not
+change the exit code. A container started with `docker run` cannot be
+recreated by this script, so a hand-started container would otherwise turn
+every run red on that host. To have it updated, move it into a compose stack.
+
 **Possible causes:**
 - Container not started via docker-compose
 - Compose file in unexpected location
