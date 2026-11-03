@@ -781,7 +781,11 @@ update_container() {
     log_info "${ARROW} Verifying container status..."
     sleep 3  # Give container time to start
 
-    if docker ps --filter "name=$container" --format '{{.Names}}' | grep -q "^${container}$"; then
+    # Ask Docker directly instead of piping `docker ps` into `grep -q`. grep -q
+    # exits on the first match; if docker ps is still writing it dies of SIGPIPE,
+    # pipefail turns that into exit 141, and a container that runs fine is
+    # reported as "Not active after update".
+    if [ "$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null)" = "true" ]; then
         local new_image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null || echo "Unknown")
         local new_image_id=$(docker inspect --format='{{.Image}}' "$container" 2>/dev/null || echo "Unknown")
         local new_digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$new_image" 2>/dev/null || echo "none")
@@ -957,7 +961,14 @@ show_summary() {
     # Current status of all containers
     print_subheader "Current Container Status"
 
-    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" | head -20
+    # No `| head`: once head has its 20 lines it exits, docker ps dies of
+    # SIGPIPE when it writes the rest, and under `set -e -o pipefail` the
+    # whole script then stops with exit 141 - after every update succeeded.
+    # It only happens on hosts with more than 19 containers, and not every
+    # time, because it races head. Capture first, then cut without a pipe.
+    local container_status
+    container_status=$(docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" 2>&1) || true
+    sed -n '1,20p' <<<"$container_status"
 
     echo ""
     if [ "$DRY_RUN" = true ]; then
